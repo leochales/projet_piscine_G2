@@ -1,0 +1,83 @@
+name: pre-commit
+
+on:
+  # PR des branches de feature vers develop (et de develop vers main)
+  pull_request:
+    branches: [develop, main]
+  # Après merge, on revérifie la branche cible
+  push:
+    branches: [develop, main]
+
+# Annule l'exécution précédente si un nouveau push arrive sur la même PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# no-commit-to-branch échouerait à chaque push après merge sur develop / main
+env:
+  SKIP: no-commit-to-branch
+
+jobs:
+  # Mêmes vérifications qu'au commit (lint, format, SQL, Dockerfile)
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      # Étapes Node ignorées tant que front/package-lock.json n'existe pas
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: hashFiles('front/package-lock.json') != ''
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: front/package-lock.json
+
+      # Nécessaire pour les hooks locaux prettier / eslint du front
+      - name: Install front dependencies
+        if: hashFiles('front/package-lock.json') != ''
+        run: npm ci
+        working-directory: front
+
+      # Lance tous les hooks du stage pre-commit, avec cache intégré
+      - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
+
+  # Mêmes vérifications qu'au push (tests + typage)
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+          # Pas de cache pip tant qu'il n'y a ni requirements.txt ni pyproject.toml :
+          # setup-python échoue s'il ne trouve aucun fichier de dépendances.
+          # À réactiver ensuite avec cache: pip + cache-dependency-path.
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: hashFiles('front/package-lock.json') != ''
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: front/package-lock.json
+
+      # Adapter aux fichiers de dépendances réels de chaque service
+      - name: Install Python dependencies
+        run: |
+          pip install pre-commit==4.7.0 pytest mypy
+          for svc in common api model etl; do
+            if [ -f "$svc/requirements.txt" ]; then pip install -r "$svc/requirements.txt"; fi
+            if [ -f "$svc/requirements-dev.txt" ]; then pip install -r "$svc/requirements-dev.txt"; fi
+          done
+
+      - name: Install front dependencies
+        if: hashFiles('front/package-lock.json') != ''
+        run: npm ci
+        working-directory: front
+
+      - name: Run pre-push hooks
+        run: pre-commit run --all-files --hook-stage pre-push --show-diff-on-failure

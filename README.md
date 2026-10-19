@@ -25,9 +25,21 @@ cp .env.example .env      # PowerShell : Copy-Item .env.example .env
 docker compose up --build
 ```
 
+## Hooks pre-commit
+
+Les vérifications (ruff, sqlfluff, hadolint, prettier, eslint…) tournent avant chaque commit ; les tests (pytest, vitest, vue-tsc, mypy) avant chaque push. Configuration : `.pre-commit-config.yaml`.
+
+```bash
+pip install pre-commit
+pre-commit install        # installe les hooks pre-commit et pre-push
+pre-commit run --all-files
+```
+
+Les hooks locaux appellent `python -m pytest`, `python -m mypy` et les scripts npm du front (`lint`, `format`, `type-check`, `test:unit` dans `front/package.json`) : pas de bash, ça fonctionne aussi sous Windows. Activer le venv du projet (avec pytest et mypy) avant de pousser. Sous Windows, si `python` ouvre le Microsoft Store, rouvrir le terminal (ou l'IDE) après l'installation de Python.
+
 ## Règles de contribution
 
-- `main` est protégée : aucun push direct.
+- `main` et `develop` sont protégées : aucun commit direct (bloqué par pre-commit).
 - Une branche par ticket Jira : `feature/EV-12-description-courte`.
 - Les messages de commit citent la clé Jira : `EV-12: ajoute l'import CSV`.
 - Chaque pull request demande **2 relectures** avant le merge.
