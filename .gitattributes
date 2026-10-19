@@ -1,0 +1,11 @@
+# Normalise les fins de ligne (équipe Windows / Linux)
+* text=auto eol=lf
+
+# Scripts lancés dans les conteneurs Linux : toujours LF
+*.sh text eol=lf
+
+# Fichiers binaires
+*.png binary
+*.jpg binary
+*.pkl binary
+*.joblib binary

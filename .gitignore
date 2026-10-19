@@ -1,0 +1,40 @@
+# --- Secrets ---
+.env
+*.env
+!.env.example
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- ML ---
+mlruns/
+*.pkl
+*.joblib
+
+# --- Données ---
+data/raw/
+data/processed/
+
+# --- Front (Vue 3 / Node) ---
+node_modules/
+dist/
+.vite/
+npm-debug.log*
+
+# --- IDE ---
+.idea/
+.vscode/
+*.iml
+
+# --- Système ---
+.DS_Store
+Thumbs.db
