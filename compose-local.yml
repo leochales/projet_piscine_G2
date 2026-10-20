@@ -75,12 +75,13 @@ services:
       - postgres_network
 
   front:
-    build: ./front
+    build:
+      context: ./front
+      args:
+        VITE_API_URL: ${VITE_API_URL}
     container_name: front
-    environment:
-      VITE_API_URL: ${VITE_API_URL}
     ports:
-      - "127.0.0.1:${FRONT_PORT:-5173}:5173"
+      - "127.0.0.1:${FRONT_PORT:-5173}:80"
     depends_on:
       - api
     networks:
