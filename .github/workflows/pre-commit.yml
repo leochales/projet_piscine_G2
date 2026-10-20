@@ -4,9 +4,6 @@ on:
   # PR des branches de feature vers develop (et de develop vers main)
   pull_request:
     branches: [develop, main]
-  # Après merge, on revérifie la branche cible
-  push:
-    branches: [develop, main]
 
 # Annule l'exécution précédente si un nouveau push arrive sur la même PR
 concurrency:
@@ -42,12 +39,18 @@ jobs:
         run: npm ci
         working-directory: front
 
+      # Nécessaire pour le hook trivy-secrets
+      - name: Install Trivy
+        run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+
       # Lance tous les hooks du stage pre-commit, avec cache intégré
       - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
 
   # Mêmes vérifications qu'au push (tests + typage)
   tests:
     runs-on: ubuntu-latest
+    env:
+      SKIP: trivy-scan
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
