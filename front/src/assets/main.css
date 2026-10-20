@@ -1,0 +1,21 @@
+@import 'tailwindcss';
+
+/* Couleurs et polices du dashboard, utilisables en classes Tailwind (bg-surface, text-muted...) */
+@theme {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+
+  --color-canvas: #eceff3;
+  --color-surface: #ffffff;
+  --color-border: #c9ced6;
+  --color-ink: #1f2933;
+  --color-muted: #616b78;
+  --color-accent: #4b5563;
+
+  --color-critical: #b42318;
+  --color-warning: #b54708;
+  --color-ok: #067647;
+}
+
+body {
+  @apply bg-canvas text-ink font-sans antialiased;
+}
