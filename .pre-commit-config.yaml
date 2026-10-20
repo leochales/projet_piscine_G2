@@ -109,6 +109,9 @@ repos:
         entry: python -m mypy
         language: system
         files: ^(api|common)/.*\.py$
+        # Un seul processus : en parallèle, les mypy se partagent .mypy_cache
+        # et plantent au hasard (INTERNAL ERROR)
+        require_serial: true
         stages: [pre-push]
 
       - id: front-type-check
