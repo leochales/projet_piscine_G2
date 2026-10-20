@@ -26,6 +26,12 @@ repos:
       - id: no-commit-to-branch
         args: [--branch, develop, --branch, main]
 
+  # Secrets (mots de passe, clés d'API, jetons) dans les fichiers commités
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e  # frozen: v8.30.1
+    hooks:
+      - id: gitleaks
+
   # ---------------------------------------------------------------
   # Python : api/, model/, etl/, common/
   # ---------------------------------------------------------------

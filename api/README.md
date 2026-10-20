@@ -1,19 +1,5 @@
 # API EnerVision
 
-API métier en FastAPI (ticket SMARTOPS-35). Toutes les routes sont sous `/api`, pour que Traefik puisse les transmettre telles quelles.
-
-## Ce qui a été fait
-
-| Élément | Fichier |
-|---|---|
-| Application FastAPI, Swagger, CORS | `api/main.py` |
-| Route de santé `GET /api/health` | `api/routers/health.py` |
-| Configuration lue dans le `.env` | `common/config.py` |
-| Connexion PostgreSQL (SQLAlchemy + psycopg) | `common/db.py` |
-| Tests | `api/tests/` |
-
-`common/` est partagé avec le service de prédiction et l'ETL. Ses dépendances sont dans `common/requirements.txt`, inclus par `api/requirements.txt`.
-
 ### Documentation
 
 | URL | Contenu |
