@@ -26,6 +26,12 @@ repos:
       - id: no-commit-to-branch
         args: [--branch, develop, --branch, main]
 
+  # Secrets (mots de passe, clés d'API, jetons) dans les fichiers commités
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e  # frozen: v8.30.1
+    hooks:
+      - id: gitleaks
+
   # ---------------------------------------------------------------
   # Python : api/, model/, etl/, common/
   # ---------------------------------------------------------------
@@ -78,26 +84,27 @@ repos:
         pass_filenames: false
 
       # --- Avant le push : tests et typage ---
+      # run_in_venv.py trouve le .venv tout seul : pas besoin de l'activer
       - id: pytest-api
         name: pytest (api)
-        entry: python -m pytest -q api
-        language: system
+        entry: python infra/pre-commit/run_in_venv.py -m pytest -q api
+        language: python
         files: ^(api|common)/.*\.py$
         pass_filenames: false
         stages: [pre-push]
 
       - id: pytest-model
         name: pytest (model)
-        entry: python -m pytest -q model
-        language: system
+        entry: python infra/pre-commit/run_in_venv.py -m pytest -q model
+        language: python
         files: ^(model|common)/.*\.py$
         pass_filenames: false
         stages: [pre-push]
 
       - id: pytest-etl
         name: pytest (etl)
-        entry: python -m pytest -q etl
-        language: system
+        entry: python infra/pre-commit/run_in_venv.py -m pytest -q etl
+        language: python
         files: ^(etl|common)/.*\.py$
         pass_filenames: false
         stages: [pre-push]
@@ -106,9 +113,12 @@ repos:
       # si l'un des dossiers ne contient encore aucun .py
       - id: mypy-api
         name: mypy (api + common)
-        entry: python -m mypy
-        language: system
+        entry: python infra/pre-commit/run_in_venv.py -m mypy
+        language: python
         files: ^(api|common)/.*\.py$
+        # Un seul processus : en parallèle, les mypy se partagent .mypy_cache
+        # et plantent au hasard (INTERNAL ERROR)
+        require_serial: true
         stages: [pre-push]
 
       - id: front-type-check
