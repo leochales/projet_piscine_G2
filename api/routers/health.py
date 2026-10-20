@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from common.db import check_database
 
-router = APIRouter(tags=["santé"])
+router = APIRouter(tags=["health"])
 
 
 class HealthResponse(BaseModel):
