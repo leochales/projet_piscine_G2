@@ -28,6 +28,10 @@ jobs:
         with:
           python-version: "3.14"
 
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+
       # Étapes Node ignorées tant que front/package-lock.json n'existe pas
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: hashFiles('front/package-lock.json') != ''
