@@ -1,0 +1,12 @@
+# Contexte de build = racine du dépôt (Dockerfile de l'API)
+.git
+.env
+**/__pycache__
+**/.venv
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/node_modules
+front/dist
+mlruns
+data
