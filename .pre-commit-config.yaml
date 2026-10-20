@@ -126,3 +126,10 @@ repos:
         files: ^front/.*\.(vue|js|ts)$
         pass_filenames: false
         stages: [pre-push]
+
+      - id: trivy-scan
+        name: trivy (security scan)
+        entry: trivy fs --severity HIGH,CRITICAL --exit-code 1 .
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
