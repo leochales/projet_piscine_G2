@@ -1,0 +1,128 @@
+default_install_hook_types: [pre-commit, pre-push]
+default_stages: [pre-commit]
+
+repos:
+  # ---------------------------------------------------------------
+  # Hooks généraux (tous les dossiers)
+  # ---------------------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # frozen: v6.0.0
+    hooks:
+      # stages explicite : ces hooks déclarent aussi pre-push, ce qui
+      # l'emporte sur default_stages
+      - id: trailing-whitespace
+        stages: [pre-commit]
+      - id: end-of-file-fixer
+        stages: [pre-commit]
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1000]
+        stages: [pre-commit]
+      - id: detect-private-key
+      # Interdit les commits directs sur develop et main (passer par une PR)
+      - id: no-commit-to-branch
+        args: [--branch, develop, --branch, main]
+
+  # ---------------------------------------------------------------
+  # Python : api/, model/, etl/, common/
+  # ---------------------------------------------------------------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: 38bfb07c0c64c304f47eb52090f8288150c77730  # frozen: v0.17.1
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  # ---------------------------------------------------------------
+  # SQL : db/
+  # ---------------------------------------------------------------
+  - repo: https://github.com/sqlfluff/sqlfluff
+    rev: 0348222a3bcdb0226563f7349c5a39beb0641955  # frozen: 4.4.0
+    hooks:
+      - id: sqlfluff-lint
+        args: [--dialect, postgres]
+        files: ^db/.*\.sql$
+
+  # ---------------------------------------------------------------
+  # Docker : infra/ (et Dockerfiles dans les services)
+  # ---------------------------------------------------------------
+  - repo: https://github.com/AleksaC/hadolint-py
+    rev: 6e7504451511eaeb62a3e7f14d63b0296cbf86eb  # frozen: v2.15.1
+    hooks:
+      - id: hadolint
+        files: (^|/)Dockerfile[^/]*$
+
+  # ---------------------------------------------------------------
+  # Hooks locaux : outils du venv (Python) et scripts npm du front.
+  # Pas de bash : fonctionne aussi sous Windows.
+  # ---------------------------------------------------------------
+  - repo: local
+    hooks:
+      # Front Vue 3 : scripts définis dans front/package.json
+      # (générés par "npm create vue" : lint, format, type-check, test:unit)
+      - id: front-lint
+        name: eslint (front)
+        entry: npm --prefix front run lint
+        language: system
+        files: ^front/.*\.(vue|js|ts)$
+        pass_filenames: false
+
+      - id: front-format
+        name: prettier (front)
+        entry: npm --prefix front run format
+        language: system
+        files: ^front/.*\.(vue|js|ts|json|css|scss|md)$
+        pass_filenames: false
+
+      # --- Avant le push : tests et typage ---
+      - id: pytest-api
+        name: pytest (api)
+        entry: python -m pytest -q api
+        language: system
+        files: ^(api|common)/.*\.py$
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: pytest-model
+        name: pytest (model)
+        entry: python -m pytest -q model
+        language: system
+        files: ^(model|common)/.*\.py$
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: pytest-etl
+        name: pytest (etl)
+        entry: python -m pytest -q etl
+        language: system
+        files: ^(etl|common)/.*\.py$
+        pass_filenames: false
+        stages: [pre-push]
+
+      # Fichiers passés un par un : "mypy api common" échoue
+      # si l'un des dossiers ne contient encore aucun .py
+      - id: mypy-api
+        name: mypy (api + common)
+        entry: python -m mypy
+        language: system
+        files: ^(api|common)/.*\.py$
+        stages: [pre-push]
+
+      - id: front-type-check
+        name: vue-tsc (front)
+        entry: npm --prefix front run type-check
+        language: system
+        files: ^front/.*\.(vue|ts)$
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: front-test
+        name: vitest (front)
+        entry: npm --prefix front run test:unit -- --run
+        language: system
+        files: ^front/.*\.(vue|js|ts)$
+        pass_filenames: false
+        stages: [pre-push]
