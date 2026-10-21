@@ -17,27 +17,28 @@ npm run dev
 ```
 
 L'application est disponible sur http://localhost:5173, avec rechargement à chaud.
+Les appels à `/api` sont transmis à Traefik (http://localhost) : lancer aussi la pile Docker ci-dessous pour avoir l'API.
 
 ### Avec Docker Compose (depuis la racine du dépôt)
 
 ```bash
-docker compose -f compose-local.yml up -d --build front
+docker compose -f compose-local.yml up -d --build
 ```
 
-L'application est disponible sur http://localhost:5173 (`FRONT_PORT` dans le `.env`), servie par nginx.
+L'application est disponible sur http://localhost, servie par nginx derrière Traefik (`HTTP_PORT` dans le `.env`).
 
 ### Avec Docker seul (image de production)
 
 ```bash
 cd front
-docker build -t enervision-front --build-arg VITE_API_URL=http://localhost:8000 .
+docker build -t enervision-front --build-arg VITE_API_URL=/api .
 docker run --rm -p 8080:80 enervision-front
 ```
 
 L'application est disponible sur http://localhost:8080.
 
 > `VITE_API_URL` est intégrée au moment du build : changer l'URL de l'API demande de reconstruire l'image.
-> Derrière Traefik, on pourra utiliser un chemin relatif (`/api`).
+> Le chemin relatif `/api` fonctionne derrière Traefik, où le front et l'API partagent la même origine.
 
 ## Commandes
 

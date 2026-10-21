@@ -2,10 +2,12 @@
 
 ### Documentation
 
-| URL | Contenu |
-|---|---|
-| http://localhost:8000/api/docs | Swagger UI (tester les routes) |
-| http://localhost:8000/api/openapi.json | Schéma OpenAPI |
+Avec Docker Compose, l'API passe par Traefik (http://localhost) ; lancée en local avec uvicorn, elle est sur http://localhost:8000.
+
+| URL (Docker) | URL (uvicorn) | Contenu |
+|---|---|---|
+| http://localhost/api/docs | http://localhost:8000/api/docs | Swagger UI (tester les routes) |
+| http://localhost/api/openapi.json | http://localhost:8000/api/openapi.json | Schéma OpenAPI |
 
 ### `GET /api/health`
 
@@ -20,8 +22,10 @@
 
 ```bash
 cp env.example .env
-docker compose -f compose-local.yml up -d --build db api
+docker compose -f compose-local.yml up -d --build traefik db api
 ```
+
+L'API n'est pas exposée directement : on y accède par Traefik, sur http://localhost/api.
 
 ### En local (Python 3.14)
 
