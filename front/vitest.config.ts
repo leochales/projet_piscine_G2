@@ -15,7 +15,8 @@ export default defineConfig((configEnv) =>
         coverage: {
           provider: 'v8',
           include: ['src/stores/**', 'src/lib/**', 'src/services/**'],
-          reporter: ['text-summary', 'text'],
+          // json-summary : lu par la CI pour le résumé ; html : rapport détaillé téléchargeable
+          reporter: ['text-summary', 'text', 'json-summary', 'html'],
           thresholds: { lines: 80, functions: 80, branches: 80, statements: 80 },
         },
       },

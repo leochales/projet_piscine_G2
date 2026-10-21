@@ -79,3 +79,36 @@ jobs:
 
       - name: Run pre-push hooks
         run: pre-commit run --all-files --hook-stage pre-push --show-diff-on-failure
+
+      # Couverture affichée dans le résumé du workflow, même si les tests échouent
+      # (--fail-under=0 : le seuil est déjà vérifié par les hooks, ici on ne fait qu'afficher)
+      - name: Coverage summary
+        if: always()
+        run: |
+          {
+            echo "## Couverture des tests (seuil : 80 %)"
+            echo "### Back : api + common"
+            if [ -f .coverage ]; then
+              python -m coverage report --format=markdown --fail-under=0
+            else
+              echo "Pas de données (tests Python non lancés)."
+            fi
+            echo "### Front : stores, lib, services"
+            python infra/ci/coverage_summary.py front/coverage/coverage-summary.json
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -f .coverage ]; then
+            python -m coverage html --fail-under=0 -d coverage-html/back
+          fi
+
+      # Rapports HTML détaillés (lignes non couvertes en couleur), à télécharger
+      # depuis la page du workflow, rubrique « Artifacts »
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage
+          path: |
+            coverage-html/back
+            front/coverage
+          if-no-files-found: ignore
+          retention-days: 14
