@@ -1,5 +1,6 @@
 from collections.abc import Iterator
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -15,7 +16,9 @@ class FausseSession:
     def __init__(self, lignes: list[dict[str, Any]]) -> None:
         self.lignes = lignes
 
-    def execute(self, requete: Any) -> "FausseSession":
+    def execute(
+        self, requete: Any, parametres: dict[str, Any] | None = None
+    ) -> "FausseSession":
         return self
 
     def mappings(self) -> "FausseSession":
@@ -32,7 +35,7 @@ def client() -> Iterator[TestClient]:
 
 
 def test_derniere_mesure_renvoie_une_ligne_par_site(client: TestClient) -> None:
-    lignes = [
+    lignes: list[dict[str, Any]] = [
         {
             "id_site": "SITE001",
             "nom": "Bureau Paris La Défense",
@@ -69,3 +72,34 @@ def test_derniere_mesure_renvoie_une_liste_vide_sans_donnees(
 
     assert response.status_code == 200
     assert response.json() == []
+
+
+def test_consommation_calcule_le_cout_en_euros(client: TestClient) -> None:
+    lignes: list[dict[str, Any]] = [
+        {
+            "heure": datetime(2026, 10, 21, 13, 0, tzinfo=UTC),
+            "consommation_kwh": Decimal("500.000"),
+        },
+        {
+            "heure": datetime(2026, 10, 21, 14, 0, tzinfo=UTC),
+            "consommation_kwh": None,
+        },
+    ]
+    app.dependency_overrides[get_session] = lambda: FausseSession(lignes)
+
+    response = client.get("/api/sites/SITE001/consommation")
+
+    assert response.status_code == 200
+    corps = response.json()
+    assert corps[0]["consommation_kwh"] == 500.0
+    assert corps[0]["cout_eur"] == 70.0
+    assert corps[1]["consommation_kwh"] is None
+    assert corps[1]["cout_eur"] is None
+
+
+def test_consommation_refuse_une_date_invalide(client: TestClient) -> None:
+    app.dependency_overrides[get_session] = lambda: FausseSession([])
+
+    response = client.get("/api/sites/SITE001/consommation?debut=pas-une-date")
+
+    assert response.status_code == 422
