@@ -1,0 +1,119 @@
+name: Deploy
+on:
+  push:
+    # dev (develop) se déploie uniquement à la main, via workflow_dispatch
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Checks
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+    uses: ./.github/workflows/pre-commit.yml
+
+  security:
+    name: Security
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+    uses: ./.github/workflows/security.yml
+
+  deploy:
+    name: Deploy ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
+    needs: [checks, security]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 30
+    env:
+      # Lu par compose-prod.yml : projet Docker enervision-<env>, entrypoint Traefik https-<env>
+      DEPLOY_ENV: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
+      # Préfixe des secrets et variables GitHub de l'environnement
+      ENV_PREFIX: ${{ github.ref_name == 'main' && 'PROD' || 'DEV' }}
+      # Port HTTPS de l'environnement sur le Traefik partagé (infra/traefik/compose.yml)
+      HTTPS_PORT: ${{ github.ref_name == 'main' && '443' || '8443' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Certificat auto-signé de la VM (pas de domaine ni d'accès Internet entrant) :
+      # généré une seule fois et conservé hors du dossier de travail, pour que l'exception
+      # acceptée dans les navigateurs reste valable. Régénéré si l'IP de la VM change.
+      - name: Préparer le certificat HTTPS
+        id: cert
+        env:
+          VM_IP: ${{ vars.VM_IP }}
+        run: |
+          if [ -z "$VM_IP" ]; then
+            echo "::error::Variable VM_IP manquante (Settings → Secrets and variables → Actions → Variables)"
+            exit 1
+          fi
+          cert_dir="$HOME/traefik-certs"
+          echo "TLS_CERT_DIR=$cert_dir" >> "$GITHUB_ENV"
+          cert="$cert_dir/cert.pem"
+          # Conservé s'il couvre l'IP actuelle et reste valide plus de 30 jours
+          if openssl x509 -in "$cert" -noout -checkend 2592000 >/dev/null 2>&1 \
+             && openssl x509 -in "$cert" -noout -ext subjectAltName | grep -q "IP Address:${VM_IP}\$"; then
+            echo "Certificat existant conservé"
+            exit 0
+          fi
+          mkdir -p "$cert_dir" && chmod 700 "$cert_dir"
+          openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
+            -subj "/CN=${VM_IP}" -addext "subjectAltName=IP:${VM_IP}" \
+            -keyout "$cert_dir/key.pem" -out "$cert"
+          chmod 600 "$cert_dir/key.pem"
+          echo "renewed=true" >> "$GITHUB_OUTPUT"
+
+      # Partagé par dev et prod ; sans effet si sa configuration n'a pas changé
+      - name: Démarrer le Traefik partagé
+        env:
+          CERT_RENEWED: ${{ steps.cert.outputs.renewed }}
+        run: |
+          docker compose -f infra/traefik/compose.yml up -d --remove-orphans
+          # Traefik ne relit pas les fichiers de certificat d'un conteneur déjà démarré
+          if [ "$CERT_RENEWED" = "true" ]; then
+            docker compose -f infra/traefik/compose.yml restart traefik
+          fi
+
+      - name: Construire et démarrer les conteneurs
+        env:
+          POSTGRES_USER: ${{ vars[format('{0}_POSTGRES_USER', env.ENV_PREFIX)] }}
+          POSTGRES_DB: ${{ vars[format('{0}_POSTGRES_DB', env.ENV_PREFIX)] }}
+          ETL_ENABLED: ${{ vars[format('{0}_ETL_ENABLED', env.ENV_PREFIX)] }}
+          POSTGRES_PASSWORD: ${{ secrets[format('{0}_POSTGRES_PASSWORD', env.ENV_PREFIX)] }}
+          ETL_DB_PASSWORD: ${{ secrets[format('{0}_ETL_DB_PASSWORD', env.ENV_PREFIX)] }}
+          MODEL_DB_PASSWORD: ${{ secrets[format('{0}_MODEL_DB_PASSWORD', env.ENV_PREFIX)] }}
+          API_DB_PASSWORD: ${{ secrets[format('{0}_API_DB_PASSWORD', env.ENV_PREFIX)] }}
+          BACKUP_DB_PASSWORD: ${{ secrets[format('{0}_BACKUP_DB_PASSWORD', env.ENV_PREFIX)] }}
+        run: |
+          # ETL_ENABLED est facultatif (true par défaut dans compose-prod.yml)
+          for key in POSTGRES_USER POSTGRES_DB POSTGRES_PASSWORD ETL_DB_PASSWORD \
+                     MODEL_DB_PASSWORD API_DB_PASSWORD BACKUP_DB_PASSWORD; do
+            if [ -z "${!key}" ]; then
+              echo "::error::${ENV_PREFIX}_${key} manquant (Settings → Secrets and variables → Actions)"
+              exit 1
+            fi
+          done
+          docker compose -f compose-prod.yml up -d --build --remove-orphans
+
+      # Passe par Traefik comme un client (-k : certificat auto-signé)
+      - name: Vérifier la santé de l'API
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsSk "https://localhost:${HTTPS_PORT}/api/health"; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::L'API ($DEPLOY_ENV, port $HTTPS_PORT) ne répond pas après 60 s"
+          # -p : le projet suffit, sans réinterpoler compose-prod.yml (et donc sans les secrets)
+          docker compose -p "enervision-${DEPLOY_ENV}" ps
+          docker compose -p "enervision-${DEPLOY_ENV}" logs --tail=50 api
+          exit 1
+
+      - name: Nettoyer les anciennes images
+        if: always()
+        run: docker image prune -f

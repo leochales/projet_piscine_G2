@@ -1,0 +1,8 @@
+# Configuration dynamique de Traefik : certificat servi sur tous les entrypoints HTTPS.
+# Les fichiers sont générés sur la VM par le workflow de déploiement (voir infra/runner.md).
+tls:
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /certs/cert.pem
+        keyFile: /certs/key.pem

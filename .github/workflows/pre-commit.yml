@@ -4,10 +4,14 @@ on:
   # PR des branches de feature vers develop (et de develop vers main)
   pull_request:
     branches: [develop, main]
+  # Appelé par deploy.yml : rien n'est déployé sans ces vérifications
+  workflow_call:
 
-# Annule l'exécution précédente si un nouveau push arrive sur la même PR
+# Annule l'exécution précédente si un nouveau push arrive sur la même PR.
+# Nom de groupe fixe : appelé par deploy.yml, github.workflow vaudrait « Deploy »
+# et ce groupe se confondrait avec celui de security.yml (annulation mutuelle).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: pre-commit-${{ github.ref }}
   cancel-in-progress: true
 
 # no-commit-to-branch échouerait à chaque push après merge sur develop / main

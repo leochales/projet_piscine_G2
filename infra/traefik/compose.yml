@@ -1,0 +1,49 @@
+# Traefik partagé par tous les environnements de la VM (dev, prod).
+# Démarré par .github/workflows/deploy.yml avant chaque déploiement (sans effet s'il est déjà à jour).
+#
+# La VM n'est pas joignable depuis Internet et n'a pas de nom de domaine : HTTPS avec un
+# certificat auto-signé (SAN = IP de la VM), généré une fois par le workflow et conservé
+# sur la VM. Les environnements se distinguent par le port :
+#
+#   prod : https://<ip>        (http://<ip>      redirige vers HTTPS)
+#   dev  : https://<ip>:8443   (http://<ip>:8080 redirige vers HTTPS)
+#
+# Chaque environnement rejoint le réseau traefik_public et attache ses routes à son
+# entrypoint (https-<DEPLOY_ENV>, voir les labels de compose-prod.yml).
+name: traefik
+
+services:
+  traefik:
+    image: traefik:v3.7
+    restart: unless-stopped
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=traefik_public
+      # Certificat par défaut (fichier de configuration dynamique)
+      - --providers.file.filename=/etc/traefik/dynamic.yml
+      - --entrypoints.http-prod.address=:80
+      - --entrypoints.http-prod.http.redirections.entrypoint.to=https-prod
+      - --entrypoints.http-prod.http.redirections.entrypoint.scheme=https
+      - --entrypoints.https-prod.address=:443
+      - --entrypoints.https-prod.http.tls=true
+      - --entrypoints.http-dev.address=:8080
+      - --entrypoints.http-dev.http.redirections.entrypoint.to=https-dev
+      - --entrypoints.http-dev.http.redirections.entrypoint.scheme=https
+      - --entrypoints.https-dev.address=:8443
+      - --entrypoints.https-dev.http.tls=true
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"
+      - "8443:8443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./dynamic.yml:/etc/traefik/dynamic.yml:ro
+      - ${TLS_CERT_DIR:?TLS_CERT_DIR manquant}:/certs:ro
+    networks:
+      - public
+
+networks:
+  public:
+    name: traefik_public
