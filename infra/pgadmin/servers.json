@@ -1,0 +1,13 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "EnerVision",
+      "Group": "Servers",
+      "Host": "db",
+      "Port": 5432,
+      "MaintenanceDB": "enervision",
+      "Username": "enervision",
+      "SSLMode": "prefer"
+    }
+  }
+}
