@@ -79,7 +79,7 @@ services:
       POSTGRES_HOST: db           # nom du service Postgres
       POSTGRES_PORT: 5432         # port interne au réseau Docker
       POSTGRES_DB: ${POSTGRES_DB}
-      PRIX_KWH_EUR: ${PRIX_KWH_EUR}
+      PRIX_KWH_EUR: ${PRIX_KWH_EUR:-0.14}
       POSTGRES_USER: api
       POSTGRES_PASSWORD: ${API_DB_PASSWORD}
     labels:
