@@ -32,7 +32,8 @@ COPY etl/ ./etl/
 COPY common/ ./common/
 
 # Dépendances installées seulement si requirements.txt existe
-RUN if [ -f etl/requirements.txt ]; then pip install --no-cache-dir -r etl/requirements.txt; fi
+RUN if [ -f etl/requirements.txt ]; then pip install --no-cache-dir -r etl/requirements.txt; fi \
+    && pip uninstall -y pip
 
 # Planning : etl/crontab (modifiable sans toucher à ce Dockerfile)
 # ETL_ENABLED=false : le conteneur reste démarré mais n'exécute aucun job

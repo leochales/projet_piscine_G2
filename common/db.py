@@ -1,6 +1,6 @@
 """Connexion PostgreSQL partagée (SQLAlchemy)."""
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from functools import lru_cache
 
 from sqlalchemy import Engine, create_engine, text
@@ -16,7 +16,7 @@ def get_engine() -> Engine:
     return create_engine(get_settings().database_url, pool_pre_ping=True)
 
 
-def get_session() -> Iterator[Session]:
+def get_session() -> Generator[Session]:
     """Dépendance FastAPI : une session par requête, fermée à la fin."""
     session_factory = sessionmaker(bind=get_engine())
     with session_factory() as session:

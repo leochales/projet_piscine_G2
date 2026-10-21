@@ -85,9 +85,10 @@ repos:
 
       # --- Avant le push : tests et typage ---
       # run_in_venv.py trouve le .venv tout seul : pas besoin de l'activer
+      # Tests de api/ et common/, avec un minimum de 80 % de couverture (pyproject.toml)
       - id: pytest-api
-        name: pytest (api)
-        entry: python infra/pre-commit/run_in_venv.py -m pytest -q api
+        name: pytest (api + common, couverture)
+        entry: python infra/pre-commit/run_in_venv.py -m pytest -q api common --cov=api --cov=common
         language: python
         files: ^(api|common)/.*\.py$
         pass_filenames: false
@@ -130,8 +131,9 @@ repos:
         stages: [pre-push]
 
       - id: front-test
-        name: vitest (front)
-        entry: npm --prefix front run test:unit -- --run
+        name: vitest (front, couverture)
+        # Seuil de 80 % sur stores, lib et services : voir front/vitest.config.ts
+        entry: npm --prefix front run test:unit -- --run --coverage
         language: system
         files: ^front/.*\.(vue|js|ts)$
         pass_filenames: false
@@ -139,7 +141,9 @@ repos:
 
       - id: trivy-scan
         name: trivy (security scan)
-        entry: trivy fs --severity HIGH,CRITICAL --exit-code 1 .
+        # .venv et node_modules ignorés : les dépendances sont déjà analysées via
+        # requirements*.txt et package-lock.json (scan en 0,3 s au lieu de ~10 s)
+        entry: trivy fs --severity HIGH,CRITICAL --exit-code 1 --skip-dirs .venv --skip-dirs front/node_modules .
         language: system
         pass_filenames: false
         stages: [pre-push]
