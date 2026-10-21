@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     api_cors_origins: list[str] = ["http://localhost:5173"]
 
     # Prix de l'électricité en € HT par kWh (tarif fixe provisoire)
-    prix_kwh_eur: float
+    prix_kwh_eur: float = 0.14
 
     @property
     def database_url(self) -> str:
