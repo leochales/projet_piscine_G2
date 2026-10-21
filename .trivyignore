@@ -1,0 +1,8 @@
+# Vulnérabilités acceptées temporairement : chacune a une justification et une date
+# d'expiration (exp:). Passé cette date, Trivy la signale de nouveau et bloque la CI.
+
+# Go stdlib dans supercronic v0.2.50 (etl/Dockerfile), compilé avec Go 1.27.2.
+# Aucune version de supercronic corrigée au 2026-10-21. Risque faible : supercronic
+# ne fait que lancer les tâches cron de l'ETL et n'écoute aucun port.
+# À retirer dès qu'une version de supercronic compilée avec Go >= 1.27.3 sort.
+CVE-2026-111943 exp:2026-12-31

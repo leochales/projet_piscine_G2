@@ -18,9 +18,9 @@ VENV_PYTHONS = (Path(".venv/bin/python"), Path(".venv/Scripts/python.exe"))
 
 
 def find_python() -> str:
-    for python in VENV_PYTHONS:
-        if python.exists():
-            return str(python)
+    for venv_python in VENV_PYTHONS:
+        if venv_python.exists():
+            return str(venv_python)
 
     # pre-commit place son propre environnement (sans pytest ni mypy) en tête du PATH.
     # normcase + normpath : sous Windows, la casse et les séparateurs peuvent différer.
@@ -40,4 +40,5 @@ def find_python() -> str:
 
 
 if __name__ == "__main__":
-    sys.exit(subprocess.call([find_python(), *sys.argv[1:]]))
+    # S603 : les arguments viennent de .pre-commit-config.yaml, pas d'une saisie extérieure
+    sys.exit(subprocess.call([find_python(), *sys.argv[1:]]))  # noqa: S603

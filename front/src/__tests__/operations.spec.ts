@@ -32,6 +32,33 @@ describe('useOperationsStore', () => {
     expect(store.savings).toBe(380)
   })
 
+  it('enregistre la décision sur une recommandation', () => {
+    const store = useOperationsStore()
+    store.recommendations = [rec({ id: 'A' }), rec({ id: 'B' })]
+    store.decide('A', 'acceptee')
+    store.decide('B', 'refusee')
+    store.decide('inconnue', 'acceptee') // sans effet
+    expect(store.recommendations.map((r) => r.statut)).toEqual(['acceptee', 'refusee'])
+  })
+
+  it('compte les alertes critiques restant à traiter', async () => {
+    const store = useOperationsStore()
+    await store.load()
+    const critical = store.alerts.find((a) => a.gravite === 'critique')!
+    expect(store.pendingCritical).toBe(1)
+    store.acknowledge(critical.id)
+    store.acknowledge('inconnue') // sans effet
+    expect(store.pendingCritical).toBe(0)
+  })
+
+  it('ne recharge pas les données déjà chargées', async () => {
+    const store = useOperationsStore()
+    await store.load()
+    store.acknowledge(store.alerts[0]!.id)
+    await store.load()
+    expect(store.alerts[0]!.priseEnCompte).toBe(true)
+  })
+
   it("retire une alerte prise en compte du compteur d'alertes actives", async () => {
     const store = useOperationsStore()
     await store.load()

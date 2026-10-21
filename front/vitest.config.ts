@@ -11,6 +11,13 @@ export default defineConfig((configEnv) =>
         environment: 'jsdom',
         exclude: [...configDefaults.exclude, 'e2e/**'],
         root: fileURLToPath(new URL('./', import.meta.url)),
+        // Couverture mesurée sur la logique métier, pas sur les composants d'affichage
+        coverage: {
+          provider: 'v8',
+          include: ['src/stores/**', 'src/lib/**', 'src/services/**'],
+          reporter: ['text-summary', 'text'],
+          thresholds: { lines: 80, functions: 80, branches: 80, statements: 80 },
+        },
       },
     }),
   ),

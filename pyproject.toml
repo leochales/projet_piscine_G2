@@ -1,0 +1,20 @@
+# Configuration des outils Python du dépôt (pas un paquet installable).
+# Chaque service garde ses dépendances dans son requirements.txt.
+
+[tool.ruff.lint]
+# Règles par défaut + "S" : contrôles de sécurité de Bandit (flake8-bandit)
+extend-select = ["S"]
+
+[tool.ruff.lint.per-file-ignores]
+# Dans les tests : assert (S101) et identifiants factices (S105, S106) sont normaux
+"**/tests/**" = ["S101", "S105", "S106"]
+"**/conftest.py" = ["S105", "S106"]
+
+[tool.coverage.run]
+# Couverture mesurée sur le code, pas sur les tests eux-mêmes
+omit = ["*/tests/*", "*/conftest.py"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = true

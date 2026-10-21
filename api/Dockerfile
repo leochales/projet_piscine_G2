@@ -11,7 +11,8 @@ COPY api/ ./api/
 COPY common/ ./common/
 
 # Dépendances installées seulement si requirements.txt existe
-RUN if [ -f api/requirements.txt ]; then pip install --no-cache-dir -r api/requirements.txt; fi
+RUN if [ -f api/requirements.txt ]; then pip install --no-cache-dir -r api/requirements.txt; fi \
+    && pip uninstall -y pip
 
 EXPOSE 8000
 

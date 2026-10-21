@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
-import { formatEur, formatKw, formatRelativeHour, formatSignedPct } from '@/lib/format'
+import {
+  formatEur,
+  formatKw,
+  formatPct,
+  formatRelativeHour,
+  formatSignedPct,
+  formatTonnes,
+} from '@/lib/format'
 
 // Intl met des espaces insécables (U+202F, U+00A0) : on les normalise pour comparer
 const plain = (s: string) => s.replace(/[  ]/g, ' ')
@@ -22,5 +29,12 @@ describe('format', () => {
       "aujourd'hui 15 h",
     )
     expect(formatRelativeHour(new Date(2026, 9, 22, 14).toISOString(), now)).toBe('demain 14 h')
+    expect(formatRelativeHour(new Date(2026, 9, 24, 8).toISOString(), now)).toBe('sam. 24 8 h')
+  })
+
+  it('formate pourcentages et tonnes, et laisse zéro sans signe', () => {
+    expect(plain(formatPct(87))).toBe('87 %')
+    expect(plain(formatTonnes(2.14))).toBe('2,1 t')
+    expect(plain(formatSignedPct(0))).toBe('0 %')
   })
 })
