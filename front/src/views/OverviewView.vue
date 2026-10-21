@@ -1,20 +1,26 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { storeToRefs } from 'pinia'
 
 import { Card, CardContent } from '@/components/ui/card'
 import KpiCard from '@/components/overview/KpiCard.vue'
 import SitesTable from '@/components/overview/SitesTable.vue'
 import { formatEur, formatKw, formatSignedPct, formatTonnes } from '@/lib/format'
 import { fetchKpis, fetchOverview } from '@/services/dashboard'
+import { useOperationsStore } from '@/stores/operations'
 import type { FleetKpis, SiteOverview } from '@/types/energy'
 
 const router = useRouter()
 const kpis = ref<FleetKpis>()
 const rows = ref<SiteOverview[]>([])
 
+// Alertes et économies viennent du store partagé : elles suivent les actions de l'écran 3
+const operations = useOperationsStore()
+const { pendingAlerts, pendingCritical, savings } = storeToRefs(operations)
+
 onMounted(async () => {
-  ;[kpis.value, rows.value] = await Promise.all([fetchKpis(), fetchOverview()])
+  ;[kpis.value, rows.value] = await Promise.all([fetchKpis(), fetchOverview(), operations.load()])
 })
 
 const openSite = (siteId: string) => router.push({ name: 'sites', params: { siteId } })
@@ -42,14 +48,10 @@ const openSite = (siteId: string) => router.push({ name: 'sites', params: { site
       />
       <KpiCard
         label="Alertes actives"
-        :value="String(kpis.alertesActives)"
-        :hint="`dont ${kpis.alertesCritiques} critique${kpis.alertesCritiques > 1 ? 's' : ''}`"
+        :value="String(pendingAlerts.length)"
+        :hint="`dont ${pendingCritical} critique${pendingCritical > 1 ? 's' : ''}`"
       />
-      <KpiCard
-        label="Économies réalisées"
-        :value="formatEur(kpis.economiesMoisEur)"
-        hint="ce mois-ci"
-      />
+      <KpiCard label="Économies réalisées" :value="formatEur(savings)" hint="ce mois-ci" />
     </div>
 
     <Card class="py-2">

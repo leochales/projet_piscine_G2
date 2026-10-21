@@ -31,9 +31,6 @@ export interface FleetKpis {
   coutJourEur: number
   variationCoutPct: number // par rapport à la veille
   co2JourTonnes: number
-  alertesActives: number
-  alertesCritiques: number
-  economiesMoisEur: number
 }
 
 export interface ConsumptionPoint {

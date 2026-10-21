@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onWatcherCleanup, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -21,29 +21,51 @@ const router = useRouter()
 
 const SEUIL_PCT = 90
 
-const range = ref<SeriesRange>('48h')
+const range = ref<SeriesRange>('24h')
 const current = ref<SiteOverview>()
-const series = ref<SiteSeries>()
+// La courbe garde l'identifiant de son site : on ne mélange jamais deux sites
+const series = ref<{ siteId: string; data: SiteSeries }>()
 const costs = ref<{ coutEur: number; co2Tonnes: number }>()
 const allSites = ref<SiteOverview[]>([])
 const notFound = ref(false)
+
+// En type="single", recliquer sur le bouton actif le désélectionne : on garde alors le choix
+function setRange(value: unknown) {
+  if (value === '24h' || value === '7j') range.value = value
+}
+
+/** Drapeau « annulé » levé quand le watcher est relancé (changement de site ou de période) */
+function useCancelled() {
+  let cancelled = false
+  onWatcherCleanup(() => (cancelled = true))
+  return () => cancelled
+}
 
 // Sans identifiant (onglet « Sites »), on affiche la liste pour choisir un site
 watch(
   () => props.siteId,
   async (siteId) => {
+    const isCancelled = useCancelled()
     notFound.value = false
-    series.value = undefined
+    current.value = undefined
+    costs.value = undefined
+
     if (!siteId) {
-      allSites.value = await fetchOverview()
+      const sites = await fetchOverview()
+      if (!isCancelled()) allSites.value = sites
       return
     }
-    current.value = await fetchSiteOverview(siteId)
-    if (!current.value) {
+
+    const site = await fetchSiteOverview(siteId)
+    if (isCancelled()) return
+    if (!site) {
       notFound.value = true
       return
     }
-    costs.value = await fetchSiteCosts(siteId)
+    current.value = site
+
+    const siteCosts = await fetchSiteCosts(siteId)
+    if (!isCancelled()) costs.value = siteCosts
   },
   { immediate: true },
 )
@@ -51,16 +73,22 @@ watch(
 watch(
   [() => props.siteId, range],
   async ([siteId, r]) => {
-    if (siteId) series.value = await fetchSiteSeries(siteId, r)
+    const isCancelled = useCancelled()
+    series.value = undefined
+    if (!siteId) return
+    const data = await fetchSiteSeries(siteId, r)
+    if (!isCancelled()) series.value = { siteId, data }
   },
   { immediate: true },
 )
 
 // Pic de la prédiction et position de sa borne haute par rapport au seuil
 const peak = computed(() => {
-  if (!series.value || !current.value) return null
-  const top = series.value.predictions.reduce((a, b) => (b.kw > a.kw ? b : a))
-  const seuilKw = (current.value.site.capaciteKw * SEUIL_PCT) / 100
+  const site = current.value?.site
+  const predictions = series.value?.data.predictions
+  if (!site || !predictions?.length || series.value?.siteId !== site.id) return null
+  const top = predictions.reduce((a, b) => (b.kw > a.kw ? b : a))
+  const seuilKw = (site.capaciteKw * SEUIL_PCT) / 100
   return { ...top, depasseSeuil: top.hauteKw > seuilKw }
 })
 
@@ -96,11 +124,17 @@ const openSite = (siteId: string) => router.push({ name: 'sites', params: { site
           capacité {{ formatKw(current.site.capaciteKw) }}
         </span>
       </h1>
-      <ToggleGroup v-model="range" type="single" variant="outline" aria-label="Période affichée">
+      <ToggleGroup
+        :model-value="range"
+        type="single"
+        @update:model-value="setRange"
+        variant="outline"
+        aria-label="Période affichée"
+      >
         <ToggleGroupItem
-          value="48h"
+          value="24h"
           class="data-[state=on]:bg-primary data-[state=on]:text-primary-foreground"
-          >48 heures</ToggleGroupItem
+          >24 heures</ToggleGroupItem
         >
         <ToggleGroupItem
           value="7j"
@@ -114,7 +148,7 @@ const openSite = (siteId: string) => router.push({ name: 'sites', params: { site
       <CardContent>
         <ConsumptionChart
           v-if="series"
-          :series="series"
+          :series="series.data"
           :capacite-kw="current.site.capaciteKw"
           :seuil-pct="SEUIL_PCT"
         />

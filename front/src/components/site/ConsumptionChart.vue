@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Line } from 'vue-chartjs'
 import {
   CategoryScale,
@@ -27,23 +27,26 @@ const props = defineProps<{
 
 const seuil = computed(() => (props.capaciteKw * (props.seuilPct ?? 90)) / 100)
 
-// Chart.js dessine sur un canvas : il lui faut les couleurs réelles, pas les classes Tailwind
-const colors = ref({
-  ink: '#1f2933',
-  muted: '#616b78',
-  band: 'rgba(97,107,120,0.18)',
-  grid: '#e4e7eb',
-})
-onMounted(() => {
+// Chart.js dessine sur un canvas : il lui faut les couleurs réelles, pas les classes Tailwind.
+// Elles sont relues si le thème change (classe « dark » sur <html>).
+const colors = ref(readColors())
+
+function readColors() {
   const css = getComputedStyle(document.documentElement)
-  const v = (name: string) => css.getPropertyValue(name).trim()
-  colors.value = {
-    ink: v('--chart-1') || colors.value.ink,
-    muted: v('--chart-2') || colors.value.muted,
-    band: `color-mix(in oklch, ${v('--chart-3') || '#c9ced6'} 70%, transparent)`,
-    grid: v('--border') || colors.value.grid,
+  const v = (name: string, fallback: string) => css.getPropertyValue(name).trim() || fallback
+  return {
+    ink: v('--chart-canvas-line', '#1f2937'),
+    muted: v('--chart-canvas-muted', '#6b7280'),
+    band: v('--chart-canvas-band', 'rgba(156, 163, 175, 0.35)'),
+    grid: v('--chart-canvas-grid', '#e5e7eb'),
   }
-})
+}
+
+const themeObserver = new MutationObserver(() => (colors.value = readColors()))
+onMounted(() =>
+  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] }),
+)
+onBeforeUnmount(() => themeObserver.disconnect())
 
 // Un seul axe horaire : les mesures, puis les prédictions.
 // Le dernier point mesuré sert aussi de départ à la prédiction, pour que les courbes se rejoignent.
@@ -191,8 +194,8 @@ const options = computed<ChartOptions<'line'>>(() => ({
         prédiction
       </li>
       <li class="flex items-center gap-2">
-        <span class="h-3 w-5 rounded-sm bg-chart-3/70" aria-hidden="true" /> fourchette (valeur
-        basse – valeur haute)
+        <span class="h-3 w-5 rounded-sm bg-(--chart-canvas-band)" aria-hidden="true" /> fourchette
+        (valeur basse – valeur haute)
       </li>
     </ul>
   </div>

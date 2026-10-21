@@ -34,15 +34,22 @@ const pourcentage = (row: SiteOverview) => (row.consommationKw / row.site.capaci
       </TableRow>
     </TableHeader>
     <TableBody>
+      <!-- Toute la ligne est cliquable à la souris ; au clavier, c'est le lien de la 1re cellule -->
       <TableRow
         v-for="row in rows"
         :key="row.site.id"
         class="cursor-pointer"
-        tabindex="0"
         @click="emit('select', row.site.id)"
-        @keydown.enter="emit('select', row.site.id)"
       >
-        <TableCell class="font-medium">{{ row.site.id }}</TableCell>
+        <TableCell class="font-medium">
+          <RouterLink
+            :to="{ name: 'sites', params: { siteId: row.site.id } }"
+            class="rounded-sm hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+            @click.stop
+          >
+            {{ row.site.id }}
+          </RouterLink>
+        </TableCell>
         <TableCell>{{ SITE_TYPE_LABELS[row.site.type] }}</TableCell>
         <TableCell class="tabular-nums">{{ formatKw(row.consommationKw) }}</TableCell>
         <TableCell><CapacityBar :pourcentage="pourcentage(row)" /></TableCell>

@@ -79,6 +79,12 @@
   --chart-3: oklch(0.8 0.01 255);
   --chart-4: oklch(0.6 0.15 60);
   --chart-5: oklch(0.52 0.19 27);
+
+  /* Couleurs du graphique (canvas Chart.js) : hex/rgba, compris par tous les navigateurs */
+  --chart-canvas-line: #1f2937;
+  --chart-canvas-muted: #6b7280;
+  --chart-canvas-band: rgba(156, 163, 175, 0.35);
+  --chart-canvas-grid: #e5e7eb;
 }
 
 .dark {
@@ -110,6 +116,11 @@
   --chart-3: oklch(0.4 0.012 255);
   --chart-4: oklch(0.75 0.15 70);
   --chart-5: oklch(0.68 0.19 22);
+
+  --chart-canvas-line: #f3f4f6;
+  --chart-canvas-muted: #9ca3af;
+  --chart-canvas-band: rgba(156, 163, 175, 0.25);
+  --chart-canvas-grid: #374151;
 }
 
 @layer base {

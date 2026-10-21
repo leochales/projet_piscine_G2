@@ -23,6 +23,10 @@ const links = [
 ]
 
 const roles = Object.entries(ROLE_LABELS) as [Role, string][]
+
+// Changement de rôle réservé au développement (ou VITE_DEMO_ROLES=true) : en production,
+// le rôle viendra de Keycloak et ne doit pas être modifiable.
+const demoRoles = import.meta.env.DEV || import.meta.env.VITE_DEMO_ROLES === 'true'
 </script>
 
 <template>
@@ -45,7 +49,7 @@ const roles = Object.entries(ROLE_LABELS) as [Role, string][]
       </nav>
 
       <!-- Choix du rôle : démonstration en attendant Keycloak -->
-      <DropdownMenu>
+      <DropdownMenu v-if="demoRoles">
         <DropdownMenuTrigger as-child>
           <Button variant="ghost" size="sm" class="text-muted-foreground">
             {{ roleLabel }}
@@ -62,6 +66,7 @@ const roles = Object.entries(ROLE_LABELS) as [Role, string][]
           </DropdownMenuRadioGroup>
         </DropdownMenuContent>
       </DropdownMenu>
+      <span v-else class="text-sm text-muted-foreground">{{ roleLabel }}</span>
     </div>
   </header>
 </template>

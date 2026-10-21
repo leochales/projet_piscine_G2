@@ -56,9 +56,6 @@ export const kpis: FleetKpis = {
   coutJourEur: 6140,
   variationCoutPct: 4,
   co2JourTonnes: 2.1,
-  alertesActives: 3,
-  alertesCritiques: 1,
-  economiesMoisEur: 1250,
 }
 
 export const alerts: Alert[] = [

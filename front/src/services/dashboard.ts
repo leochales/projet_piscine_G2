@@ -4,7 +4,7 @@
 import * as mocks from '@/mocks/data'
 import type { Alert, FleetKpis, Recommendation, SiteOverview, SiteSeries } from '@/types/energy'
 
-export type SeriesRange = '48h' | '7j'
+export type SeriesRange = '24h' | '7j'
 
 const delay = <T>(value: T) => new Promise<T>((resolve) => setTimeout(() => resolve(value), 150))
 
@@ -16,7 +16,7 @@ export const fetchSiteOverview = (siteId: string): Promise<SiteOverview | undefi
   delay(mocks.overview.find((o) => o.site.id === siteId))
 
 export const fetchSiteSeries = (siteId: string, range: SeriesRange): Promise<SiteSeries> =>
-  delay(mocks.siteSeries(siteId, range === '48h' ? 24 : 7 * 24))
+  delay(mocks.siteSeries(siteId, range === '24h' ? 24 : 7 * 24))
 
 export const fetchSiteCosts = (siteId: string) => delay(mocks.siteCosts(siteId))
 
