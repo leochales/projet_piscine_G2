@@ -41,10 +41,11 @@ GRANT SELECT, INSERT ON ALL TABLES IN SCHEMA bronze TO etl;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA silver TO etl;
 GRANT USAGE ON ALL SEQUENCES IN SCHEMA bronze, silver TO etl;
 
-ALTER DEFAULT PRIVILEGES IN SCHEMA bronze GRANT SELECT, INSERT ON TABLES TO etl;
-ALTER DEFAULT PRIVILEGES IN SCHEMA silver
+ALTER DEFAULT PRIVILEGES FOR ROLE current_user IN SCHEMA bronze
+GRANT SELECT, INSERT ON TABLES TO etl;
+ALTER DEFAULT PRIVILEGES FOR ROLE current_user IN SCHEMA silver
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO etl;
-ALTER DEFAULT PRIVILEGES IN SCHEMA bronze, silver
+ALTER DEFAULT PRIVILEGES FOR ROLE current_user IN SCHEMA bronze, silver
 GRANT USAGE ON SEQUENCES TO etl;
 
 -- gold : « écriture » comprend SELECT et UPDATE, nécessaires aux mises à jour
@@ -68,7 +69,8 @@ GRANT SELECT (id_site, capacite_kw, statut) ON app.site TO etl;
 GRANT USAGE ON SCHEMA silver, gold TO model;
 
 GRANT SELECT ON ALL TABLES IN SCHEMA silver TO model;
-ALTER DEFAULT PRIVILEGES IN SCHEMA silver GRANT SELECT ON TABLES TO model;
+ALTER DEFAULT PRIVILEGES FOR ROLE current_user IN SCHEMA silver
+GRANT SELECT ON TABLES TO model;
 
 -- SELECT sur prediction : relire les anciennes prédictions pour mesurer
 -- le drift
@@ -87,25 +89,20 @@ GRANT USAGE ON ALL SEQUENCES IN SCHEMA gold TO model;
 GRANT USAGE ON SCHEMA gold, app TO api;
 
 GRANT SELECT ON ALL TABLES IN SCHEMA gold TO api;   -- tables et vues
-ALTER DEFAULT PRIVILEGES IN SCHEMA gold GRANT SELECT ON TABLES TO api;
+ALTER DEFAULT PRIVILEGES FOR ROLE current_user IN SCHEMA gold
+GRANT SELECT ON TABLES TO api;
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA app TO api;
 GRANT USAGE ON ALL SEQUENCES IN SCHEMA app TO api;
-ALTER DEFAULT PRIVILEGES IN SCHEMA app
+ALTER DEFAULT PRIVILEGES FOR ROLE current_user IN SCHEMA app
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO api;
-ALTER DEFAULT PRIVILEGES IN SCHEMA app GRANT USAGE ON SEQUENCES TO api;
+ALTER DEFAULT PRIVILEGES FOR ROLE current_user IN SCHEMA app
+GRANT USAGE ON SEQUENCES TO api;
 
 
 -- -----------------------------------------------------------------------------
 -- Sauvegarde : lecture seule sur tous les schémas (pg_dump)
 -- -----------------------------------------------------------------------------
-GRANT USAGE ON SCHEMA bronze, silver, gold, app TO backup;
-
-GRANT SELECT ON ALL TABLES IN SCHEMA bronze, silver, gold, app TO backup;
-GRANT SELECT ON ALL SEQUENCES IN SCHEMA bronze, silver, gold, app TO backup;
-ALTER DEFAULT PRIVILEGES IN SCHEMA bronze, silver, gold, app
-GRANT SELECT ON TABLES TO backup;
-ALTER DEFAULT PRIVILEGES IN SCHEMA bronze, silver, gold, app
-GRANT SELECT ON SEQUENCES TO backup;
+GRANT pg_read_all_data TO backup;
 
 COMMIT;

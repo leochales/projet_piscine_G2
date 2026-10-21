@@ -16,11 +16,11 @@ done
 
 # Les mots de passe passent par des variables psql (:'var'), échappées par psql
 psql -v ON_ERROR_STOP=1 \
-     --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
-     -v etl_pwd="$ETL_DB_PASSWORD" \
-     -v model_pwd="$MODEL_DB_PASSWORD" \
-     -v api_pwd="$API_DB_PASSWORD" \
-     -v backup_pwd="$BACKUP_DB_PASSWORD" <<'EOSQL'
+     --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<'EOSQL'
+\getenv etl_pwd ETL_DB_PASSWORD
+\getenv model_pwd MODEL_DB_PASSWORD
+\getenv api_pwd API_DB_PASSWORD
+\getenv backup_pwd BACKUP_DB_PASSWORD
 ALTER ROLE etl    PASSWORD :'etl_pwd';
 ALTER ROLE model  PASSWORD :'model_pwd';
 ALTER ROLE api    PASSWORD :'api_pwd';
