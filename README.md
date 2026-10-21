@@ -37,15 +37,51 @@ Une fois la base déployée, toute modification des droits passe par un script d
 
 ## Hooks pre-commit
 
-Les vérifications (ruff, sqlfluff, hadolint, prettier, eslint…) tournent avant chaque commit ; les tests (pytest, vitest, vue-tsc, mypy) avant chaque push. Configuration : `.pre-commit-config.yaml`.
+Les vérifications (ruff, sqlfluff, hadolint, prettier, eslint, gitleaks…) tournent avant chaque commit ; les tests avec couverture (pytest, vitest), le typage (mypy, vue-tsc) et Trivy avant chaque push. Configuration : `.pre-commit-config.yaml`.
+
+### Installation (une fois)
+
+Depuis la racine du dépôt, avec Python 3.14 et Node 22 ou plus :
 
 ```bash
-pip install pre-commit
-pre-commit install        # installe les hooks pre-commit et pre-push
-pre-commit run --all-files
+python3.14 -m venv .venv
+.venv/bin/pip install pre-commit -r api/requirements-dev.txt   # Windows : .venv\Scripts\pip
+npm --prefix front ci
+.venv/bin/pre-commit install   # installe les hooks pre-commit et pre-push
 ```
 
-Les hooks locaux appellent `python -m pytest`, `python -m mypy` et les scripts npm du front (`lint`, `format`, `type-check`, `test:unit` dans `front/package.json`) : pas de bash, ça fonctionne aussi sous Windows. Activer le venv du projet (avec pytest et mypy) avant de pousser. Sous Windows, si `python` ouvre le Microsoft Store, rouvrir le terminal (ou l'IDE) après l'installation de Python.
+Trivy doit aussi être installé sur la machine (`brew install trivy` sous macOS, voir la [documentation](https://trivy.dev/latest/getting-started/installation/) pour Windows et Linux).
+
+### Après un `git pull`
+
+Si `requirements*.txt` ou `front/package-lock.json` ont changé, réinstaller les dépendances, sinon les hooks du push échouent (par exemple `pytest-cov` ou `@vitest/coverage-v8` manquants) :
+
+```bash
+.venv/bin/pip install -r api/requirements-dev.txt
+npm --prefix front ci
+```
+
+### Bon à savoir
+
+- Pas besoin d'activer le venv : les hooks Python passent par `infra/pre-commit/run_in_venv.py`, qui trouve le `.venv` tout seul (macOS, Linux et Windows).
+- Pour lancer les vérifications à la main : `pre-commit run --all-files` (commit) et `pre-commit run --all-files --hook-stage pre-push` (push).
+- Sous Windows, si `python` ouvre le Microsoft Store, rouvrir le terminal (ou l'IDE) après l'installation de Python.
+
+## CI (GitHub Actions)
+
+Chaque pull request vers `develop` ou `main` lance :
+
+| Workflow | Ce qui bloque la PR |
+|---|---|
+| `pre-commit.yml` | lint et format (ruff, dont les règles de sécurité `S` de Bandit, eslint, prettier, sqlfluff, hadolint, gitleaks), tests et typage, **couverture sous 80 %** |
+| `security.yml` | vulnérabilité HIGH ou CRITICAL dans les fichiers, image Docker qui ne se construit pas ou qui contient une vulnérabilité corrigeable |
+| `api-contract.yml` | réponse de l'API qui ne respecte pas son contrat OpenAPI (Schemathesis) |
+
+La couverture porte sur la logique métier : `api/` et `common/` côté Python (`pyproject.toml`), `src/stores`, `src/lib` et `src/services` côté front (`front/vitest.config.ts`).
+
+Pour la consulter sur GitHub, ouvrir le workflow `pre-commit` de la PR : le tableau de couverture (back et front) est sur la page **Summary**, et les rapports HTML détaillés, avec les lignes non couvertes, sont à télécharger dans **Artifacts** (`coverage`, gardé 14 jours). En local, le rapport du front est dans `front/coverage/index.html`.
+
+Une vulnérabilité sans correctif disponible peut être acceptée **temporairement** dans `.trivyignore`, avec une justification et une date d'expiration (`exp:`).
 
 ## Règles de contribution
 

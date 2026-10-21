@@ -39,14 +39,10 @@ jobs:
         run: npm ci
         working-directory: front
 
-      # Nécessaire pour le hook trivy-secrets
-      - name: Install Trivy
-        run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
-
       # Lance tous les hooks du stage pre-commit, avec cache intégré
       - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
 
-  # Mêmes vérifications qu'au push (tests + typage)
+  # Mêmes vérifications qu'au push : tests avec seuil de couverture (80 %) et typage
   tests:
     runs-on: ubuntu-latest
     env:
@@ -57,9 +53,8 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
-          # Pas de cache pip tant qu'il n'y a ni requirements.txt ni pyproject.toml :
-          # setup-python échoue s'il ne trouve aucun fichier de dépendances.
-          # À réactiver ensuite avec cache: pip + cache-dependency-path.
+          cache: pip
+          cache-dependency-path: "**/requirements*.txt"
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: hashFiles('front/package-lock.json') != ''
@@ -84,3 +79,36 @@ jobs:
 
       - name: Run pre-push hooks
         run: pre-commit run --all-files --hook-stage pre-push --show-diff-on-failure
+
+      # Couverture affichée dans le résumé du workflow, même si les tests échouent
+      # (--fail-under=0 : le seuil est déjà vérifié par les hooks, ici on ne fait qu'afficher)
+      - name: Coverage summary
+        if: always()
+        run: |
+          {
+            echo "## Couverture des tests (seuil : 80 %)"
+            echo "### Back : api + common"
+            if [ -f .coverage ]; then
+              python -m coverage report --format=markdown --fail-under=0
+            else
+              echo "Pas de données (tests Python non lancés)."
+            fi
+            echo "### Front : stores, lib, services"
+            python infra/ci/coverage_summary.py front/coverage/coverage-summary.json
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -f .coverage ]; then
+            python -m coverage html --fail-under=0 -d coverage-html/back
+          fi
+
+      # Rapports HTML détaillés (lignes non couvertes en couleur), à télécharger
+      # depuis la page du workflow, rubrique « Artifacts »
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage
+          path: |
+            coverage-html/back
+            front/coverage
+          if-no-files-found: ignore
+          retention-days: 14
