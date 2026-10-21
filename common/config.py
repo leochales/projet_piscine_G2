@@ -20,6 +20,16 @@ class Settings(BaseSettings):
     # Derrière Traefik, front et API partagent la même origine : CORS inutile.
     api_cors_origins: list[str] = ["http://localhost:5173"]
 
+    # API Mock externe — source de données IoT simulées
+    mock_api_url: str = "http://10.43.43.80:8000/"
+
+    # ETL
+    etl_enabled: bool = True
+
+    # Tarif électrique pour le calcul du coût horaire (€/kWh)
+    # Source : tarif réglementé EDF TRV — pleine puissance, oct 2024
+    tarif_kwh_eur: float = 0.2516
+
     @property
     def database_url(self) -> str:
         password = self.postgres_password.get_secret_value()

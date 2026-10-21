@@ -18,7 +18,7 @@ ADD --checksum=sha256:a1c0af9872e8de89a1ce5c1b596e26c42917d5a2cf914d98faee2e2815
 # hadolint ignore=DL3006
 FROM supercronic-${TARGETARCH:-amd64} AS supercronic
 
-FROM python:3.14-slim
+FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

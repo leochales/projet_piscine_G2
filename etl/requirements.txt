@@ -1,0 +1,5 @@
+-r ../common/requirements.txt
+requests==2.32.4
+pandas==2.3.0
+numpy==2.3.0
+scikit-learn==1.6.1

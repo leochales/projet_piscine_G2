@@ -7,7 +7,7 @@ Plateforme MVP d'optimisation énergétique : collecte des mesures de 7 sites, p
 | Dossier   | Contenu                                         |
 |-----------|-------------------------------------------------|
 | `api/`    | API métier (Python, FastAPI)                    |
-| `model/`  | Service de prédiction (FastAPI, scikit-learn, MLflow) |
+| `model/`  | Service de prédiction (FastAPI, scikit-learn)   |
 | `etl/`    | Chargement et nettoyage des données (pandas)    |
 | `common/` | Code Python partagé (schémas, accès base, config) |
 | `front/`  | Tableau de bord (Vue 3)                         |
