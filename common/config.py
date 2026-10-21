@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     # Derrière Traefik, front et API partagent la même origine : CORS inutile.
     api_cors_origins: list[str] = ["http://localhost:5173"]
 
+    # Prix de l'électricité en € HT par kWh (tarif fixe provisoire)
+    prix_kwh_eur: float
+
     @property
     def database_url(self) -> str:
         password = self.postgres_password.get_secret_value()
