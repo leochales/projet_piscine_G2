@@ -42,6 +42,7 @@ def test_get_engine_utilise_l_url_de_la_configuration(
     monkeypatch.setenv("POSTGRES_USER", "u")
     monkeypatch.setenv("POSTGRES_PASSWORD", "p")
     monkeypatch.setenv("POSTGRES_DB", "d")
+    monkeypatch.setenv("POSTGRES_HOST", "localhost")
     db.get_settings.cache_clear()
     db.get_engine.cache_clear()
     try:
