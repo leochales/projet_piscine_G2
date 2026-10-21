@@ -25,6 +25,16 @@ cp .env.example .env      # PowerShell : Copy-Item .env.example .env
 docker compose up --build
 ```
 
+### Base de données
+
+Les scripts de `db/` (schémas, comptes des services, droits) ne sont exécutés par PostgreSQL qu'au premier démarrage, quand le volume est vide. Après une modification de ces scripts, ou si `api` et `etl` échouent avec `password authentication failed`, recréer la base (**supprime les données locales**) :
+
+```bash
+docker compose -f compose-local.yml down -v
+```
+
+Une fois la base déployée, toute modification des droits passe par un script de migration, pas par ces fichiers d'initialisation.
+
 ## Hooks pre-commit
 
 Les vérifications (ruff, sqlfluff, hadolint, prettier, eslint…) tournent avant chaque commit ; les tests (pytest, vitest, vue-tsc, mypy) avant chaque push. Configuration : `.pre-commit-config.yaml`.
