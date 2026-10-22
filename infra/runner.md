@@ -51,15 +51,21 @@ Le dépôt est privé sur un plan Free, sans *GitHub Environments*. Les secrets 
 | `DEV_MODEL_DB_PASSWORD` / `PROD_MODEL_DB_PASSWORD`   | Compte `model`              |
 | `DEV_API_DB_PASSWORD` / `PROD_API_DB_PASSWORD`       | Compte `api`                |
 | `DEV_BACKUP_DB_PASSWORD` / `PROD_BACKUP_DB_PASSWORD` | Compte `backup`             |
+| `DEV_KEYCLOAK_DB_PASSWORD` / `PROD_KEYCLOAK_DB_PASSWORD` | Compte `keycloak` (base `keycloak`) |
+| `DEV_KEYCLOAK_ADMIN_PASSWORD` / `PROD_KEYCLOAK_ADMIN_PASSWORD` | Administrateur initial de Keycloak |
+| `DEV_KEYCLOAK_ADMIN_CLIENT_SECRET` / `PROD_KEYCLOAK_ADMIN_CLIENT_SECRET` | Secret du client `enervision-admin` (création des comptes par l'API) |
 
 | Variables                                    | Obligatoire | Rôle                                          |
 |----------------------------------------------|-------------|-----------------------------------------------|
 | `DEV_POSTGRES_USER` / `PROD_POSTGRES_USER`   | oui         | Nom du superutilisateur PostgreSQL            |
 | `DEV_POSTGRES_DB` / `PROD_POSTGRES_DB`       | oui         | Nom de la base                                |
 | `DEV_ETL_ENABLED` / `PROD_ETL_ENABLED`       | non         | `false` pour désactiver l'ETL (défaut `true`) |
+| `DEV_KEYCLOAK_ADMIN` / `PROD_KEYCLOAK_ADMIN` | oui         | Identifiant de l'administrateur initial de Keycloak |
 | `VM_IP`                                      | oui         | IP de la VM, inscrite dans le certificat      |
 
-Utiliser des mots de passe différents entre dev et prod. Ils ne sont appliqués qu'à la **création** de la base (volume vide) : modifier un secret ensuite ne change pas le mot de passe en base.
+Utiliser des mots de passe différents entre dev et prod. Ils ne sont appliqués qu'à la **création** de la base (volume vide) : modifier un secret ensuite ne change pas le mot de passe en base. Exceptions :
+- `KEYCLOAK_DB_PASSWORD` est réappliqué à chaque déploiement par `db/08_keycloak.sh` ;
+- `KEYCLOAK_ADMIN` et `KEYCLOAK_ADMIN_PASSWORD` ne servent qu'au premier démarrage de Keycloak, pour créer l'administrateur du realm `master`. Le modifier ensuite se fait dans la console de Keycloak.
 
 ---
 
@@ -68,7 +74,7 @@ Utiliser des mots de passe différents entre dev et prod. Ils ne sont appliqués
 1. **Contrôles**, sur des runners GitHub : `pre-commit.yml` (lint, tests), `security.yml` (Trivy sur le code et les images), `api-contract.yml` (Schemathesis). Le déploiement ne démarre que s'ils réussissent tous.
 2. **Certificat HTTPS** : auto-signé pour `VM_IP`, stocké dans `~/traefik-certs`, régénéré s'il expire sous 30 jours ou si `VM_IP` change.
 3. **Traefik** : démarré s'il ne tourne pas. Il lit Docker via `docker-socket-proxy` (lecture seule, réseau interne), sans accès direct au socket.
-4. **Application** : vérification des secrets, puis `docker compose -f compose-prod.yml build --pull` et `up -d --remove-orphans`.
+4. **Application** : vérification des secrets, `docker compose -f compose-prod.yml build --pull`, démarrage de Postgres, création de la base `keycloak` si elle manque (`db/08_keycloak.sh`), puis `up -d --remove-orphans`.
 5. **Santé** : `https://localhost:<port>/api/health` pendant 60 s. En cas d'échec, le job affiche l'état des conteneurs et les logs de l'API.
 6. **Nettoyage** : images orphelines et cache de build de plus de 7 jours.
 

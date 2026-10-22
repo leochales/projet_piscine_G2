@@ -98,10 +98,16 @@ jobs:
           MODEL_DB_PASSWORD: ${{ secrets[format('{0}_MODEL_DB_PASSWORD', env.ENV_PREFIX)] }}
           API_DB_PASSWORD: ${{ secrets[format('{0}_API_DB_PASSWORD', env.ENV_PREFIX)] }}
           BACKUP_DB_PASSWORD: ${{ secrets[format('{0}_BACKUP_DB_PASSWORD', env.ENV_PREFIX)] }}
+          KEYCLOAK_ADMIN: ${{ vars[format('{0}_KEYCLOAK_ADMIN', env.ENV_PREFIX)] }}
+          KEYCLOAK_ADMIN_PASSWORD: ${{ secrets[format('{0}_KEYCLOAK_ADMIN_PASSWORD', env.ENV_PREFIX)] }}
+          KEYCLOAK_DB_PASSWORD: ${{ secrets[format('{0}_KEYCLOAK_DB_PASSWORD', env.ENV_PREFIX)] }}
+          KEYCLOAK_ADMIN_CLIENT_SECRET: ${{ secrets[format('{0}_KEYCLOAK_ADMIN_CLIENT_SECRET', env.ENV_PREFIX)] }}
         run: |
           # ETL_ENABLED est facultatif (true par défaut dans compose-prod.yml)
           for key in POSTGRES_USER POSTGRES_DB POSTGRES_PASSWORD ETL_DB_PASSWORD \
-                     MODEL_DB_PASSWORD API_DB_PASSWORD BACKUP_DB_PASSWORD; do
+                     MODEL_DB_PASSWORD API_DB_PASSWORD BACKUP_DB_PASSWORD \
+                     KEYCLOAK_ADMIN KEYCLOAK_ADMIN_PASSWORD KEYCLOAK_DB_PASSWORD \
+                     KEYCLOAK_ADMIN_CLIENT_SECRET; do
             if [ -z "${!key}" ]; then
               echo "::error::${ENV_PREFIX}_${key} manquant (Settings → Secrets and variables → Actions)"
               exit 1
@@ -109,6 +115,15 @@ jobs:
           done
           # --pull : images de base à jour, comme celles scannées par security.yml
           docker compose -f compose-prod.yml build --pull
+          docker compose -f compose-prod.yml up -d db
+          for _ in $(seq 1 60); do
+            if docker compose -f compose-prod.yml exec -T db \
+                 pg_isready -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          docker compose -f compose-prod.yml exec -T db bash /docker-entrypoint-initdb.d/08_keycloak.sh
           docker compose -f compose-prod.yml up -d --remove-orphans
 
       # Passe par Traefik comme un client (-k : certificat auto-signé)
