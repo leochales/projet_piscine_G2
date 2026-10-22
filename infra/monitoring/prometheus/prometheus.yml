@@ -1,0 +1,24 @@
+# Prometheus : cibles lues toutes les 15 s, par leur nom de service Docker
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Requêtes, erreurs et temps de réponse de chaque service routé (front, API...)
+  - job_name: traefik
+    static_configs:
+      - targets: ["traefik:8082"]
+
+  # Métriques de l'API (/metrics, non exposé par Traefik)
+  - job_name: api
+    static_configs:
+      - targets: ["api:8000"]
+
+  # État de PostgreSQL, via le compte monitoring (rôle pg_monitor)
+  - job_name: postgres
+    static_configs:
+      - targets: ["postgres-exporter:9187"]

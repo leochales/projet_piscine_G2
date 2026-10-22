@@ -35,6 +35,34 @@ docker compose -f compose-local.yml down -v
 
 Une fois la base déployée, toute modification des droits passe par un script de migration, pas par ces fichiers d'initialisation.
 
+## Supervision (Prometheus, Grafana, Loki)
+
+Non démarrée par défaut (environ 1 Go de mémoire) : elle est dans le profil Compose `monitoring`.
+
+```bash
+docker compose -f compose-local.yml --profile monitoring up -d
+```
+
+Grafana : http://localhost/grafana (compte `admin`, mot de passe `GRAFANA_ADMIN_PASSWORD` du `.env`). Le tableau de bord **EnerVision : socle** montre :
+
+- les requêtes, erreurs 5xx et temps de réponse de chaque service routé par Traefik ;
+- le détail par route de l'API ;
+- l'état de PostgreSQL (connexion, taille, connexions) ;
+- les logs de tous les conteneurs EnerVision, filtrables par service et par niveau.
+
+| Composant | Rôle | Configuration |
+|---|---|---|
+| Prometheus | collecte les métriques (Traefik, API, PostgreSQL), conservées 15 jours | `infra/monitoring/prometheus/` |
+| postgres-exporter | statistiques de PostgreSQL, via le compte `monitoring` (rôle `pg_monitor`, aucune donnée métier) | `db/06_roles.sql` |
+| Alloy | lit les logs des conteneurs EnerVision et les envoie à Loki | `infra/monitoring/alloy/` |
+| Loki | stocke les logs, conservés 7 jours | `infra/monitoring/loki/` |
+| Grafana | tableaux de bord, chargés depuis le dépôt à chaque démarrage | `infra/monitoring/grafana/` |
+
+- Les services Python écrivent leurs logs en JSON avec `common/logs.py` (`configure_logging("nom-du-service")`) : Grafana peut alors filtrer par niveau.
+- L'API expose ses métriques sur `/metrics`, hors de `/api` : Traefik ne les publie pas, seul Prometheus les lit.
+- Le compte `monitoring` n'existe que dans une base créée après l'ajout de la supervision. Sur une base plus ancienne, PostgreSQL apparaît « injoignable » dans Grafana : recréer la base (voir **Base de données** ci-dessus).
+- Un tableau de bord modifié dans Grafana n'est pas sauvegardé : exporter son JSON dans `infra/monitoring/grafana/dashboards/`.
+
 ## Hooks pre-commit
 
 Les vérifications (ruff, sqlfluff, hadolint, prettier, eslint, gitleaks…) tournent avant chaque commit ; les tests avec couverture (pytest, vitest), le typage (mypy, vue-tsc) et Trivy avant chaque push. Configuration : `.pre-commit-config.yaml`.

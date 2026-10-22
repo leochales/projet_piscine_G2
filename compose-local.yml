@@ -2,9 +2,14 @@
 # Les variables ${...} sont lues dans le fichier .env (copie de env.example).
 #
 # Point d'entrée unique : Traefik sur http://localhost
-#   /       -> front (nginx)
-#   /api    -> API FastAPI (Swagger : /api/docs)
+#   /         -> front (nginx)
+#   /api      -> API FastAPI (Swagger : /api/docs)
+#   /grafana  -> Grafana (profil monitoring)
 # Tableau de bord Traefik : http://localhost:8080
+#
+# Supervision (Prometheus, Grafana, Loki, Alloy, postgres-exporter) : profil « monitoring »,
+# non démarré par défaut (~1 Go de mémoire). L'activer avec :
+#   docker compose -f compose-local.yml --profile monitoring up -d
 services:
   traefik:
     image: traefik:v3.7
@@ -18,6 +23,11 @@ services:
       # Tableau de bord sans authentification : réservé au local (port lié à 127.0.0.1)
       - --api.dashboard=true
       - --api.insecure=true
+      # Métriques Prometheus sur un entrypoint interne (port 8082, non publié)
+      - --metrics.prometheus=true
+      - --metrics.prometheus.entrypoint=metrics
+      - --metrics.prometheus.addrouterslabels=true
+      - --entrypoints.metrics.address=:8082
     ports:
       - "127.0.0.1:${HTTP_PORT:-80}:80"
       - "127.0.0.1:${TRAEFIK_DASHBOARD_PORT:-8080}:8080"
@@ -39,6 +49,8 @@ services:
       MODEL_DB_PASSWORD: ${MODEL_DB_PASSWORD}
       API_DB_PASSWORD: ${API_DB_PASSWORD}
       BACKUP_DB_PASSWORD: ${BACKUP_DB_PASSWORD}
+      # Facultatif : sans lui, le compte monitoring ne peut pas se connecter
+      MONITORING_DB_PASSWORD: ${MONITORING_DB_PASSWORD:-}
     volumes:
       - postgresql_data:/var/lib/postgresql
       - ./db:/docker-entrypoint-initdb.d:ro
@@ -81,6 +93,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: api
       POSTGRES_PASSWORD: ${API_DB_PASSWORD}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
     labels:
       - traefik.enable=true
       - traefik.http.routers.api.rule=PathPrefix(`/api`)
@@ -128,9 +141,100 @@ services:
     networks:
       - proxy_network             # pas d'accès à la base
 
+  # ---------------------------------------------------------------------------
+  # Supervision (profil monitoring)
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    container_name: prometheus
+    profiles: [monitoring]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+    volumes:
+      - ./infra/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - monitoring_network
+      - proxy_network             # lit les métriques de Traefik et de l'API
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.20.1
+    container_name: postgres-exporter
+    profiles: [monitoring]
+    environment:
+      DATA_SOURCE_URI: db:5432/${POSTGRES_DB}?sslmode=disable
+      DATA_SOURCE_USER: monitoring
+      DATA_SOURCE_PASS: ${MONITORING_DB_PASSWORD:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - postgres_network
+      - monitoring_network
+
+  loki:
+    image: grafana/loki:3.7.8
+    container_name: loki
+    profiles: [monitoring]
+    command: -config.file=/etc/loki/config.yml
+    volumes:
+      - ./infra/monitoring/loki/config.yml:/etc/loki/config.yml:ro
+      - loki_data:/loki
+    networks:
+      - monitoring_network
+
+  alloy:
+    image: grafana/alloy:v1.20.1
+    container_name: alloy
+    profiles: [monitoring]
+    command: run /etc/alloy/config.alloy --storage.path=/var/lib/alloy/data
+    volumes:
+      - ./infra/monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      # Lecture seule : Alloy liste les conteneurs et lit leurs logs
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - loki
+    networks:
+      - monitoring_network
+
+  grafana:
+    image: grafana/grafana:13.2.3
+    container_name: grafana
+    profiles: [monitoring]
+    environment:
+      # Servi sous /grafana par Traefik (sans retirer le préfixe)
+      GF_SERVER_ROOT_URL: http://localhost:${HTTP_PORT:-80}/grafana/
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-changeme}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+    volumes:
+      # Sources de données et tableaux de bord décrits dans le dépôt
+      - ./infra/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.grafana.rule=PathPrefix(`/grafana`)
+      - traefik.http.routers.grafana.entrypoints=web
+      - traefik.http.services.grafana.loadbalancer.server.port=3000
+    depends_on:
+      - prometheus
+      - loki
+    networks:
+      - monitoring_network
+      - proxy_network             # joignable par Traefik
+
 volumes:
   postgresql_data:
   pgadmin_data:
+  prometheus_data:
+  loki_data:
+  grafana_data:
 
 networks:
   postgres_network:
@@ -139,3 +243,5 @@ networks:
   # (--providers.docker.network) ne le reconnaît pas pour l'API, branchée sur deux réseaux.
   proxy_network:
     name: enervision_proxy
+  # Réseau de la supervision : Prometheus, Grafana, Loki, Alloy et postgres-exporter
+  monitoring_network:
