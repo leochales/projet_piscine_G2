@@ -1,7 +1,7 @@
 -- =============================================================================
 -- EnerVision : comptes des services et droits d'accès
 -- Les comptes sont créés SANS mot de passe : ils sont définis par
--- 03_passwords.sh à partir des variables d'environnement (secrets GitHub).
+-- 07_passwords.sh à partir des variables d'environnement (secrets GitHub).
 -- =============================================================================
 
 BEGIN;
