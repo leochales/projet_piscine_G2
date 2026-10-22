@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path
 from pydantic import AwareDatetime, BaseModel, BeforeValidator
@@ -28,9 +28,11 @@ DateIso = Annotated[AwareDatetime, BeforeValidator(lire_date_iso)]
 class DerniereMesure(BaseModel):
     id_site: str
     nom: str
+    type: str
+    capacite_kw: float
     horodatage: datetime
     consommation_kw: float | None
-    data_quality: str
+    data_quality: Literal["good", "partial", "degraded", "critical"]
 
 
 @router.get("/derniere-mesure", summary="Dernière mesure de chaque site")
@@ -39,7 +41,8 @@ def lister_dernieres_mesures(
 ) -> list[DerniereMesure]:
     requete = text(
         """
-        SELECT m.id_site, s.nom, m.horodatage, m.consommation_kw, m.data_quality
+                SELECT m.id_site, s.nom, s.type, s.capacite_kw,
+               m.horodatage, m.consommation_kw, m.data_quality
         FROM gold.derniere_mesure AS m
         JOIN app.site AS s ON s.id_site = m.id_site
         ORDER BY m.id_site

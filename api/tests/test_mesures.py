@@ -41,6 +41,8 @@ def test_derniere_mesure_renvoie_une_ligne_par_site(client: TestClient) -> None:
         {
             "id_site": "SITE001",
             "nom": "Bureau Paris La Défense",
+            "type": "office",
+            "capacite_kw": 200.0,
             "horodatage": datetime(2026, 10, 21, 14, 30, tzinfo=UTC),
             "consommation_kw": 87.34,
             "data_quality": "good",
@@ -48,6 +50,8 @@ def test_derniere_mesure_renvoie_une_ligne_par_site(client: TestClient) -> None:
         {
             "id_site": "SITE002",
             "nom": "Usine Lyon Vénissieux",
+            "type": "factory",
+            "capacite_kw": 1000.0,
             "horodatage": datetime(2026, 10, 21, 14, 30, tzinfo=UTC),
             "consommation_kw": None,
             "data_quality": "degraded",
@@ -61,6 +65,8 @@ def test_derniere_mesure_renvoie_une_ligne_par_site(client: TestClient) -> None:
     corps = response.json()
     assert len(corps) == 2
     assert corps[0]["nom"] == "Bureau Paris La Défense"
+    assert corps[0]["type"] == "office"
+    assert corps[0]["capacite_kw"] == 200.0
     assert corps[0]["horodatage"] == "2026-10-21T14:30:00Z"
     assert corps[1]["consommation_kw"] is None
 
