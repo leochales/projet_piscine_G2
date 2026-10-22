@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     # Prix de l'électricité en € HT par kWh (tarif fixe provisoire)
     prix_kwh_eur: Decimal = Decimal("0.14")
 
+    # API Mock externe — source de données IoT simulées
+    mock_api_url: str = "http://10.43.43.80:8000"
+
     @property
     def database_url(self) -> str:
         password = self.postgres_password.get_secret_value()
