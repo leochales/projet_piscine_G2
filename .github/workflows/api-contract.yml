@@ -54,7 +54,7 @@ jobs:
         env:
           PGPASSWORD: ci
         run: |
-          for f in db/01_schema.sql db/02_roles.sql; do
+          for f in db/*.sql; do
             psql -v ON_ERROR_STOP=1 -h localhost -U enervision -d enervision -f "$f"
           done
 
