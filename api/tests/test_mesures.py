@@ -1,12 +1,14 @@
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from api.main import app
+from api.routers.mesures import calculer_periode
 from common.db import get_session
 
 
@@ -119,5 +121,49 @@ def test_consommation_refuse_un_nombre_a_la_place_d_une_date(
     app.dependency_overrides[get_session] = lambda: FausseSession([])
 
     response = client.get("/api/sites/SITE001/consommation?fin=0.5")
+
+    assert response.status_code == 422
+
+
+def test_periode_par_defaut_couvre_24_heures_completes() -> None:
+    debut, fin = calculer_periode(None, None)
+
+    assert (fin.minute, fin.second, fin.microsecond) == (0, 0, 0)
+    assert fin - debut == timedelta(hours=24)
+
+
+def test_periode_refuse_une_fin_trop_ancienne() -> None:
+    with pytest.raises(HTTPException) as erreur:
+        calculer_periode(None, datetime(1, 1, 1, tzinfo=UTC))
+
+    assert erreur.value.status_code == 400
+
+
+def test_consommation_refuse_debut_apres_fin(client: TestClient) -> None:
+    app.dependency_overrides[get_session] = lambda: FausseSession([])
+    periode = {"debut": "2026-10-21T12:00:00Z", "fin": "2026-10-20T12:00:00Z"}
+
+    response = client.get("/api/sites/SITE001/consommation", params=periode)
+
+    assert response.status_code == 400
+
+
+def test_consommation_refuse_une_periode_de_plus_de_31_jours(
+    client: TestClient,
+) -> None:
+    app.dependency_overrides[get_session] = lambda: FausseSession([])
+    periode = {"debut": "2026-01-01T00:00:00Z", "fin": "2026-10-20T00:00:00Z"}
+
+    response = client.get("/api/sites/SITE001/consommation", params=periode)
+
+    assert response.status_code == 400
+
+
+def test_consommation_refuse_une_date_sans_fuseau(client: TestClient) -> None:
+    app.dependency_overrides[get_session] = lambda: FausseSession([])
+
+    response = client.get(
+        "/api/sites/SITE001/consommation", params={"fin": "2026-10-21T12:00:00"}
+    )
 
     assert response.status_code == 422

@@ -4,8 +4,8 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Path
-from pydantic import BaseModel, BeforeValidator
+from fastapi import APIRouter, Depends, HTTPException, Path
+from pydantic import AwareDatetime, BaseModel, BeforeValidator
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -22,7 +22,7 @@ def lire_date_iso(valeur: Any) -> datetime:
     return datetime.fromisoformat(valeur)
 
 
-DateIso = Annotated[datetime, BeforeValidator(lire_date_iso)]
+DateIso = Annotated[AwareDatetime, BeforeValidator(lire_date_iso)]
 
 
 class DerniereMesure(BaseModel):
@@ -61,7 +61,33 @@ def calculer_cout(consommation_kwh: Decimal | None, prix_kwh: float) -> float | 
     return round(float(consommation_kwh) * prix_kwh, 2)
 
 
-@router.get("/{id_site}/consommation", summary="Consommation horaire d'un site")
+PERIODE_PAR_DEFAUT = timedelta(hours=24)
+PERIODE_MAX = timedelta(days=31)
+
+
+def calculer_periode(
+    debut: datetime | None, fin: datetime | None
+) -> tuple[datetime, datetime]:
+    """Complète et contrôle la période demandée. Lève une erreur 400 si elle est invalide."""
+    if fin is None:
+        fin = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+    if debut is None:
+        try:
+            debut = fin - PERIODE_PAR_DEFAUT
+        except OverflowError:
+            raise HTTPException(400, "fin est trop ancienne") from None
+    if debut >= fin:
+        raise HTTPException(400, "debut doit être avant fin")
+    if fin - debut > PERIODE_MAX:
+        raise HTTPException(400, "la période est limitée à 31 jours")
+    return debut, fin
+
+
+@router.get(
+    "/{id_site}/consommation",
+    summary="Consommation horaire d'un site",
+    responses={400: {"description": "Période invalide"}},
+)
 def lister_consommation_horaire(
     id_site: Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{1,20}$")],
     session: Annotated[Session, Depends(get_session)],
@@ -69,8 +95,7 @@ def lister_consommation_horaire(
     debut: DateIso | None = None,
     fin: DateIso | None = None,
 ) -> list[ConsommationHoraire]:
-    fin = fin or datetime.now(UTC)
-    debut = debut or fin - timedelta(hours=24)
+    debut, fin = calculer_periode(debut, fin)
 
     requete = text(
         """
