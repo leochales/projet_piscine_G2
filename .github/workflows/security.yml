@@ -3,9 +3,12 @@ name: Security Scan
 on:
   pull_request:
     branches: [develop, main]
+  # Appelé par deploy.yml : rien n'est déployé sans ce scan
+  workflow_call:
 
+# Nom de groupe fixe : voir pre-commit.yml
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: security-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:

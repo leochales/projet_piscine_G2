@@ -1,0 +1,104 @@
+# Usage : docker compose -f compose-prod.yml up -d --build
+# Lancé par le workflow .github/workflows/deploy.yml sur la VM (runner auto-hébergé).
+# Pas de fichier .env : le workflow passe les variables (DEPLOY_ENV, POSTGRES_USER, mots de
+# passe…) dans l'environnement, depuis les secrets et variables GitHub DEV_* / PROD_*.
+#
+# Différences avec compose-local.yml :
+#   - pas de pgAdmin ni de Traefik : le Traefik partagé (infra/traefik/compose.yml) sert
+#     tous les environnements en HTTPS, chacun sur son entrypoint (https-<DEPLOY_ENV>)
+#   - Postgres n'est pas exposé hors du réseau Docker
+#
+# Plusieurs environnements cohabitent sur la VM : chacun est un projet Docker distinct
+# (enervision-<DEPLOY_ENV>), avec ses propres conteneurs, volumes et base.
+# Les noms de routeurs Traefik sont préfixés par le projet pour rester uniques.
+name: enervision-${DEPLOY_ENV:?DEPLOY_ENV manquant (dev ou prod)}
+
+services:
+  db:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      ETL_DB_PASSWORD: ${ETL_DB_PASSWORD}
+      MODEL_DB_PASSWORD: ${MODEL_DB_PASSWORD}
+      API_DB_PASSWORD: ${API_DB_PASSWORD}
+      BACKUP_DB_PASSWORD: ${BACKUP_DB_PASSWORD}
+    volumes:
+      - postgresql_data:/var/lib/postgresql
+      # Scripts d'init : exécutés seulement au premier démarrage (volume vide)
+      - ./db:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - postgres_network
+
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: api
+      POSTGRES_PASSWORD: ${API_DB_PASSWORD}
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.enervision-${DEPLOY_ENV}-api.rule=PathPrefix(`/api`)
+      - traefik.http.routers.enervision-${DEPLOY_ENV}-api.entrypoints=https-${DEPLOY_ENV}
+      - traefik.http.services.enervision-${DEPLOY_ENV}-api.loadbalancer.server.port=8000
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - postgres_network
+      - traefik_public
+
+  etl:
+    build:
+      context: .
+      dockerfile: etl/Dockerfile
+    restart: unless-stopped
+    environment:
+      ETL_ENABLED: ${ETL_ENABLED:-true}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: etl
+      POSTGRES_PASSWORD: ${ETL_DB_PASSWORD}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - postgres_network
+
+  front:
+    build:
+      context: ./front
+      args:
+        VITE_API_URL: ${VITE_API_URL:-/api}
+    restart: unless-stopped
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.enervision-${DEPLOY_ENV}-front.rule=PathPrefix(`/`)
+      - traefik.http.routers.enervision-${DEPLOY_ENV}-front.entrypoints=https-${DEPLOY_ENV}
+      - traefik.http.services.enervision-${DEPLOY_ENV}-front.loadbalancer.server.port=80
+    depends_on:
+      - api
+    networks:
+      - traefik_public
+
+volumes:
+  postgresql_data:
+
+networks:
+  postgres_network:
+  # Créé par infra/traefik/compose.yml
+  traefik_public:
+    external: true
