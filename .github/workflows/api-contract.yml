@@ -7,9 +7,12 @@ name: API contract
 on:
   pull_request:
     branches: [develop, main]
+  # Appelé par deploy.yml : rien n'est déployé sans ce contrôle
+  workflow_call:
 
+# Nom de groupe fixe : voir pre-commit.yml
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: api-contract-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:

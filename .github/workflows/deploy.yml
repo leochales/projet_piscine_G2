@@ -13,6 +13,9 @@ permissions:
   contents: read
 
 jobs:
+  # Les conditions if: évitent les déploiements par erreur depuis une autre branche.
+  # Elles ne protègent pas les secrets PROD_* : sans GitHub Environments (plan Free),
+  # tout collaborateur ayant les droits d'écriture peut les lire (voir infra/runner.md).
   checks:
     name: Checks
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
@@ -23,9 +26,14 @@ jobs:
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
     uses: ./.github/workflows/security.yml
 
+  api-contract:
+    name: API contract
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+    uses: ./.github/workflows/api-contract.yml
+
   deploy:
     name: Deploy ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
-    needs: [checks, security]
+    needs: [checks, security, api-contract]
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
     runs-on: [self-hosted, linux]
     timeout-minutes: 30
@@ -54,9 +62,11 @@ jobs:
           cert_dir="$HOME/traefik-certs"
           echo "TLS_CERT_DIR=$cert_dir" >> "$GITHUB_ENV"
           cert="$cert_dir/cert.pem"
-          # Conservé s'il couvre l'IP actuelle et reste valide plus de 30 jours
+          # Conservé s'il couvre l'IP actuelle et reste valide plus de 30 jours.
+          # Une entrée SAN par ligne, comparée en entier et sans regex (-xF).
           if openssl x509 -in "$cert" -noout -checkend 2592000 >/dev/null 2>&1 \
-             && openssl x509 -in "$cert" -noout -ext subjectAltName | grep -q "IP Address:${VM_IP}\$"; then
+             && openssl x509 -in "$cert" -noout -ext subjectAltName | tr ',' '\n' | sed 's/^ *//' \
+                | grep -qxF "IP Address:${VM_IP}"; then
             echo "Certificat existant conservé"
             exit 0
           fi
@@ -97,12 +107,14 @@ jobs:
               exit 1
             fi
           done
-          docker compose -f compose-prod.yml up -d --build --remove-orphans
+          # --pull : images de base à jour, comme celles scannées par security.yml
+          docker compose -f compose-prod.yml build --pull
+          docker compose -f compose-prod.yml up -d --remove-orphans
 
       # Passe par Traefik comme un client (-k : certificat auto-signé)
       - name: Vérifier la santé de l'API
         run: |
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             if curl -fsSk "https://localhost:${HTTPS_PORT}/api/health"; then
               exit 0
             fi
@@ -114,6 +126,9 @@ jobs:
           docker compose -p "enervision-${DEPLOY_ENV}" logs --tail=50 api
           exit 1
 
+      # Images orphelines et cache de build de plus de 7 jours
       - name: Nettoyer les anciennes images
         if: always()
-        run: docker image prune -f
+        run: |
+          docker image prune -f
+          docker builder prune -f --filter until=168h

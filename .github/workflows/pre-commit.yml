@@ -33,7 +33,9 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: hashFiles('front/package-lock.json') != ''
         with:
-          node-version: "22"
+          node-version: "24"
+          # Dernier correctif de sécurité, pas la version en cache sur le runner
+          check-latest: true
           cache: npm
           cache-dependency-path: front/package-lock.json
 
@@ -63,7 +65,9 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: hashFiles('front/package-lock.json') != ''
         with:
-          node-version: "22"
+          node-version: "24"
+          # Dernier correctif de sécurité, pas la version en cache sur le runner
+          check-latest: true
           cache: npm
           cache-dependency-path: front/package-lock.json
 

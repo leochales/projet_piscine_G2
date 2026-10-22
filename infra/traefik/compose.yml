@@ -10,14 +10,31 @@
 #
 # Chaque environnement rejoint le réseau traefik_public et attache ses routes à son
 # entrypoint (https-<DEPLOY_ENV>, voir les labels de compose-prod.yml).
+#
+# Traefik est exposé : il n'accède pas au socket Docker (équivalent root sur la VM), mais
+# à un proxy qui n'autorise que la lecture des conteneurs, sur un réseau interne.
 name: traefik
 
 services:
+  socket-proxy:
+    image: tecnativa/docker-socket-proxy:v0.5.0
+    restart: unless-stopped
+    environment:
+      # Lecture seule : liste et inspection des conteneurs (+ events, ping, version par défaut)
+      CONTAINERS: 1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - socket
+
   traefik:
     image: traefik:v3.7
     restart: unless-stopped
+    depends_on:
+      - socket-proxy
     command:
       - --providers.docker=true
+      - --providers.docker.endpoint=tcp://socket-proxy:2375
       - --providers.docker.exposedbydefault=false
       - --providers.docker.network=traefik_public
       # Certificat par défaut (fichier de configuration dynamique)
@@ -38,12 +55,15 @@ services:
       - "8080:8080"
       - "8443:8443"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./dynamic.yml:/etc/traefik/dynamic.yml:ro
       - ${TLS_CERT_DIR:?TLS_CERT_DIR manquant}:/certs:ro
     networks:
       - public
+      - socket
 
 networks:
   public:
     name: traefik_public
+  # Sans accès extérieur : seul Traefik joint le proxy
+  socket:
+    internal: true
