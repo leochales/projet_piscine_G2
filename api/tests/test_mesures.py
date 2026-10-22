@@ -111,3 +111,13 @@ def test_consommation_refuse_un_id_site_invalide(client: TestClient) -> None:
     response = client.get(f"/api/sites/{'A' * 21}/consommation")
 
     assert response.status_code == 422
+
+
+def test_consommation_refuse_un_nombre_a_la_place_d_une_date(
+    client: TestClient,
+) -> None:
+    app.dependency_overrides[get_session] = lambda: FausseSession([])
+
+    response = client.get("/api/sites/SITE001/consommation?fin=0.5")
+
+    assert response.status_code == 422
