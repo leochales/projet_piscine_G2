@@ -53,6 +53,14 @@ jobs:
       - name: Install API and Schemathesis
         run: pip install -r api/requirements.txt schemathesis==4.29.4
 
+      - name: Create database schema
+        env:
+          PGPASSWORD: ci
+        run: |
+          for f in db/*.sql; do
+            psql -v ON_ERROR_STOP=1 -h localhost -U enervision -d enervision -f "$f"
+          done
+
       - name: Start API
         run: |
           uvicorn api.main:app --port 8000 > uvicorn.log 2>&1 &

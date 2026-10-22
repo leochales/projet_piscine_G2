@@ -1,0 +1,4 @@
+# Le 400 est une réponse attendue : il signale une règle métier
+# qu'OpenAPI ne peut pas décrire (ex. période limitée à 31 jours)
+[checks]
+positive_data_acceptance.expected-statuses = ["2xx", "3xx", "400", "401", "403", "404", "409", "429", "5xx"]

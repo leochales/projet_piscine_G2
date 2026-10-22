@@ -16,6 +16,41 @@ Avec Docker Compose, l'API passe par Traefik (http://localhost) ; lancée en loc
 | 200 | `{"status": "ok", "database": "ok"}` | API et base OK |
 | 503 | `{"status": "degraded", "database": "unreachable"}` | PostgreSQL injoignable |
 
+### `GET /api/sites/derniere-mesure`
+
+Dernière mesure de chaque site (lue dans `gold.derniere_mesure`), avec le nom du site.
+
+```json
+[
+  {
+    "id_site": "SITE001",
+    "nom": "Bureau Paris La Défense",
+    "horodatage": "2026-10-21T14:30:00Z",
+    "consommation_kw": 87.34,
+    "data_quality": "good"
+  }
+]
+```
+
+`consommation_kw` vaut `null` si la mesure manque (capteur en panne).
+
+### `GET /api/sites/{id_site}/consommation`
+
+Consommation heure par heure d'un site (lue dans `gold.consommation_horaire`), en kWh et en euros.
+
+| Paramètre | Obligatoire | Par défaut | Exemple |
+|---|---|---|---|
+| `debut` | non | `fin` moins 24 h | `2026-10-20T00:00:00Z` |
+| `fin` | non | maintenant | `2026-10-21T00:00:00Z` |
+
+```json
+[
+  { "heure": "2026-10-21T13:00:00Z", "consommation_kwh": 500.0, "cout_eur": 70.0 }
+]
+```
+
+`cout_eur` = `consommation_kwh` × `PRIX_KWH_EUR` (variable du `.env`, tarif fixe provisoire de 0,14 € HT/kWh). Il vaut `null` si la consommation manque.
+
 ## Lancer l'API
 
 ### Avec Docker Compose (depuis la racine du dépôt)
