@@ -1,7 +1,7 @@
 """Mesures et consommation des sites, lues dans le schéma gold."""
 
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path
@@ -58,10 +58,15 @@ class ConsommationHoraire(BaseModel):
     cout_eur: float | None
 
 
-def calculer_cout(consommation_kwh: Decimal | None, prix_kwh: float) -> float | None:
+CENTIME = Decimal("0.01")
+
+
+def calculer_cout(consommation_kwh: Decimal | None, prix_kwh: Decimal) -> float | None:
+    """Coût en euros, arrondi au centime le plus proche (0,125 donne 0,13)."""
     if consommation_kwh is None:
         return None
-    return round(float(consommation_kwh) * prix_kwh, 2)
+    cout = (consommation_kwh * prix_kwh).quantize(CENTIME, rounding=ROUND_HALF_UP)
+    return float(cout)
 
 
 PERIODE_PAR_DEFAUT = timedelta(hours=24)

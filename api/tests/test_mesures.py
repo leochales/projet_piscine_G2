@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from api.main import app
-from api.routers.mesures import calculer_periode
+from api.routers.mesures import calculer_cout, calculer_periode
 from common.db import get_session
 
 
@@ -173,3 +173,7 @@ def test_consommation_refuse_une_date_sans_fuseau(client: TestClient) -> None:
     )
 
     assert response.status_code == 422
+
+
+def test_cout_arrondi_au_centime_superieur_quand_on_est_au_milieu() -> None:
+    assert calculer_cout(Decimal("0.5"), Decimal("0.25")) == 0.13

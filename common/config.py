@@ -1,5 +1,6 @@
 """Configuration lue dans les variables d'environnement (et le .env à la racine)."""
 
+from decimal import Decimal
 from functools import lru_cache
 
 from pydantic import SecretStr
@@ -21,7 +22,7 @@ class Settings(BaseSettings):
     api_cors_origins: list[str] = ["http://localhost:5173"]
 
     # Prix de l'électricité en € HT par kWh (tarif fixe provisoire)
-    prix_kwh_eur: float = 0.14
+    prix_kwh_eur: Decimal = Decimal("0.14")
 
     @property
     def database_url(self) -> str:
