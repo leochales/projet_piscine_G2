@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Path
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -53,7 +53,7 @@ def calculer_cout(consommation_kwh: Decimal | None, prix_kwh: float) -> float | 
 
 @router.get("/{id_site}/consommation", summary="Consommation horaire d'un site")
 def lister_consommation_horaire(
-    id_site: str,
+    id_site: Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{1,20}$")],
     session: Annotated[Session, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
     debut: datetime | None = None,
