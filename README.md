@@ -35,6 +35,14 @@ docker compose -f compose-local.yml down -v
 
 Une fois la base déployée, toute modification des droits passe par un script de migration, pas par ces fichiers d'initialisation.
 
+Les actions du dashboard (décisions sur les recommandations, prises en compte des alertes) sont enregistrées dans `app` par `db/08_actions.sql`, et non dans `gold`, que l'ETL et le modèle recalculent. Ce sont des historiques : l'API peut ajouter des lignes, mais ni les modifier ni les supprimer. L'état courant se lit dans les vues `app.recommandation_etat` et `app.alerte_etat`.
+
+Les tests SQL de `db/tests/` (droits des comptes, actions du dashboard) sont lancés par la CI (`api-contract.yml`). En local, sur une base qui tourne :
+
+```bash
+docker compose -f compose-local.yml exec -T db psql -v ON_ERROR_STOP=1 -U enervision -d enervision < db/tests/test_actions.sql
+```
+
 ## Hooks pre-commit
 
 Les vérifications (ruff, sqlfluff, hadolint, prettier, eslint, gitleaks…) tournent avant chaque commit ; les tests avec couverture (pytest, vitest), le typage (mypy, vue-tsc) et Trivy avant chaque push. Configuration : `.pre-commit-config.yaml`.

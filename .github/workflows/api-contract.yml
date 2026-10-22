@@ -61,6 +61,15 @@ jobs:
             psql -v ON_ERROR_STOP=1 -h localhost -U enervision -d enervision -f "$f"
           done
 
+      # Droits des comptes et actions du dashboard (db/tests/) ; tout est annulé à la fin
+      - name: SQL tests
+        env:
+          PGPASSWORD: ci
+        run: |
+          for f in db/tests/*.sql; do
+            psql -v ON_ERROR_STOP=1 -h localhost -U enervision -d enervision -f "$f"
+          done
+
       - name: Start API
         run: |
           uvicorn api.main:app --port 8000 > uvicorn.log 2>&1 &
