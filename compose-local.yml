@@ -5,6 +5,7 @@
 #   /         -> front (nginx)
 #   /api      -> API FastAPI (Swagger : /api/docs)
 #   /grafana  -> Grafana (profil monitoring)
+#   /auth     -> Keycloak (console : /auth/admin)
 # Tableau de bord Traefik : http://localhost:8080
 #
 # Supervision (Prometheus, Grafana, Loki, Alloy, postgres-exporter) : profil « monitoring »,
@@ -98,21 +99,36 @@ services:
       # Adresses du front autorisées en retour de connexion (redirectUris du realm)
       FRONT_URL: ${FRONT_URL:-http://localhost}
       FRONT_DEV_URL: ${FRONT_DEV_URL:-http://localhost:5173}
+      # Servi par Traefik sous /auth, comme sur la VM. L'adresse publique fixe l'émetteur
+      # (iss) des jetons ; l'API joint quand même Keycloak en interne (keycloak:8080/auth).
+      KC_HTTP_RELATIVE_PATH: /auth
+      KC_HOSTNAME: ${FRONT_URL:-http://localhost}/auth
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_PROXY_HEADERS: xforwarded
       KC_HEALTH_ENABLED: "true"
     volumes:
       - ./infra/keycloak/realm-enervision.json:/opt/keycloak/data/import/realm-enervision.json:ro
-    ports:
-      - "127.0.0.1:${KEYCLOAK_PORT:-8081}:8080"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.keycloak.rule=PathPrefix(`/auth`)
+      - traefik.http.routers.keycloak.entrypoints=web
+      - traefik.http.services.keycloak.loadbalancer.server.port=8080
     healthcheck:
-      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      # Port de gestion (9000), sous le même chemin relatif que Keycloak
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && printf 'GET /auth/health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
       interval: 10s
       timeout: 5s
       retries: 20
+      # Démarrage lent (reconstruction de la configuration, jusqu'à 3 min sur un poste
+      # chargé) : les échecs ne comptent pas pendant ce délai. Tant que Keycloak n'est
+      # pas « healthy », Traefik ne le route pas et /auth tombe sur le front.
+      start_period: 5m
     depends_on:
       db:
         condition: service_healthy
     networks:
       - postgres_network
+      - proxy_network             # joignable par Traefik
 
   api:
     build:

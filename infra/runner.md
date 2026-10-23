@@ -9,6 +9,8 @@ Un **runner GitHub auto-hébergé**, installé sur la VM, exécute le workflow [
 
 Les deux environnements ont leurs propres conteneurs, volumes et base. Un **Traefik partagé** ([`infra/traefik/compose.yml`](traefik/compose.yml)) les sert en HTTPS, chacun sur son port, car la VM n'a pas de nom de domaine. Un lancement manuel sur une autre branche ne déploie rien (run *skipped*).
 
+Keycloak est servi à la même adresse, sous `/auth` (`https://<VM_IP>/auth`, `https://<VM_IP>:8443/auth`). Seuls le realm `enervision` (`/auth/realms/enervision`) et les fichiers des pages de connexion (`/auth/resources`) sont routés : la console d'administration et le realm `master` ne sont pas exposés. L'administration se fait avec `kcadm.sh` (voir [Faire évoluer le realm Keycloak](#faire-évoluer-le-realm-keycloak)).
+
 ---
 
 ## Installation du runner
@@ -117,7 +119,7 @@ Ne pas supprimer le realm pour forcer un nouvel import : les comptes des utilisa
 ```bash
 # Se connecter (une fois par session ; demande le mot de passe KEYCLOAK_ADMIN_PASSWORD de l'environnement)
 docker compose -p enervision-<env> exec keycloak /opt/keycloak/bin/kcadm.sh config credentials \
-  --server http://localhost:8080 --realm master --user <KEYCLOAK_ADMIN>
+  --server http://localhost:8080/auth --realm master --user <KEYCLOAK_ADMIN>
 
 # Raccourci pour les commandes suivantes
 kcadm() { docker compose -p enervision-<env> exec keycloak /opt/keycloak/bin/kcadm.sh "$@"; }
