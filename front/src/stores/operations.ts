@@ -1,7 +1,13 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
-import { fetchAlerts, fetchPreviousSavings, fetchRecommendations } from '@/services/dashboard'
+import {
+  acknowledgeAlert,
+  decideRecommendation,
+  fetchAlerts,
+  fetchPreviousSavings,
+  fetchRecommendations,
+} from '@/services/dashboard'
 import type { Alert, Recommendation } from '@/types/energy'
 
 const WEEKS_PER_MONTH = 52 / 12
@@ -14,12 +20,18 @@ export const monthlyGain = (rec: Recommendation) =>
  * Alertes et recommandations, partagées entre la vue d'ensemble et l'écran 3 :
  * une action sur l'une se voit aussitôt sur l'autre.
  * Les actions ne sont gardées qu'en mémoire tant que l'API n'a pas de route pour les enregistrer.
+ *
+ * Une action n'est affichée qu'une fois confirmée par le service : en cas d'échec, l'état reste
+ * celui d'avant et l'erreur remonte à l'écran, qui l'affiche.
  */
 export const useOperationsStore = defineStore('operations', () => {
   const alerts = ref<Alert[]>([])
   const recommendations = ref<Recommendation[]>([])
   const previousSavings = ref(0)
   const loaded = ref(false)
+  // Alertes et recommandations dont l'action est en cours d'envoi : leurs boutons sont bloqués,
+  // un double clic n'envoie pas deux fois la même action
+  const pending = ref(new Set<string>())
 
   async function load() {
     if (loaded.value) return
@@ -31,14 +43,37 @@ export const useOperationsStore = defineStore('operations', () => {
     loaded.value = true
   }
 
-  function acknowledge(alertId: string) {
-    const alert = alerts.value.find((a) => a.id === alertId)
-    if (alert) alert.priseEnCompte = true
+  /** Envoie l'action une seule fois à la fois par élément ; l'erreur est relancée à l'appelant */
+  async function send(id: string, action: () => Promise<unknown>, apply: () => void) {
+    if (pending.value.has(id)) return
+    pending.value.add(id)
+    try {
+      await action()
+      apply()
+    } finally {
+      pending.value.delete(id)
+    }
   }
 
-  function decide(id: string, statut: 'acceptee' | 'refusee') {
+  async function acknowledge(alertId: string) {
+    const alert = alerts.value.find((a) => a.id === alertId)
+    // Une alerte prise en compte le reste : pas de deuxième prise en compte (US7)
+    if (!alert || alert.priseEnCompte) return
+    await send(
+      alertId,
+      () => acknowledgeAlert(alertId),
+      () => (alert.priseEnCompte = true),
+    )
+  }
+
+  async function decide(id: string, statut: 'acceptee' | 'refusee') {
     const rec = recommendations.value.find((r) => r.id === id)
-    if (rec) rec.statut = statut
+    if (!rec) return
+    await send(
+      id,
+      () => decideRecommendation(id, statut),
+      () => (rec.statut = statut),
+    )
   }
 
   // Alertes restant à traiter (non prises en compte)
@@ -60,6 +95,7 @@ export const useOperationsStore = defineStore('operations', () => {
     alerts,
     recommendations,
     loaded,
+    pending,
     load,
     acknowledge,
     decide,

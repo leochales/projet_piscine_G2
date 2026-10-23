@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  acknowledgeAlert,
+  decideRecommendation,
   fetchAlerts,
   fetchKpis,
   fetchOverview,
@@ -58,9 +60,16 @@ describe('simulation des cas réels (?simulation=…)', () => {
     expect(readSimulation('?simulation=erreur', false)).toBeNull()
   })
 
-  it('« erreur » fait échouer les appels', async () => {
+  it('« erreur » fait échouer les appels, actions comprises', async () => {
     simulate('erreur')
     await expect(fetchOverview()).rejects.toThrow('API simulée en erreur')
+    await expect(acknowledgeAlert('A1')).rejects.toThrow('API simulée en erreur')
+    await expect(decideRecommendation('R1', 'acceptee')).rejects.toThrow('API simulée en erreur')
+  })
+
+  it('confirme les actions simulées', async () => {
+    expect(await acknowledgeAlert('A1')).toBe('A1')
+    expect(await decideRecommendation('R1', 'refusee')).toEqual({ id: 'R1', statut: 'refusee' })
   })
 
   it('« vide » renvoie des listes et des courbes vides', async () => {

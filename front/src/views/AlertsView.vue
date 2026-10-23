@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { storeToRefs } from 'pinia'
+import { toast } from 'vue-sonner'
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -17,10 +18,41 @@ const user = useUserStore()
 const { role } = storeToRefs(user)
 
 const operations = useOperationsStore()
-const { alerts, recommendations, savings } = storeToRefs(operations)
+const { alerts, recommendations, savings, pending } = storeToRefs(operations)
 
 // Le store ne recharge pas ce qu'il a déjà : revenir sur l'écran garde les actions faites
 const request = useRequest(() => operations.load())
+
+// Retour après chaque action : confirmation discrète, ou erreur à réessayer.
+// Rien n'est affiché comme fait tant que le service ne l'a pas confirmé (store).
+const actionFailed = () =>
+  toast.error('Action impossible', {
+    description: 'Le service de données ne répond pas. Réessayez dans un instant.',
+  })
+
+async function acknowledge(alertId: string) {
+  const alert = alerts.value.find((a) => a.id === alertId)
+  try {
+    await operations.acknowledge(alertId)
+    toast.success('Alerte prise en compte', {
+      description: alert && `${alert.siteId} · ${alert.message}`,
+    })
+  } catch {
+    actionFailed()
+  }
+}
+
+async function decide(id: string, statut: 'acceptee' | 'refusee') {
+  const rec = recommendations.value.find((r) => r.id === id)
+  try {
+    await operations.decide(id, statut)
+    toast.success(statut === 'acceptee' ? 'Recommandation acceptée' : 'Recommandation refusée', {
+      description: rec && `${rec.siteId} · ${rec.titre}`,
+    })
+  } catch {
+    actionFailed()
+  }
+}
 </script>
 
 <template>
@@ -50,7 +82,8 @@ const request = useRequest(() => operations.load())
             v-else
             :alerts="alerts"
             :can-act-on="user.canActOn"
-            @acknowledge="operations.acknowledge"
+            :pending="pending"
+            @acknowledge="acknowledge"
           />
         </CardContent>
       </Card>
@@ -76,8 +109,9 @@ const request = useRequest(() => operations.load())
               :key="rec.id"
               :recommendation="rec"
               :can-act="user.canActOn(rec.siteId)"
-              @accept="operations.decide($event, 'acceptee')"
-              @refuse="operations.decide($event, 'refusee')"
+              :pending="pending.has(rec.id)"
+              @accept="decide($event, 'acceptee')"
+              @refuse="decide($event, 'refusee')"
             />
           </CardContent>
         </Card>

@@ -58,3 +58,12 @@ export const fetchRecommendations = (): Promise<Recommendation[]> =>
   respond(structuredClone(mocks.recommendations), [])
 
 export const fetchPreviousSavings = (): Promise<number> => respond(mocks.economiesAnterieuresEur)
+
+// Actions de l'écran 3. Simulées : l'API n'a pas encore de route pour les enregistrer (US7).
+// Elles échouent avec ?simulation=erreur, comme le feraient les vraies routes.
+export const acknowledgeAlert = (alertId: string): Promise<string> => respond(alertId)
+
+export const decideRecommendation = (
+  id: string,
+  statut: 'acceptee' | 'refusee',
+): Promise<{ id: string; statut: 'acceptee' | 'refusee' }> => respond({ id, statut })
