@@ -1,18 +1,25 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { onKeyStroke } from '@vueuse/core'
 import { Menu, X } from '@lucide/vue'
 
 import { Button } from '@/components/ui/button'
+import AlertCountBadge from '@/components/layout/AlertCountBadge.vue'
 import RoleSwitcher from '@/components/layout/RoleSwitcher.vue'
 import ThemeToggle from '@/components/layout/ThemeToggle.vue'
+import { useOperationsStore } from '@/stores/operations'
 
 const links = [
   { to: { name: 'overview' }, label: "Vue d'ensemble" },
   { to: { name: 'sites' }, label: 'Sites' },
-  { to: { name: 'alerts' }, label: 'Alertes et recommandations' },
+  { to: { name: 'alerts' }, label: 'Alertes et recommandations', alertCount: true },
 ]
+
+// Le nombre d'alertes à traiter est visible depuis toutes les pages : le store est chargé ici.
+// Sans réponse du service, le badge reste simplement caché (l'écran 3 affiche l'erreur).
+const operations = useOperationsStore()
+onMounted(() => operations.load().catch(() => {}))
 
 // Menu mobile (sous 768 px) : fermé dès qu'on change de page, ou avec Échap
 const menuOpen = ref(false)
@@ -34,10 +41,11 @@ onKeyStroke('Escape', () => (menuOpen.value = false))
           v-for="link in links"
           :key="link.label"
           :to="link.to"
-          class="border-b-2 border-transparent pb-1 text-muted-foreground hover:text-foreground"
+          class="inline-flex items-center border-b-2 border-transparent pb-1 text-muted-foreground hover:text-foreground"
           active-class="border-foreground! font-semibold text-foreground!"
         >
           {{ link.label }}
+          <AlertCountBadge v-if="link.alertCount" class="ml-1.5" />
         </RouterLink>
       </nav>
 
@@ -70,10 +78,11 @@ onKeyStroke('Escape', () => (menuOpen.value = false))
           v-for="link in links"
           :key="link.label"
           :to="link.to"
-          class="rounded-md px-2 py-2.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+          class="flex items-center rounded-md px-2 py-2.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
           active-class="bg-accent font-semibold text-foreground!"
         >
           {{ link.label }}
+          <AlertCountBadge v-if="link.alertCount" class="ml-1.5" />
         </RouterLink>
       </nav>
       <div class="mt-2 flex items-center justify-between border-t border-border pt-2">
