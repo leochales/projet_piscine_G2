@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Line } from 'vue-chartjs'
+import { useMediaQuery } from '@vueuse/core'
 import {
   CategoryScale,
   Chart as ChartJS,
@@ -155,6 +156,9 @@ const nowLine: Plugin<'line'> = {
   },
 }
 
+// Sur un écran étroit, 8 dates (« jeu. 14 h ») ne tiennent pas sans se chevaucher
+const wide = useMediaQuery('(min-width: 640px)')
+
 const options = computed<ChartOptions<'line'>>(() => ({
   responsive: true,
   maintainAspectRatio: false,
@@ -162,7 +166,7 @@ const options = computed<ChartOptions<'line'>>(() => ({
   scales: {
     x: {
       grid: { display: false },
-      ticks: { maxTicksLimit: 8, color: colors.value.muted, maxRotation: 0 },
+      ticks: { maxTicksLimit: wide.value ? 8 : 4, color: colors.value.muted, maxRotation: 0 },
     },
     y: {
       beginAtZero: false,

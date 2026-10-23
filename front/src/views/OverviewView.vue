@@ -71,12 +71,18 @@ const openSite = (siteId: string) => router.push({ name: 'sites', params: { site
         :value="String(pendingAlerts.length)"
         :hint="`dont ${pendingCritical} critique${pendingCritical > 1 ? 's' : ''}`"
       />
-      <KpiCard label="Économies réalisées" :value="formatEur(savings)" hint="ce mois-ci" />
+      <!-- Sur 2 colonnes, la 5e carte prend toute la largeur au lieu de laisser un trou -->
+      <KpiCard
+        class="col-span-2 lg:col-span-1"
+        label="Économies réalisées"
+        :value="formatEur(savings)"
+        hint="ce mois-ci"
+      />
     </div>
     <!-- Squelettes à la taille des cartes : pas de saut de mise en page à l'arrivée -->
     <div v-else class="grid grid-cols-2 gap-4 lg:grid-cols-5" role="status" aria-live="polite">
       <span class="sr-only">Chargement des indicateurs…</span>
-      <Card v-for="n in 5" :key="n" class="gap-1 py-4">
+      <Card v-for="n in 5" :key="n" :class="['gap-1 py-4', n === 5 && 'col-span-2 lg:col-span-1']">
         <CardContent class="space-y-2 px-4">
           <Skeleton class="h-3 w-24" />
           <Skeleton class="h-8 w-28" />
