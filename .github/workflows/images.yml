@@ -156,6 +156,18 @@ jobs:
           [ -n "$(docker compose -f compose-prod.yml ps etl --status running -q)" ] \
             || { echo "::error::Le conteneur etl n'est pas démarré"; exit 1; }
 
+      # Tests SQL de db/tests/ (droits des comptes, actions du dashboard), sur la base
+      # créée par les scripts d'initialisation de la stack. Lancés en superutilisateur :
+      # chaque script prend lui-même les droits d'un compte (SET ROLE) et annule tout (ROLLBACK).
+      - name: Tests SQL
+        run: |
+          for f in db/tests/*.sql; do
+            echo "::group::$f"
+            docker compose -f compose-prod.yml exec -T db \
+              psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" < "$f"
+            echo "::endgroup::"
+          done
+
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
