@@ -37,4 +37,6 @@ RUN if [ -f etl/requirements.txt ]; then pip install --no-cache-dir -r etl/requi
 
 # Planning : etl/crontab (modifiable sans toucher à ce Dockerfile)
 # ETL_ENABLED=false : le conteneur reste démarré mais n'exécute aucun job
-CMD ["sh", "-c", "if [ \"$ETL_ENABLED\" = \"false\" ]; then echo 'ETL_ENABLED=false : ETL désactivé, aucun job lancé'; exec sleep infinity; fi; exec supercronic etl/crontab"]
+# -passthrough-logs : les lignes JSON des jobs (common/logs.py) sortent telles
+# quelles, sans être enveloppées par supercronic (qui les classerait toutes en info)
+CMD ["sh", "-c", "if [ \"$ETL_ENABLED\" = \"false\" ]; then echo 'ETL_ENABLED=false : ETL désactivé, aucun job lancé'; exec sleep infinity; fi; exec supercronic -passthrough-logs etl/crontab"]

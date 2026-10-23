@@ -43,6 +43,11 @@ jobs:
       MODEL_DB_PASSWORD: ci-model
       API_DB_PASSWORD: ci-api
       BACKUP_DB_PASSWORD: ci-backup
+      KEYCLOAK_ADMIN: ci-admin
+      KEYCLOAK_ADMIN_PASSWORD: ci-keycloak-admin
+      KEYCLOAK_DB_PASSWORD: ci-keycloak
+      KEYCLOAK_ADMIN_CLIENT_SECRET: ci-keycloak-client
+      FRONT_URL: https://localhost:8443
     steps:
       # Pas de jeton dans .git/config : le job a packages: write et exécute le code de la PR
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -129,16 +134,32 @@ jobs:
           # HTTP redirige vers HTTPS
           redirect=$(curl -s -o /dev/null -w '%{redirect_url}' http://localhost:8080/)
           [ "$redirect" = "$base/" ] || { echo "::error::Redirection HTTP inattendue : '$redirect'"; exit 1; }
+          # Keycloak via Traefik : émetteur des jetons = adresse publique, identique pour
+          # le navigateur et pour l'API (réseau interne)
+          expected="$base/auth/realms/enervision"
+          issuer=$(curl -fsSk "$expected/.well-known/openid-configuration" | jq -r .issuer)
+          [ "$issuer" = "$expected" ] || { echo "::error::Émetteur Keycloak inattendu : '$issuer'"; exit 1; }
+          internal=$(docker compose -f compose-prod.yml exec -T api python -c \
+            "import json, urllib.request; print(json.load(urllib.request.urlopen('http://keycloak:8080/auth/realms/enervision/.well-known/openid-configuration'))['issuer'])")
+          [ "$internal" = "$expected" ] || { echo "::error::Émetteur vu par l'API : '$internal'"; exit 1; }
+          # Console d'administration et realm master non exposés : servis par le front
+          for path in /auth/admin/ /auth/realms/master/.well-known/openid-configuration; do
+            curl -fsSk "$base$path" | grep -q '<div id="app"' \
+              || { echo "::error::$path ne doit pas être routé vers Keycloak"; exit 1; }
+          done
           # Scripts db/ : chaque compte de service se connecte avec son mot de passe.
           # -h db (réseau Docker) et non 127.0.0.1, où l'image postgres ne demande aucun
           # mot de passe (trust dans pg_hba.conf) : le test ne prouverait rien.
           login() {
             docker compose -f compose-prod.yml exec -T -e PGPASSWORD="$2" db \
-              psql -h db -U "$1" -d "$POSTGRES_DB" -tAc 'SELECT 1' >/dev/null
+              psql -h db -U "$1" -d "${3:-$POSTGRES_DB}" -tAc 'SELECT 1' >/dev/null
           }
           login etl "$ETL_DB_PASSWORD"
           login model "$MODEL_DB_PASSWORD"
           login backup "$BACKUP_DB_PASSWORD"
+          # Base keycloak (09_keycloak.sh) : son compte, et backup pour la sauvegarde
+          login keycloak "$KEYCLOAK_DB_PASSWORD" keycloak
+          login backup "$BACKUP_DB_PASSWORD" keycloak
           if login api "mauvais-mot-de-passe" 2>/dev/null; then
             echo "::error::Le compte api accepte un mauvais mot de passe"
             exit 1
@@ -147,6 +168,24 @@ jobs:
           docker compose -f compose-prod.yml exec -T etl supercronic -test etl/crontab
           [ -n "$(docker compose -f compose-prod.yml ps etl --status running -q)" ] \
             || { echo "::error::Le conteneur etl n'est pas démarré"; exit 1; }
+
+      # Même migration que deploy.yml. Les scripts de db/ ont déjà tourné à la création de
+      # la base : ce second passage échoue si l'un d'eux ne peut pas être rejoué sur une
+      # base existante. Les tests SQL qui suivent portent donc sur une base migrée.
+      - name: Rejouer la migration de la base
+        run: docker compose -f compose-prod.yml exec -T db bash /docker-entrypoint-initdb.d/tools/migrate.sh
+
+      # Tests SQL de db/tests/ (droits des comptes, actions du dashboard), sur la base
+      # créée par les scripts d'initialisation de la stack. Lancés en superutilisateur :
+      # chaque script prend lui-même les droits d'un compte (SET ROLE) et annule tout (ROLLBACK).
+      - name: Tests SQL
+        run: |
+          for f in db/tests/*.sql; do
+            echo "::group::$f"
+            docker compose -f compose-prod.yml exec -T db \
+              psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" < "$f"
+            echo "::endgroup::"
+          done
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:

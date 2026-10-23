@@ -7,10 +7,12 @@
 
 BEGIN;
 
+-- Une ligne par site et par minute de la grille, y compris les minutes sans
+-- mesure en bronze (bronze_id NULL, null_reasons = {no_reading})
 CREATE TABLE IF NOT EXISTS silver.silver_readings (
     id_site VARCHAR(20) NOT NULL REFERENCES app.site (id_site),
     horodatage TIMESTAMPTZ NOT NULL,
-    bronze_id BIGINT NOT NULL REFERENCES bronze.raw_readings (id),
+    bronze_id BIGINT REFERENCES bronze.raw_readings (id),
     consumption_kw_raw NUMERIC(10, 2),
     consumption_kw_imputed NUMERIC(10, 2),
     imputation_method VARCHAR(25) NOT NULL DEFAULT 'none'
@@ -30,6 +32,16 @@ CREATE TABLE IF NOT EXISTS silver.silver_readings (
     null_reasons TEXT[] NOT NULL DEFAULT '{}',
     processed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (id_site, horodatage)
+);
+
+-- Quarantaine : mesures bronze refusées par la validation Pydantic
+-- (etl/schemas.py), avec le détail des erreurs
+CREATE TABLE IF NOT EXISTS silver.rejected_readings (
+    bronze_id BIGINT PRIMARY KEY REFERENCES bronze.raw_readings (id),
+    id_site VARCHAR(20) NOT NULL,
+    horodatage TIMESTAMPTZ NOT NULL,
+    errors JSONB NOT NULL,
+    rejected_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 COMMIT;
