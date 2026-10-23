@@ -134,6 +134,19 @@ jobs:
           # HTTP redirige vers HTTPS
           redirect=$(curl -s -o /dev/null -w '%{redirect_url}' http://localhost:8080/)
           [ "$redirect" = "$base/" ] || { echo "::error::Redirection HTTP inattendue : '$redirect'"; exit 1; }
+          # Keycloak via Traefik : émetteur des jetons = adresse publique, identique pour
+          # le navigateur et pour l'API (réseau interne)
+          expected="$base/auth/realms/enervision"
+          issuer=$(curl -fsSk "$expected/.well-known/openid-configuration" | jq -r .issuer)
+          [ "$issuer" = "$expected" ] || { echo "::error::Émetteur Keycloak inattendu : '$issuer'"; exit 1; }
+          internal=$(docker compose -f compose-prod.yml exec -T api python -c \
+            "import json, urllib.request; print(json.load(urllib.request.urlopen('http://keycloak:8080/auth/realms/enervision/.well-known/openid-configuration'))['issuer'])")
+          [ "$internal" = "$expected" ] || { echo "::error::Émetteur vu par l'API : '$internal'"; exit 1; }
+          # Console d'administration et realm master non exposés : servis par le front
+          for path in /auth/admin/ /auth/realms/master/.well-known/openid-configuration; do
+            curl -fsSk "$base$path" | grep -q '<div id="app"' \
+              || { echo "::error::$path ne doit pas être routé vers Keycloak"; exit 1; }
+          done
           # Scripts db/ : chaque compte de service se connecte avec son mot de passe.
           # -h db (réseau Docker) et non 127.0.0.1, où l'image postgres ne demande aucun
           # mot de passe (trust dans pg_hba.conf) : le test ne prouverait rien.
