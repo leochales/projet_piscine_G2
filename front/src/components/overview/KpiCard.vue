@@ -2,6 +2,7 @@
 import { ArrowDownRight, ArrowUpRight, Minus, TriangleAlert } from '@lucide/vue'
 
 import { Card, CardContent } from '@/components/ui/card'
+import TrendSparkline from '@/components/common/TrendSparkline.vue'
 import type { Trend } from '@/lib/indicators'
 
 defineProps<{
@@ -12,6 +13,9 @@ defineProps<{
   trend?: Trend
   /** Le hint signale une donnée incomplète : icône d'avertissement et texte mis en avant */
   warning?: boolean
+  /** Mini-courbe à droite de la valeur, et sa description pour les lecteurs d'écran */
+  sparkline?: readonly number[]
+  sparklineLabel?: string
 }>()
 </script>
 
@@ -19,9 +23,17 @@ defineProps<{
   <Card class="gap-1 py-4">
     <CardContent class="px-4">
       <p class="text-xs font-medium tracking-wide text-muted-foreground uppercase">{{ label }}</p>
-      <p class="mt-1 text-2xl font-semibold whitespace-nowrap tabular-nums sm:text-3xl">
-        {{ value }}
-      </p>
+      <!-- La courbe, à droite, prend la place laissée par la valeur. Quand les 5 cartes tiennent
+           sur une ligne (lg), la valeur est un peu plus petite pour lui en laisser -->
+      <div class="mt-1 flex items-end gap-3">
+        <p
+          class="shrink-0 text-2xl font-semibold whitespace-nowrap tabular-nums sm:text-3xl lg:text-2xl"
+        >
+          {{ value }}
+        </p>
+        <TrendSparkline v-if="sparkline?.length" :values="sparkline" class="mb-1" />
+      </div>
+      <p v-if="sparkline?.length && sparklineLabel" class="sr-only">{{ sparklineLabel }}</p>
       <p
         v-if="hint"
         class="mt-1 flex items-center gap-1 text-sm"

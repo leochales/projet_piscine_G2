@@ -4,6 +4,7 @@ import {
   acknowledgeAlert,
   decideRecommendation,
   fetchAlerts,
+  fetchFleetTrend,
   fetchKpis,
   fetchOverview,
   fetchSiteCosts,
@@ -33,6 +34,24 @@ describe('services/dashboard', () => {
   it('donne les indicateurs, les sites et des coûts positifs', async () => {
     expect((await fetchKpis()).nbSites).toBe(7)
     expect(await fetchOverview()).toHaveLength(7)
+  })
+
+  it('donne l’évolution du parc : 24 h de consommation, 7 jours de coût', async () => {
+    const { consommationKw24h, coutEurJours7 } = await fetchFleetTrend()
+    expect(consommationKw24h).toHaveLength(24 + 1) // le point « maintenant » est inclus
+    expect(coutEurJours7).toHaveLength(7)
+    expect([...consommationKw24h, ...coutEurJours7].every((v) => v > 0)).toBe(true)
+  })
+
+  it('finit les mini-courbes sur les valeurs des KPI, et respecte la variation « vs hier »', async () => {
+    const [kpis, { consommationKw24h, coutEurJours7 }] = await Promise.all([
+      fetchKpis(),
+      fetchFleetTrend(),
+    ])
+    expect(consommationKw24h[consommationKw24h.length - 1]).toBe(kpis.consommationKw)
+    const [yesterday, today] = coutEurJours7.slice(-2) as [number, number]
+    expect(today).toBe(kpis.coutJourEur)
+    expect(((today - yesterday) / yesterday) * 100).toBeCloseTo(kpis.variationCoutPct, 0)
   })
 
   it('exclut du total du parc les sites sans mesure, et le signale', async () => {
@@ -85,6 +104,7 @@ describe('simulation des cas réels (?simulation=…)', () => {
     expect(await fetchAlerts()).toEqual([])
     expect(await fetchRecommendations()).toEqual([])
     expect(await fetchSiteSeries('SITE002', '24h')).toEqual({ mesures: [], predictions: [] })
+    expect(await fetchFleetTrend()).toEqual({ consommationKw24h: [], coutEurJours7: [] })
     // Les indicateurs du parc n'ont pas de version « vide » : ils restent renseignés
     expect((await fetchKpis()).nbSites).toBe(7)
   })

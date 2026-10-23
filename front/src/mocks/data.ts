@@ -4,6 +4,7 @@
 import type {
   Alert,
   FleetKpis,
+  FleetTrend,
   PredictionPoint,
   Recommendation,
   Site,
@@ -132,6 +133,27 @@ const FACTEUR_CO2_KG_KWH = 0.052
 export function siteCosts(siteId: string) {
   const kwh = siteSeries(siteId, 7 * 24).mesures.reduce((total, m) => total + m.kw, 0)
   return { coutEur: kwh * TARIF_EUR_KWH, co2Tonnes: (kwh * FACTEUR_CO2_KG_KWH) / 1000 }
+}
+
+/**
+ * Évolution du parc, cohérente avec les KPI : la courbe de consommation suit la forme des
+ * courbes des sites mesurés, ramenée pour finir sur la consommation actuelle du KPI ; le coût
+ * finit sur le coût du jour, et la veille respecte la variation « vs hier ».
+ */
+export function fleetTrend(): FleetTrend {
+  const measured = overview.filter((o) => o.consommationKw !== null)
+  const hourly = measured.map((o) => siteSeries(o.site.id, 24).mesures)
+  const shape = hourly[0]!.map((_, i) => hourly.reduce((total, m) => total + m[i]!.kw, 0))
+  const scale = kpis.consommationKw / shape[shape.length - 1]!
+  const consommationKw24h = shape.map((kw) => Math.round(kw * scale))
+
+  const today = kpis.coutJourEur
+  const yesterday = today / (1 + kpis.variationCoutPct / 100)
+  // Jours précédents : variations de démonstration autour de la veille
+  const earlier = [0.97, 1.03, 0.92, 0.99, 1.05].map((f) => yesterday * f)
+  const coutEurJours7 = [...earlier, yesterday, today].map(Math.round)
+
+  return { consommationKw24h, coutEurJours7 }
 }
 
 /** Économies déjà réalisées ce mois-ci, avant les recommandations affichées */

@@ -2,7 +2,14 @@
 // Les vues n'importent que ce fichier : brancher l'API ne changera que lui.
 
 import * as mocks from '@/mocks/data'
-import type { Alert, FleetKpis, Recommendation, SiteOverview, SiteSeries } from '@/types/energy'
+import type {
+  Alert,
+  FleetKpis,
+  FleetTrend,
+  Recommendation,
+  SiteOverview,
+  SiteSeries,
+} from '@/types/energy'
 
 export type SeriesRange = '24h' | '7j'
 
@@ -40,6 +47,9 @@ function respond<T>(value: T, empty?: T): Promise<T> {
 export const fetchKpis = (): Promise<FleetKpis> => respond(mocks.kpis)
 
 export const fetchOverview = (): Promise<SiteOverview[]> => respond(mocks.overview, [])
+
+export const fetchFleetTrend = (): Promise<FleetTrend> =>
+  respond(mocks.fleetTrend(), { consommationKw24h: [], coutEurJours7: [] })
 
 export const fetchSiteOverview = (siteId: string): Promise<SiteOverview | undefined> =>
   respond(mocks.overview.find((o) => o.site.id === siteId))

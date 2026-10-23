@@ -48,6 +48,14 @@ export interface PredictionPoint {
   hauteKw: number // fourchette haute
 }
 
+/** Évolution du parc, pour les mini-courbes des KPI */
+export interface FleetTrend {
+  // Consommation du parc heure par heure sur les dernières 24 h (sites mesurés seulement)
+  consommationKw24h: number[]
+  // Coût de chacun des 7 derniers jours, du plus ancien au plus récent
+  coutEurJours7: number[]
+}
+
 export interface SiteSeries {
   mesures: ConsumptionPoint[]
   predictions: PredictionPoint[]

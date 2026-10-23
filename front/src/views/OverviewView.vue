@@ -12,9 +12,10 @@ import KpiCard from '@/components/overview/KpiCard.vue'
 import SitesTable from '@/components/overview/SitesTable.vue'
 import { formatEur, formatKw, formatSignedPct, formatTonnes } from '@/lib/format'
 import { trend } from '@/lib/indicators'
+import { describeSeries } from '@/lib/sparkline'
 import { useAutoRefresh } from '@/lib/refresh'
 import { useRequest } from '@/lib/request'
-import { fetchKpis, fetchOverview } from '@/services/dashboard'
+import { fetchFleetTrend, fetchKpis, fetchOverview } from '@/services/dashboard'
 import { useOperationsStore } from '@/stores/operations'
 
 const router = useRouter()
@@ -28,7 +29,9 @@ const kpis = useRequest(async () => (await Promise.all([fetchKpis(), operations.
 const sites = useRequest(fetchOverview)
 // Alertes et économies ne sont pas rafraîchies : le store garderait sinon les actions faites
 // à l'écran 3 seulement jusqu'au rafraîchissement suivant (pas encore d'API pour les enregistrer)
-const freshness = useAutoRefresh([kpis, sites])
+// Mini-courbes des KPI. Sans réponse, les KPI s'affichent simplement sans courbe.
+const fleet = useRequest(fetchFleetTrend)
+const freshness = useAutoRefresh([kpis, sites, fleet])
 
 const sitesWithoutReading = (n: number) => (n > 1 ? `${n} sites sans mesure` : '1 site sans mesure')
 
@@ -64,12 +67,16 @@ const openSite = (siteId: string) => router.push({ name: 'sites', params: { site
             : `${kpis.data.value.nbSites} sites`
         "
         :warning="kpis.data.value.nbSitesSansMesure > 0"
+        :sparkline="fleet.data.value?.consommationKw24h"
+        :sparkline-label="`Consommation des dernières 24 h : ${describeSeries(fleet.data.value?.consommationKw24h ?? [], formatKw)}`"
       />
       <KpiCard
         label="Coût aujourd'hui"
         :value="formatEur(kpis.data.value.coutJourEur)"
         :hint="`${formatSignedPct(kpis.data.value.variationCoutPct)} vs hier`"
         :trend="trend(kpis.data.value.variationCoutPct, 'baisse')"
+        :sparkline="fleet.data.value?.coutEurJours7"
+        :sparkline-label="`Coût des 7 derniers jours : ${describeSeries(fleet.data.value?.coutEurJours7 ?? [], formatEur)}`"
       />
       <KpiCard
         label="CO₂ aujourd'hui"
