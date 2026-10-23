@@ -37,7 +37,7 @@ Une fois la base déployée, toute modification des droits passe par un script d
 
 Les actions du dashboard (décisions sur les recommandations, prises en compte des alertes) sont enregistrées dans `app` par `db/08_actions.sql`, et non dans `gold`, que l'ETL et le modèle recalculent. Ce sont des historiques : l'API peut ajouter des lignes, mais ni les modifier ni les supprimer. L'état courant se lit dans les vues `app.recommandation_etat` et `app.alerte_etat`.
 
-Les tests SQL de `db/tests/` (droits des comptes, actions du dashboard) sont lancés par la CI (`api-contract.yml`). En local, sur une base qui tourne :
+Les tests SQL de `db/tests/` (droits des comptes, actions du dashboard) sont lancés par la CI (`images.yml`, sur la base de la stack de test). En local, sur une base qui tourne :
 
 ```bash
 docker compose -f compose-local.yml exec -T db psql -v ON_ERROR_STOP=1 -U enervision -d enervision < db/tests/test_actions.sql
@@ -82,12 +82,12 @@ Chaque pull request vers `develop` ou `main` lance :
 | Workflow | Ce qui bloque la PR |
 |---|---|
 | `pre-commit.yml` | lint et format (ruff, dont les règles de sécurité `S` de Bandit, eslint, prettier, sqlfluff, hadolint, gitleaks), tests et typage, **couverture sous 80 %** |
-| `security.yml` | vulnérabilité HIGH ou CRITICAL dans les fichiers, image Docker qui ne se construit pas ou qui contient une vulnérabilité corrigeable |
-| `api-contract.yml` | réponse de l'API qui ne respecte pas son contrat OpenAPI (Schemathesis) |
+| `security.yml` | vulnérabilité HIGH ou CRITICAL dans les fichiers du dépôt |
+| `images.yml` | image qui ne se construit pas ; stack de prod (Traefik, base, api, etl, front) qui ne démarre pas ou échoue aux tests ; réponse de l'API qui ne respecte pas son contrat OpenAPI (Schemathesis, sur le conteneur) ; image qui contient une vulnérabilité corrigeable |
 
 La couverture porte sur la logique métier : `api/` et `common/` côté Python (`pyproject.toml`), `src/stores`, `src/lib` et `src/services` côté front (`front/vitest.config.ts`).
 
-Pour la consulter sur GitHub, ouvrir le workflow `pre-commit` de la PR : le tableau de couverture (back et front) est sur la page **Summary**, et les rapports HTML détaillés, avec les lignes non couvertes, sont à télécharger dans **Artifacts** (`coverage`, gardé 14 jours). En local, le rapport du front est dans `front/coverage/index.html`.
+Pour la consulter sur GitHub, ouvrir le workflow `pre-commit` de la PR : le tableau de couverture (back et front) est sur la page **Summary**, et les rapports HTML détaillés, avec les lignes non couvertes, sont à télécharger dans **Artifacts** (`coverage`, gardé 3 jours). En local, le rapport du front est dans `front/coverage/index.html`.
 
 Une vulnérabilité sans correctif disponible peut être acceptée **temporairement** dans `.trivyignore`, avec une justification et une date d'expiration (`exp:`).
 

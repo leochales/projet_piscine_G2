@@ -1,0 +1,242 @@
+name: Images
+
+# Construit api, etl et front une seule fois, teste la stack de prod complète avec ces
+# images (Traefik + compose-prod.yml, scripts db/ compris), les scanne avec Trivy, puis,
+# appelé par deploy.yml avec push: true, les publie sur GHCR taguées par le SHA du commit.
+# La VM déploie ensuite exactement ces images (docker compose pull), sans les reconstruire.
+
+on:
+  pull_request:
+    branches: [develop, main]
+  # Appelé par deploy.yml : rien n'est déployé sans ces contrôles
+  workflow_call:
+    inputs:
+      push:
+        description: Publier les images sur GHCR une fois les contrôles réussis
+        type: boolean
+        default: false
+
+# Nom de groupe fixe : voir pre-commit.yml
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  images:
+    name: Build, test et scan des images
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      # Publication et purge des images sur GHCR (étapes limitées à push: true)
+      packages: write
+    env:
+      # Stack de test : environnement dev (Traefik sur 8443), mots de passe jetables
+      DEPLOY_ENV: dev
+      POSTGRES_USER: enervision
+      POSTGRES_DB: enervision
+      POSTGRES_PASSWORD: ci-postgres
+      ETL_DB_PASSWORD: ci-etl
+      MODEL_DB_PASSWORD: ci-model
+      API_DB_PASSWORD: ci-api
+      BACKUP_DB_PASSWORD: ci-backup
+    steps:
+      # Pas de jeton dans .git/config : le job a packages: write et exécute le code de la PR
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Noms des images, identiques à ceux calculés par deploy.yml (GHCR exige des minuscules)
+      - name: Noms des images
+        run: |
+          echo "IMAGE_REPO=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=${GITHUB_SHA}" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # Les cibles et les tags viennent de compose-prod.yml. Cache de build dans le cache
+      # GitHub Actions (10 Go gratuits) : seules les couches modifiées sont reconstruites.
+      - name: Construire les images
+        uses: docker/bake-action@59cb1203cd42bcefd40a1b6d73b589e48c86040e # v7.5.0
+        with:
+          source: .
+          files: compose-prod.yml
+          targets: api,etl,front
+          load: true
+          set: |
+            *.pull=true
+            *.labels.org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            *.labels.org.opencontainers.image.revision=${{ github.sha }}
+            api.cache-from=type=gha,scope=api
+            api.cache-to=type=gha,scope=api,mode=max
+            etl.cache-from=type=gha,scope=etl
+            etl.cache-to=type=gha,scope=etl,mode=max
+            front.cache-from=type=gha,scope=front
+            front.cache-to=type=gha,scope=front,mode=max
+
+      - uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.76.1
+          cache: true
+
+      # Scans lancés en tâche de fond : ils tournent pendant le démarrage et les tests de la
+      # stack, et leur résultat est lu à l'étape « Résultat des scans Trivy ». Les images sont
+      # scannées l'une après l'autre : deux processus Trivy ne peuvent pas partager le cache.
+      # --ignore-unfixed : on ne bloque que sur ce qui a un correctif disponible.
+      - name: Lancer les scans Trivy (en tâche de fond)
+        run: |
+          dir="$RUNNER_TEMP/trivy"
+          mkdir -p "$dir"
+          echo "TRIVY_DIR=$dir" >> "$GITHUB_ENV"
+          (
+            failed=""
+            for service in api etl front; do
+              trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 \
+                --format table --ignorefile .trivyignore --skip-version-check \
+                "$IMAGE_REPO/enervision-$service:$IMAGE_TAG" > "$dir/$service.log" 2>&1 \
+                || failed="$failed $service"
+            done
+            echo "$failed" > "$dir/failed"
+          ) > "$dir/background.log" 2>&1 &
+
+      # Même enchaînement que sur la VM : Traefik partagé, puis la stack sans rebuild
+      - name: Démarrer la stack
+        run: |
+          cert_dir="$RUNNER_TEMP/certs"
+          mkdir -p "$cert_dir"
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=localhost" \
+            -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" \
+            -keyout "$cert_dir/key.pem" -out "$cert_dir/cert.pem" 2>/dev/null
+          echo "TLS_CERT_DIR=$cert_dir" >> "$GITHUB_ENV"
+          TLS_CERT_DIR="$cert_dir" docker compose -f infra/traefik/compose.yml up -d --wait
+          docker compose -f compose-prod.yml up -d --no-build --wait --wait-timeout 180
+
+      - name: Tester la stack
+        run: |
+          base="https://localhost:8443"
+          # API via Traefik ; /api/health vérifie aussi la connexion à la base (compte api)
+          for _ in $(seq 1 30); do
+            curl -fsSk "$base/api/health" >/dev/null && break
+            sleep 2
+          done
+          curl -fsSk "$base/api/health"
+          echo
+          # Front servi par nginx via Traefik
+          curl -fsSk "$base/" | grep -q '<div id="app"'
+          # HTTP redirige vers HTTPS
+          redirect=$(curl -s -o /dev/null -w '%{redirect_url}' http://localhost:8080/)
+          [ "$redirect" = "$base/" ] || { echo "::error::Redirection HTTP inattendue : '$redirect'"; exit 1; }
+          # Scripts db/ : chaque compte de service se connecte avec son mot de passe.
+          # -h db (réseau Docker) et non 127.0.0.1, où l'image postgres ne demande aucun
+          # mot de passe (trust dans pg_hba.conf) : le test ne prouverait rien.
+          login() {
+            docker compose -f compose-prod.yml exec -T -e PGPASSWORD="$2" db \
+              psql -h db -U "$1" -d "$POSTGRES_DB" -tAc 'SELECT 1' >/dev/null
+          }
+          login etl "$ETL_DB_PASSWORD"
+          login model "$MODEL_DB_PASSWORD"
+          login backup "$BACKUP_DB_PASSWORD"
+          if login api "mauvais-mot-de-passe" 2>/dev/null; then
+            echo "::error::Le compte api accepte un mauvais mot de passe"
+            exit 1
+          fi
+          # ETL : planning valide et conteneur toujours démarré
+          docker compose -f compose-prod.yml exec -T etl supercronic -test etl/crontab
+          [ -n "$(docker compose -f compose-prod.yml ps etl --status running -q)" ] \
+            || { echo "::error::Le conteneur etl n'est pas démarré"; exit 1; }
+
+      # Tests SQL de db/tests/ (droits des comptes, actions du dashboard), sur la base
+      # créée par les scripts d'initialisation de la stack. Lancés en superutilisateur :
+      # chaque script prend lui-même les droits d'un compte (SET ROLE) et annule tout (ROLLBACK).
+      - name: Tests SQL
+        run: |
+          for f in db/tests/*.sql; do
+            echo "::group::$f"
+            docker compose -f compose-prod.yml exec -T db \
+              psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" < "$f"
+            echo "::endgroup::"
+          done
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      # Contrat OpenAPI vérifié sur le conteneur de l'API, derrière Traefik
+      - name: Contrat d'API (Schemathesis)
+        run: |
+          pip install schemathesis==4.29.4
+          schemathesis run https://localhost:8443/api/openapi.json --checks all --tls-verify false
+
+      - name: Logs de la stack
+        if: failure()
+        run: |
+          docker compose -f compose-prod.yml ps -a
+          docker compose -f compose-prod.yml logs --tail=100
+          docker compose -f infra/traefik/compose.yml logs --tail=50
+
+      # Attend la fin des scans lancés en tâche de fond, affiche leurs rapports et bloque
+      # si une image contient une vulnérabilité HIGH ou CRITICAL corrigeable. Affiché même
+      # si les tests ont échoué, dès que les scans ont été lancés.
+      - name: Résultat des scans Trivy
+        if: always() && env.TRIVY_DIR != ''
+        run: |
+          for _ in $(seq 1 300); do
+            [ -f "$TRIVY_DIR/failed" ] && break
+            sleep 1
+          done
+          if [ ! -f "$TRIVY_DIR/failed" ]; then
+            cat "$TRIVY_DIR/background.log"
+            echo "::error::Les scans Trivy n'ont pas fini en 5 minutes"
+            exit 1
+          fi
+          for service in api etl front; do
+            echo "::group::Trivy - $service"
+            cat "$TRIVY_DIR/$service.log"
+            echo "::endgroup::"
+          done
+          failed=$(cat "$TRIVY_DIR/failed")
+          if [ -n "$failed" ]; then
+            echo "::error::Vulnérabilité HIGH ou CRITICAL corrigeable dans :$failed (rapports ci-dessus)"
+            exit 1
+          fi
+
+      # Les images publiées sont celles qui viennent d'être testées et scannées
+      - name: Publier sur GHCR
+        if: inputs.push
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          trap 'docker logout ghcr.io >/dev/null' EXIT
+          docker compose -f compose-prod.yml push api etl front
+
+      # GHCR est gratuit « pour l'instant » : on ne garde que les 20 dernières versions
+      - name: Purger les anciennes versions (api)
+        if: inputs.push
+        continue-on-error: true
+        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
+        with:
+          package-name: enervision-api
+          package-type: container
+          min-versions-to-keep: 20
+
+      - name: Purger les anciennes versions (etl)
+        if: inputs.push
+        continue-on-error: true
+        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
+        with:
+          package-name: enervision-etl
+          package-type: container
+          min-versions-to-keep: 20
+
+      - name: Purger les anciennes versions (front)
+        if: inputs.push
+        continue-on-error: true
+        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
+        with:
+          package-name: enervision-front
+          package-type: container
+          min-versions-to-keep: 20

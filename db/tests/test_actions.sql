@@ -2,7 +2,7 @@
 -- Tests des actions du dashboard (db/08_actions.sql) et des droits du
 -- compte api
 --
--- Lancé par la CI (.github/workflows/api-contract.yml) sur une base neuve, avec
+-- Lancé par la CI (.github/workflows/images.yml) sur une base neuve, avec
 -- le superutilisateur. Tout est annulé à la fin (ROLLBACK) : aucune donnée ne
 -- reste. Un échec arrête le script (psql -v ON_ERROR_STOP=1).
 --
