@@ -39,6 +39,13 @@ Chaque script de `db/` doit donc pouvoir être **rejoué sans effet** sur une ba
 - Ne jamais modifier une table dans le script qui l'a créée : un `CREATE TABLE IF NOT EXISTS` modifié ne change pas une table existante. Ajouter un nouveau script numéroté (`11_….sql`) avec `ALTER TABLE … ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`…
 - Un seul script par numéro, exécutés dans l'ordre du nom.
 - Les mots de passe des comptes sont réappliqués à chaque migration depuis les variables d'environnement.
+Les migrations sont dans `db/migrations/` (ignorées au premier démarrage, la base étant déjà à jour). Pour mettre à niveau une base existante, les exécuter dans l'ordre :
+
+```bash
+docker exec -i postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < db/migrations/001_silver_grille.sql
+```
+
+Les sites à collecter sont déclarés dans `app.site` par l'application (`db/08_sites_demo.sql` pour les 7 sites de démo) : l'ETL ne fait que les lire.
 
 Pour repartir d'une base vide (**supprime les données locales**) : `docker compose -f compose-local.yml down -v`.
 

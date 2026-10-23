@@ -38,6 +38,7 @@ from pydantic import ValidationError
 from sqlalchemy import Connection, text
 
 from common.db import get_engine
+from common.logs import configure_logging
 from etl.api_client import READINGS_MAX_LIMIT, get_readings_history, get_sites
 from etl.schemas import ReadingKey, SiteInfo
 
@@ -318,7 +319,5 @@ def collect(now: datetime | None = None) -> dict[str, int]:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
-    )
+    configure_logging("etl")
     collect()
