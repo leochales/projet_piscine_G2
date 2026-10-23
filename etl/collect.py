@@ -1,22 +1,27 @@
-"""ETL — Couche Bronze (amorçage).
+"""ETL — Collecte des mesures dans la couche bronze.
 
-bootstrap() :
-  1. Seede automatiquement ``app.client`` + ``app.site`` depuis l'API Mock
-     (idempotent : les sites déjà déclarés ne sont pas touchés).
-  2. Récupère les mesures manquantes via GET /api/v1/readings et les insère
-     dans ``bronze.raw_readings``. Chargement incrémental :
-       - start_time = max(horodatage) déjà en base pour le site (watermark),
-         ou NOW() − 24 h si la base est vide pour ce site ;
-       - pas de end_time (l'API utilise son horloge).
-     → idempotent, rattrape automatiquement un trou de collecte.
+collect() :
+  1. Lit dans ``app.site`` les sites actifs à collecter. L'ETL n'écrit jamais
+     dans ``app`` : les sites sont déclarés par l'application
+     (``db/08_sites_demo.sql`` pour la démo). Les sites de l'API Mock non
+     déclarés sont ignorés et signalés dans les logs.
+  2. Pour chaque site, récupère les mesures manquantes via GET
+     /api/v1/readings et les insère dans ``bronze.raw_readings``.
+
+Grille fixe de 60 s : l'API renvoie toujours ``limit`` points répartis sur
+la fenêtre demandée (pas = (end − start) / limit, fin exclue). On choisit
+donc des bornes alignées sur la minute et ``limit`` = nombre de minutes, pour
+obtenir des horodatages déterministes (hh:mm:00). La contrainte
+UNIQUE (id_site, horodatage) de bronze rend alors la collecte idempotente.
+
+Appelable à chaque minute comme au premier démarrage : sans mesure en base,
+on remonte DEFAULT_BACKFILL ; après une coupure, on rattrape au plus
+MAX_BACKFILL.
 
 Codes de sortie :
   0 : au moins un site a répondu
   1 : tous les sites ont échoué (API Mock inaccessible, 400/500, timeout…)
-
-À appeler une seule fois au premier démarrage du container ETL, puis le cron
-collecte les nouvelles mesures chaque minute. Doublons bronze ignorés par
-ON CONFLICT.
+  2 : aucun site actif déclaré dans app.site
 """
 
 from __future__ import annotations
@@ -24,191 +29,196 @@ from __future__ import annotations
 import json
 import logging
 import sys
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import requests
-from sqlalchemy import text
+from pydantic import ValidationError
+from sqlalchemy import Connection, text
 
 from common.db import get_engine
-from etl.api_client import get_readings_history, get_sites
+from etl.api_client import READINGS_MAX_LIMIT, get_readings_history, get_sites
+from etl.schemas import ReadingKey, SiteInfo
 
 logger = logging.getLogger(__name__)
 
-# Client propriétaire par défaut des sites seedés depuis l'API Mock
-DEFAULT_CLIENT_NAME = "Démo EnerVision"
+# Pas de la grille de mesures
+STEP = timedelta(seconds=60)
 
-# Fenêtre maximale remontée quand aucune mesure n'est encore en base pour
-# un site (pas de watermark à utiliser).
-DEFAULT_BACKFILL_HOURS = 24
+# L'horloge de l'API Mock retarde d'une vingtaine de secondes : demander
+# des données jusqu'à « maintenant » renvoie un 400 (« données dans le futur »).
+SAFETY_LAG = timedelta(minutes=2)
 
-# Limite par appel à l'API Mock. Quand une réponse contient exactement ce
-# nombre, les données sont probablement tronquées : on logge un warning.
-API_PAGE_LIMIT = 1000
+# Profondeur remontée pour un site sans aucune mesure en base
+DEFAULT_BACKFILL = timedelta(hours=24)
 
-# Au-delà de ce lag, on considère un site comme « rassis » et on logge un
-# warning à la fin du bootstrap.
+# Rattrapage maximal après une coupure, pour borner le nombre d'appels
+MAX_BACKFILL = timedelta(days=7)
+
+# Au-delà de ce retard, un site est considéré comme « rassis »
 STALE_THRESHOLD = timedelta(minutes=10)
 
+# Écart de capacité toléré entre app.site et l'API Mock avant de le signaler
+CAPACITY_TOLERANCE = 0.01
 
-def _seed_app_site_from_api(sites: list[dict]) -> dict[str, dict]:
-    """Seed ``app.client`` + ``app.site`` depuis la liste renvoyée par l'API Mock.
+EXIT_ALL_SITES_FAILED = 1
+EXIT_NO_DECLARED_SITE = 2
 
-    Idempotent : les sites déjà présents sont ignorés (ON CONFLICT DO NOTHING).
-    Retourne un dict ``id_site`` → ``{capacite_kw, statut}`` de tous les sites
-    déclarés en base (seedés + préexistants).
+
+@dataclass(frozen=True)
+class Window:
+    """Fenêtre [start, end[ à demander à l'API, avec ``limit`` points."""
+
+    start: datetime
+    end: datetime
+    limit: int
+
+
+def floor_to_step(ts: datetime) -> datetime:
+    """Arrondit à la minute inférieure, en UTC."""
+    ts = ts.astimezone(UTC)
+    return ts.replace(second=0, microsecond=0)
+
+
+def plan_windows(watermark: datetime | None, now: datetime) -> list[Window]:
+    """Découpe la période à collecter en fenêtres alignées sur la grille.
+
+    ``watermark`` est le dernier horodatage déjà en bronze pour le site (ou
+    None). La période va de la minute qui suit le watermark jusqu'à
+    ``now − SAFETY_LAG``, tronquée à MAX_BACKFILL. Chaque fenêtre couvre au
+    plus READINGS_MAX_LIMIT minutes.
     """
-    sql_get_client = text("SELECT id_client FROM app.client WHERE nom = :nom LIMIT 1")
-    sql_insert_client = text(
-        "INSERT INTO app.client (nom) VALUES (:nom) "
-        "ON CONFLICT (nom) DO NOTHING RETURNING id_client"
-    )
-    sql_insert_site = text("""
-        INSERT INTO app.site (
-            id_site, id_client, nom, type, localisation, capacite_kw
-        )
-        VALUES (:id_site, :id_client, :nom, :type, :localisation, :capacite_kw)
-        ON CONFLICT (id_site) DO NOTHING
-    """)
-    sql_known = text("SELECT id_site, capacite_kw, statut FROM app.site")
+    last = floor_to_step(now - SAFETY_LAG)
+    if watermark is None:
+        first = last - DEFAULT_BACKFILL
+    else:
+        # floor puis + STEP : un watermark hors grille (ancienne collecte)
+        # repart sur la minute pleine suivante
+        first = max(floor_to_step(watermark) + STEP, last - MAX_BACKFILL)
 
-    inserted_sites = 0
-    with get_engine().begin() as conn:
-        # 1. Trouver (ou créer) le client propriétaire par défaut
-        row = conn.execute(sql_get_client, {"nom": DEFAULT_CLIENT_NAME}).fetchone()
-        if row is None:
-            new_id = conn.execute(
-                sql_insert_client, {"nom": DEFAULT_CLIENT_NAME}
-            ).scalar()
-            id_client = new_id
-        else:
-            id_client = row.id_client
+    windows: list[Window] = []
+    while first <= last:
+        remaining = (last - first) // STEP + 1
+        n = min(remaining, READINGS_MAX_LIMIT)
+        windows.append(Window(start=first, end=first + n * STEP, limit=n))
+        first += n * STEP
+    return windows
 
-        # 2. Seeder chaque site retourné par l'API Mock
-        for site in sites:
-            id_site = site.get("id") or site.get("site_id")
-            if not id_site:
-                continue
-            # capacite_kw est obligatoire (CHECK > 0). On skip plutôt que
-            # d'envoyer 0 qui violerait la contrainte et avorterait la
-            # transaction entière.
-            capacite_kw = site.get("capacity_kw")
-            if not capacite_kw or capacite_kw <= 0:
-                logger.warning(
-                    "[BOOTSTRAP] site %s ignoré : capacity_kw manquante ou nulle",
-                    id_site,
-                )
-                continue
-            res = conn.execute(
-                sql_insert_site,
-                {
-                    "id_site": id_site,
-                    "id_client": id_client,
-                    "nom": site.get("name") or site.get("site_name", id_site),
-                    "type": site.get("type") or site.get("site_type", "office"),
-                    "localisation": site.get("location"),
-                    "capacite_kw": capacite_kw,
-                },
+
+def select_readings(
+    id_site: str, window: Window, readings: list[dict[str, Any]]
+) -> tuple[list[tuple[datetime, dict[str, Any]]], int]:
+    """Garde les mesures du site qui tombent sur la grille de la fenêtre.
+
+    Retourne les couples (horodatage UTC, payload brut) et le nombre de
+    mesures écartées (clé illisible, autre site, hors grille).
+    """
+    kept: list[tuple[datetime, dict[str, Any]]] = []
+    rejected = 0
+    for reading in readings:
+        try:
+            key = ReadingKey.model_validate(reading)
+        except ValidationError as exc:
+            logger.warning(
+                "site %s : mesure sans clé valide écartée (%s)",
+                id_site,
+                exc.errors(include_url=False),
             )
-            inserted_sites += res.rowcount
+            rejected += 1
+            continue
+        on_grid = window.start <= key.timestamp < window.end and (
+            key.timestamp - window.start
+        ) % STEP == timedelta(0)
+        if key.site_id != id_site or not on_grid:
+            logger.warning(
+                "site %s : mesure inattendue écartée (site=%s, horodatage=%s)",
+                id_site,
+                key.site_id,
+                key.timestamp.isoformat(),
+            )
+            rejected += 1
+            continue
+        kept.append((key.timestamp, reading))
+    return kept, rejected
 
-        # 3. Charger la liste finale des sites connus
-        known = {
-            r.id_site: {"capacite_kw": float(r.capacite_kw), "statut": r.statut}
-            for r in conn.execute(sql_known)
-        }
 
-    logger.info(
-        "[BOOTSTRAP] Seed app.site : %d nouveau(x), %d site(s) connu(s) au total",
-        inserted_sites,
-        len(known),
+def check_sites_consistency(
+    declared: dict[str, float], mock_sites: list[SiteInfo]
+) -> list[str]:
+    """Compare app.site à l'API Mock. Retourne les écarts à signaler."""
+    issues: list[str] = []
+    mock = {s.site_id: s for s in mock_sites}
+    for id_site in sorted(mock.keys() - declared.keys()):
+        issues.append(f"site {id_site} présent dans l'API Mock mais non déclaré")
+    for id_site in sorted(declared.keys() - mock.keys()):
+        issues.append(f"site {id_site} déclaré mais absent de l'API Mock")
+    for id_site in sorted(declared.keys() & mock.keys()):
+        ours, theirs = declared[id_site], mock[id_site].capacity_kw
+        if abs(ours - theirs) > CAPACITY_TOLERANCE * theirs:
+            issues.append(
+                f"site {id_site} : capacité {ours} kW en base, {theirs} kW dans l'API Mock"
+            )
+    return issues
+
+
+def load_declared_sites(conn: Connection) -> dict[str, float]:
+    """Sites actifs de app.site → capacité en kW (lecture seule)."""
+    sql = text(
+        "SELECT id_site, capacite_kw FROM app.site "
+        "WHERE statut = 'active' ORDER BY id_site"
     )
-    return known
+    return {r.id_site: float(r.capacite_kw) for r in conn.execute(sql)}
 
 
-def _get_watermarks(id_sites: list[str]) -> dict[str, datetime | None]:
-    """Retourne le max(horodatage) déjà en bronze pour chaque site.
-
-    None quand aucune mesure n'est encore en base → l'appelant choisira
-    un défaut (DEFAULT_BACKFILL_HOURS).
-    """
+def get_watermarks(conn: Connection, id_sites: list[str]) -> dict[str, datetime | None]:
+    """Dernier horodatage en bronze pour chaque site (None si aucun)."""
     sql = text("""
         SELECT id_site, MAX(horodatage) AS watermark
         FROM bronze.raw_readings
         WHERE id_site = ANY(:ids)
         GROUP BY id_site
     """)
-    with get_engine().connect() as conn:
-        rows = conn.execute(sql, {"ids": id_sites}).fetchall()
-    watermarks: dict[str, datetime | None] = {s: None for s in id_sites}
-    for r in rows:
+    watermarks: dict[str, datetime | None] = dict.fromkeys(id_sites)
+    for r in conn.execute(sql, {"ids": id_sites}):
         watermarks[r.id_site] = r.watermark
     return watermarks
 
 
-def _parse_iso_utc(raw: str) -> datetime | None:
-    """Parse un timestamp ISO 8601, force UTC si naive, None si invalide."""
-    try:
-        ts = datetime.fromisoformat(str(raw))
-    except (ValueError, TypeError):
-        return None
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=UTC)
-    return ts
+def insert_bronze(
+    conn: Connection, id_site: str, rows: list[tuple[datetime, dict[str, Any]]]
+) -> int:
+    """Insère un lot de mesures brutes en un seul aller-retour.
 
-
-def _insert_reading(site: dict, reading: dict, known: dict[str, dict]) -> bool:
-    """Insère une mesure brute dans bronze.raw_readings (ignore les doublons).
-
-    Retourne False si le site est inconnu, ou si le timestamp est illisible,
-    ou si c'est un doublon (ON CONFLICT).
+    Les doublons (même site, même horodatage) sont ignorés : la première
+    valeur reçue est conservée, l'API Mock tirant de nouvelles valeurs à
+    chaque appel. Retourne le nombre de lignes réellement insérées.
     """
-    id_site = site.get("id") or site.get("site_id")
-    if id_site not in known:
-        return False
-
-    ts = _parse_iso_utc(reading.get("timestamp"))
-    if ts is None:
-        logger.warning(
-            "[BOOTSTRAP] site %s : timestamp illisible, mesure ignorée (payload=%s)",
-            id_site,
-            reading.get("timestamp"),
-        )
-        return False
-
-    payload = {
-        **reading,
-        "_site": {
-            "id_site": id_site,
-            "site_name": site.get("name") or site.get("site_name", ""),
-            "site_type": site.get("type") or site.get("site_type", "office"),
-            "capacite_kw": known[id_site]["capacite_kw"],
-            "location": site.get("location"),
-            "status": site.get("status", "active"),
-        },
-    }
-
+    if not rows:
+        return 0
     sql = text("""
         INSERT INTO bronze.raw_readings (id_site, horodatage, payload)
-        VALUES (:id_site, :horodatage, :payload)
+        SELECT :id_site, t.horodatage, t.payload
+        FROM unnest(
+            CAST(:horodatages AS timestamptz[]),
+            CAST(:payloads AS jsonb[])
+        ) AS t (horodatage, payload)
         ON CONFLICT (id_site, horodatage) DO NOTHING
+        RETURNING id
     """)
-
-    with get_engine().begin() as conn:
-        result = conn.execute(
-            sql,
-            {
-                "id_site": id_site,
-                "horodatage": ts,
-                "payload": json.dumps(payload),
-            },
-        )
-        return result.rowcount > 0
+    result = conn.execute(
+        sql,
+        {
+            "id_site": id_site,
+            "horodatages": [ts for ts, _ in rows],
+            "payloads": [json.dumps(payload) for _, payload in rows],
+        },
+    )
+    return len(result.fetchall())
 
 
-def _check_freshness(known: dict[str, dict]) -> None:
+def log_stale_sites(conn: Connection, id_sites: list[str]) -> None:
     """Logge un warning pour chaque site dont la dernière mesure est trop vieille."""
-    if not known:
-        return
     sql = text("""
         SELECT id_site, NOW() - MAX(horodatage) AS lag
         FROM bronze.raw_readings
@@ -216,102 +226,92 @@ def _check_freshness(known: dict[str, dict]) -> None:
         GROUP BY id_site
         HAVING NOW() - MAX(horodatage) > :threshold
     """)
-    with get_engine().connect() as conn:
-        stale = conn.execute(
-            sql, {"ids": list(known), "threshold": STALE_THRESHOLD}
-        ).fetchall()
-    for row in stale:
-        logger.warning(
-            "[BOOTSTRAP] site %s : dernière mesure il y a %s", row.id_site, row.lag
-        )
+    for row in conn.execute(sql, {"ids": id_sites, "threshold": STALE_THRESHOLD}):
+        logger.warning("site %s : dernière mesure il y a %s", row.id_site, row.lag)
 
 
-def bootstrap() -> dict[str, int]:
-    """Amorçage : seede app.site puis importe les mesures manquantes par site.
+def _warn_on_inconsistent_sites(declared: dict[str, float]) -> None:
+    """Contrôle de cohérence avec l'API Mock, sans effet sur la collecte."""
+    try:
+        mock_sites = get_sites()
+    except (requests.RequestException, ValidationError) as exc:
+        logger.warning("contrôle des sites impossible (GET /sites) : %s", exc)
+        return
+    for issue in check_sites_consistency(declared, mock_sites):
+        logger.warning(issue)
 
-    Chargement incrémental : part de max(horodatage) déjà en bronze pour
-    chaque site, ou de NOW − 24 h si la base est vide pour ce site.
+
+def collect_site(id_site: str, watermark: datetime | None, now: datetime) -> int:
+    """Collecte un site, fenêtre par fenêtre. Retourne le nombre d'insertions.
+
+    Lève requests.RequestException si l'API échoue : les fenêtres déjà
+    insérées restent acquises, la suivante repartira du nouveau watermark.
     """
-    logger.info("[BOOTSTRAP] Démarrage — chargement incrémental")
+    inserted = 0
+    for window in plan_windows(watermark, now):
+        readings = get_readings_history(
+            site_id=id_site,
+            start_time=window.start,
+            end_time=window.end,
+            limit=window.limit,
+        )
+        rows, rejected = select_readings(id_site, window, readings)
+        with get_engine().begin() as conn:
+            n = insert_bronze(conn, id_site, rows)
+        inserted += n
+        logger.info(
+            "site=%s [%s, %s[ : %d reçues, %d insérées, %d écartées",
+            id_site,
+            window.start.isoformat(timespec="minutes"),
+            window.end.isoformat(timespec="minutes"),
+            len(readings),
+            n,
+            rejected,
+        )
+    return inserted
 
-    sites = get_sites()
-    if not sites:
-        logger.error("[BOOTSTRAP] Aucun site récupéré — API Mock inaccessible ?")
-        return {"sites": 0, "readings_inserted": 0, "sites_in_error": 0}
 
-    known = _seed_app_site_from_api(sites)
-    if not known:
-        logger.warning("[BOOTSTRAP] app.site vide après seed — rien à collecter")
-        return {"sites": 0, "readings_inserted": 0, "sites_in_error": 0}
+def collect(now: datetime | None = None) -> dict[str, int]:
+    """Collecte incrémentale de tous les sites actifs déclarés."""
+    now = now or datetime.now(tz=UTC)
 
-    sites_by_id = {(s.get("id") or s.get("site_id")): s for s in sites}
-    watermarks = _get_watermarks(list(known))
-    now_utc = datetime.now(tz=UTC)
+    with get_engine().connect() as conn:
+        declared = load_declared_sites(conn)
+        if not declared:
+            logger.error(
+                "aucun site actif dans app.site : rien à collecter "
+                "(déclarer les sites, voir db/08_sites_demo.sql)"
+            )
+            sys.exit(EXIT_NO_DECLARED_SITE)
+        watermarks = get_watermarks(conn, list(declared))
+
+    _warn_on_inconsistent_sites(declared)
 
     total_inserted = sites_in_error = 0
-
-    for id_site in known:
-        site = sites_by_id.get(id_site)
-        if site is None:
-            logger.warning(
-                "[BOOTSTRAP] site %s déclaré en base mais absent de l'API Mock",
-                id_site,
-            )
-            continue
-
-        start_time = watermarks.get(id_site) or (
-            now_utc - timedelta(hours=DEFAULT_BACKFILL_HOURS)
-        )
-
+    for id_site in declared:
         try:
-            readings = get_readings_history(
-                site_id=id_site,
-                start_time=start_time,
-                limit=API_PAGE_LIMIT,
-            )
+            total_inserted += collect_site(id_site, watermarks[id_site], now)
         except requests.RequestException as exc:
-            logger.error("[BOOTSTRAP] site %s : échec API — %s", id_site, exc)
+            logger.error("site %s : échec API — %s", id_site, exc)
             sites_in_error += 1
-            continue
 
-        logger.info(
-            "[BOOTSTRAP] site=%s depuis %s → %d mesures récupérées",
-            id_site,
-            start_time.isoformat(timespec="seconds"),
-            len(readings),
-        )
-        if len(readings) == API_PAGE_LIMIT:
-            logger.warning(
-                "[BOOTSTRAP] site %s : %d mesures (limite API atteinte, données "
-                "sans doute tronquées — relancer l'amorçage ou raccourcir la "
-                "fenêtre)",
-                id_site,
-                API_PAGE_LIMIT,
-            )
-
-        for reading in readings:
-            reading_site_id = reading.get("site_id", id_site)
-            site_dict = sites_by_id.get(reading_site_id, site)
-            if _insert_reading(site_dict, reading, known):
-                total_inserted += 1
-
-    _check_freshness(known)
+    with get_engine().connect() as conn:
+        log_stale_sites(conn, list(declared))
 
     logger.info(
-        "[BOOTSTRAP] Terminé — %d insérées, %d site(s) en erreur sur %d",
+        "collecte terminée — %d insérées, %d site(s) en erreur sur %d",
         total_inserted,
         sites_in_error,
-        len(known),
+        len(declared),
     )
 
-    # Si tous les sites ont échoué, on remonte un code non nul pour que
-    # l'ordonnanceur (init container, CI, cron) détecte le problème.
-    if sites_in_error == len(known) and sites_in_error > 0:
-        logger.error("[BOOTSTRAP] Tous les sites ont échoué — exit 1")
-        sys.exit(1)
+    # Tous les sites en échec : code non nul pour que l'ordonnanceur le voie
+    if sites_in_error == len(declared):
+        logger.error("tous les sites ont échoué — exit %d", EXIT_ALL_SITES_FAILED)
+        sys.exit(EXIT_ALL_SITES_FAILED)
 
     return {
-        "sites": len(known),
+        "sites": len(declared),
         "readings_inserted": total_inserted,
         "sites_in_error": sites_in_error,
     }
@@ -321,4 +321,4 @@ if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
     )
-    bootstrap()
+    collect()
