@@ -37,8 +37,9 @@ services:
       - --providers.docker.endpoint=tcp://socket-proxy:2375
       - --providers.docker.exposedbydefault=false
       - --providers.docker.network=traefik_public
-      # Certificat par défaut (fichier de configuration dynamique)
-      - --providers.file.filename=/etc/traefik/dynamic.yml
+      # Configuration dynamique : certificat par défaut (dynamic.yml) et en-têtes de
+      # sécurité (middlewares.yml, partagé avec le Traefik local)
+      - --providers.file.directory=/etc/traefik/dynamic
       - --entrypoints.http-prod.address=:80
       - --entrypoints.http-prod.http.redirections.entrypoint.to=https-prod
       - --entrypoints.http-prod.http.redirections.entrypoint.scheme=https
@@ -55,7 +56,8 @@ services:
       - "8080:8080"
       - "8443:8443"
     volumes:
-      - ./dynamic.yml:/etc/traefik/dynamic.yml:ro
+      - ./dynamic.yml:/etc/traefik/dynamic/dynamic.yml:ro
+      - ./middlewares.yml:/etc/traefik/dynamic/middlewares.yml:ro
       - ${TLS_CERT_DIR:?TLS_CERT_DIR manquant}:/certs:ro
     networks:
       - public

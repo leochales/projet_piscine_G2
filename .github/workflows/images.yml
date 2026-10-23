@@ -54,6 +54,8 @@ jobs:
       # Sauvegarde : testée dans un dépôt local du conteneur, pas sur Azure
       RESTIC_PASSWORD: ci-restic
       FRONT_URL: https://localhost:8443
+      # Nom d'hôte accepté par les routes Traefik (IP de la VM en déploiement)
+      PUBLIC_HOST: localhost
     steps:
       # Pas de jeton dans .git/config : le job a packages: write et exécute le code de la PR
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -145,6 +147,32 @@ jobs:
           # HTTP redirige vers HTTPS
           redirect=$(curl -s -o /dev/null -w '%{redirect_url}' http://localhost:8080/)
           [ "$redirect" = "$base/" ] || { echo "::error::Redirection HTTP inattendue : '$redirect'"; exit 1; }
+          # Redirections de l'API (slash final) et de nginx (dossier) : restent en HTTPS
+          redirect=$(curl -sk -o /dev/null -w '%{redirect_url}' "$base/api/health/")
+          [ "$redirect" = "$base/api/health" ] || { echo "::error::Redirection de l'API inattendue : '$redirect'"; exit 1; }
+          location=$(curl -sk -o /dev/null -w '%header{location}' "$base/assets")
+          [ "$location" = "/assets/" ] || { echo "::error::Redirection de nginx inattendue : '$location'"; exit 1; }
+          # Autre nom d'hôte : 404 de Traefik, sans redirection vers cet hôte
+          for path in /api/health/ /assets /; do
+            result=$(curl -sk -o /dev/null -w '%{http_code} %header{location}' -H "Host: evil.example" "$base$path")
+            [ "$result" = "404 " ] || { echo "::error::Host: evil.example accepté sur $path : '$result'"; exit 1; }
+          done
+          # En-têtes de sécurité (infra/traefik/middlewares.yml), sans version dans Server
+          check_headers() {
+            local path=$1
+            headers=$(curl -sk -o /dev/null -D - "$base$path" | tr -d '\r')
+            shift
+            for header in X-Content-Type-Options X-Frame-Options Referrer-Policy "$@"; do
+              grep -qi "^$header:" <<< "$headers" \
+                || { echo "::error::$header absent de $path"; echo "$headers"; exit 1; }
+            done
+            if grep -qiE '^Server:.*[0-9]' <<< "$headers"; then
+              echo "::error::Version du serveur exposée"; echo "$headers"; exit 1
+            fi
+          }
+          check_headers /api/health
+          check_headers / Content-Security-Policy
+          check_headers /page-inexistante Content-Security-Policy
           # Keycloak via Traefik : émetteur des jetons = adresse publique, identique pour
           # le navigateur et pour l'API (réseau interne)
           expected="$base/auth/realms/enervision"

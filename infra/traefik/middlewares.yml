@@ -1,0 +1,27 @@
+# En-têtes de sécurité ajoutés par Traefik aux réponses du front et de l'API.
+# Fichier commun au Traefik local (compose-local.yml) et au Traefik partagé de la VM
+# (infra/traefik/compose.yml) ; les routeurs y font référence par <nom>@file.
+#
+# Pas de HSTS : sans effet sur une adresse IP avec un certificat auto-signé.
+http:
+  middlewares:
+    # Front et API
+    security-headers:
+      headers:
+        contentTypeNosniff: true          # X-Content-Type-Options: nosniff
+        frameDeny: true                   # X-Frame-Options: DENY
+        referrerPolicy: strict-origin-when-cross-origin
+
+    # Front seulement : tout vient de la même origine (scripts, styles, polices et images
+    # du build Vite, appels à /api et /auth). data: pour les petites images et polices
+    # que Vite intègre directement dans le CSS.
+    front-csp:
+      headers:
+        contentSecurityPolicy: >-
+          default-src 'self';
+          img-src 'self' data:;
+          font-src 'self' data:;
+          object-src 'none';
+          base-uri 'self';
+          form-action 'self';
+          frame-ancestors 'none'

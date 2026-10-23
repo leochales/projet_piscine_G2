@@ -12,6 +12,10 @@
 #     tous les environnements en HTTPS, chacun sur son entrypoint (https-<DEPLOY_ENV>)
 #   - Postgres n'est pas exposé hors du réseau Docker
 #
+# Les routes Traefik n'acceptent que les requêtes adressées à PUBLIC_HOST (IP de la VM,
+# localhost en CI) : un autre en-tête Host reçoit le 404 de Traefik, sans redirection vers
+# l'hôte demandé.
+#
 # Plusieurs environnements cohabitent sur la VM : chacun est un projet Docker distinct
 # (enervision-<DEPLOY_ENV>), avec ses propres conteneurs, volumes et base.
 # Les noms de routeurs Traefik sont préfixés par le projet pour rester uniques.
@@ -77,7 +81,7 @@ services:
       # Tout Keycloak : realm enervision (connexion, jetons, clés), console d'administration
       # (/auth/admin) et realm master, où se connectent ses administrateurs. Santé et
       # métriques restent sur le port de gestion (9000), non routé.
-      - traefik.http.routers.enervision-${DEPLOY_ENV}-auth.rule=PathPrefix(`/auth`)
+      - traefik.http.routers.enervision-${DEPLOY_ENV}-auth.rule=Host(`${PUBLIC_HOST:?PUBLIC_HOST manquant}`) && PathPrefix(`/auth`)
       - traefik.http.routers.enervision-${DEPLOY_ENV}-auth.entrypoints=https-${DEPLOY_ENV}
       - traefik.http.services.enervision-${DEPLOY_ENV}-auth.loadbalancer.server.port=8080
     healthcheck:
@@ -117,6 +121,10 @@ services:
       # Clés de signature lues en interne, sur le Keycloak de CET environnement : pas
       # « keycloak », ambigu sur traefik_public (partagé par dev et prod)
       KEYCLOAK_URL_INTERNE: http://keycloak-${DEPLOY_ENV}:8080/auth
+      # Front et API partagent la même origine derrière Traefik : aucun appel cross-origin
+      API_CORS_ORIGINS: "[]"
+      # Swagger et openapi.json en dev seulement (Schemathesis tourne en CI sur dev)
+      API_DOCS_ENABLED: ${API_DOCS_ENABLED:-true}
       # Création des comptes (client enervision-admin) et comptes de démonstration
       # (api/seed.py) ; sans SEED_PASSWORD (secret <ENV>_SEED_PASSWORD), pas de seeding
       KEYCLOAK_ADMIN_CLIENT_SECRET: ${KEYCLOAK_ADMIN_CLIENT_SECRET}
@@ -125,8 +133,10 @@ services:
       DEPLOY_ENV: ${DEPLOY_ENV}
     labels:
       - traefik.enable=true
-      - traefik.http.routers.enervision-${DEPLOY_ENV}-api.rule=PathPrefix(`/api`)
+      - traefik.http.routers.enervision-${DEPLOY_ENV}-api.rule=Host(`${PUBLIC_HOST:?PUBLIC_HOST manquant}`) && PathPrefix(`/api`)
       - traefik.http.routers.enervision-${DEPLOY_ENV}-api.entrypoints=https-${DEPLOY_ENV}
+      # En-têtes de sécurité (infra/traefik/middlewares.yml)
+      - traefik.http.routers.enervision-${DEPLOY_ENV}-api.middlewares=security-headers@file
       - traefik.http.services.enervision-${DEPLOY_ENV}-api.loadbalancer.server.port=8000
     depends_on:
       db:
@@ -236,8 +246,9 @@ services:
     restart: unless-stopped
     labels:
       - traefik.enable=true
-      - traefik.http.routers.enervision-${DEPLOY_ENV}-front.rule=PathPrefix(`/`)
+      - traefik.http.routers.enervision-${DEPLOY_ENV}-front.rule=Host(`${PUBLIC_HOST:?PUBLIC_HOST manquant}`) && PathPrefix(`/`)
       - traefik.http.routers.enervision-${DEPLOY_ENV}-front.entrypoints=https-${DEPLOY_ENV}
+      - traefik.http.routers.enervision-${DEPLOY_ENV}-front.middlewares=security-headers@file,front-csp@file
       - traefik.http.services.enervision-${DEPLOY_ENV}-front.loadbalancer.server.port=80
     depends_on:
       - api
