@@ -19,16 +19,65 @@ export function formatSignedPct(pct: number) {
   return `${sign}${integer.format(Math.abs(pct))} %`
 }
 
-/** « demain 14 h », « aujourd'hui 9 h », sinon « jeu. 23 14 h » */
+// Les dates de l'API sont en UTC. Elles sont toujours affichées à l'heure de Paris, quel que
+// soit le fuseau du poste (un navigateur réglé sur un autre fuseau, un serveur en UTC), et
+// changements d'heure compris : Intl applique les règles du fuseau à chaque date.
+export const TIME_ZONE = 'Europe/Paris'
+
+const parisParts = new Intl.DateTimeFormat('fr-FR', {
+  timeZone: TIME_ZONE,
+  year: 'numeric',
+  month: 'numeric',
+  day: 'numeric',
+  hour: 'numeric',
+  hourCycle: 'h23',
+})
+const weekday = new Intl.DateTimeFormat('fr-FR', { timeZone: TIME_ZONE, weekday: 'short' })
+const weekdayAndDay = new Intl.DateTimeFormat('fr-FR', {
+  timeZone: TIME_ZONE,
+  weekday: 'short',
+  day: 'numeric',
+})
+const clock = new Intl.DateTimeFormat('fr-FR', {
+  timeZone: TIME_ZONE,
+  hour: '2-digit',
+  minute: '2-digit',
+})
+
+/** Date et heure à Paris, quel que soit le fuseau du poste */
+function inParis(date: Date) {
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    Number(parisParts.formatToParts(date).find((p) => p.type === type)?.value)
+  return { year: part('year'), month: part('month'), day: part('day'), hour: part('hour') }
+}
+
+/** Jours calendaires entre deux dates, à Paris (0 : même jour, 1 : lendemain) */
+function parisDayDiff(date: Date, now: Date) {
+  const d = inParis(date)
+  const n = inParis(now)
+  return Math.round(
+    (Date.UTC(d.year, d.month - 1, d.day) - Date.UTC(n.year, n.month - 1, n.day)) / 86_400_000,
+  )
+}
+
+/** « demain 14 h », « aujourd'hui 9 h », sinon « jeu. 23 14 h » (heure de Paris) */
 export function formatRelativeHour(iso: string, now = new Date()) {
   const date = new Date(iso)
-  const hour = `${date.getHours()} h`
-  const dayDiff = Math.round((startOfDay(date).getTime() - startOfDay(now).getTime()) / 86_400_000)
+  const hour = `${inParis(date).hour} h`
+  const dayDiff = parisDayDiff(date, now)
   if (dayDiff === 0) return `aujourd'hui ${hour}`
   if (dayDiff === 1) return `demain ${hour}`
-  const day = date.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric' })
-  return `${day} ${hour}`
+  return `${weekdayAndDay.format(date)} ${hour}`
 }
+
+/** Graduation d'un axe horaire : « jeu. 14 h » (heure de Paris) */
+export function formatAxisHour(iso: string) {
+  const date = new Date(iso)
+  return `${weekday.format(date)} ${inParis(date).hour} h`
+}
+
+/** Heure exacte : « 14:05 » (heure de Paris) */
+export const formatClock = (date: Date) => clock.format(date)
 
 /** Âge d'une donnée : « à l'instant », « il y a 30 s », « il y a 5 min », « il y a 2 h » */
 export function formatAge(from: Date, now = new Date()) {
@@ -38,8 +87,4 @@ export function formatAge(from: Date, now = new Date()) {
   const minutes = Math.floor(seconds / 60)
   if (minutes < 60) return `il y a ${minutes} min`
   return `il y a ${Math.floor(minutes / 60)} h`
-}
-
-function startOfDay(date: Date) {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate())
 }

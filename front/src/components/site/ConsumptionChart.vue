@@ -15,7 +15,7 @@ import {
   type Plugin,
 } from 'chart.js'
 
-import { formatKw } from '@/lib/format'
+import { formatAxisHour, formatKw } from '@/lib/format'
 import type { SiteSeries } from '@/types/energy'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler, Tooltip)
@@ -79,12 +79,8 @@ const peak = computed(() => {
   return best
 })
 
-const labels = computed(() =>
-  points.value.map((p) => {
-    const d = new Date(p.t)
-    return `${d.toLocaleDateString('fr-FR', { weekday: 'short' })} ${d.getHours()} h`
-  }),
-)
+// Heure de Paris, quel que soit le fuseau du poste
+const labels = computed(() => points.value.map((p) => formatAxisHour(p.t)))
 
 const data = computed<ChartData<'line'>>(() => ({
   labels: labels.value,

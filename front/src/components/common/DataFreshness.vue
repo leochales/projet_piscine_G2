@@ -4,7 +4,7 @@ import { useIntervalFn } from '@vueuse/core'
 import { RotateCw } from '@lucide/vue'
 
 import { Button } from '@/components/ui/button'
-import { formatAge } from '@/lib/format'
+import { formatAge, formatClock } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 const props = defineProps<{
@@ -21,9 +21,7 @@ const now = shallowRef(new Date())
 useIntervalFn(() => (now.value = new Date()), 1000)
 
 const age = computed(() => (props.updatedAt ? formatAge(props.updatedAt, now.value) : ''))
-const exactTime = computed(() =>
-  props.updatedAt?.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
-)
+const exactTime = computed(() => props.updatedAt && formatClock(props.updatedAt))
 </script>
 
 <template>
