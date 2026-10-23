@@ -75,9 +75,14 @@ Grafana : http://localhost/grafana (compte `admin`, mot de passe `GRAFANA_ADMIN_
 | Loki | stocke les logs, conservés 7 jours | `infra/monitoring/loki/` |
 | Grafana | tableaux de bord, chargés depuis le dépôt à chaque démarrage | `infra/monitoring/grafana/` |
 
-- Les services Python écrivent leurs logs en JSON avec `common/logs.py` (`configure_logging("nom-du-service")`) : Grafana peut alors filtrer par niveau.
+- L'API écrit ses logs en JSON avec `common/logs.py`. Chaque service Python doit appeler `configure_logging("nom-du-service")` au démarrage, plutôt que `logging.basicConfig` : sinon ses logs restent en texte et Grafana ne peut pas les filtrer par niveau.
 - L'API expose ses métriques sur `/metrics`, hors de `/api` : Traefik ne les publie pas, seul Prometheus les lit.
-- Le compte `monitoring` n'existe que dans une base créée après l'ajout de la supervision. Sur une base plus ancienne, PostgreSQL apparaît « injoignable » dans Grafana : recréer la base (voir **Base de données** ci-dessus).
+- Le compte `monitoring` n'existe que dans une base créée après l'ajout de la supervision. Sur une base plus ancienne, PostgreSQL apparaît « injoignable » dans Grafana : créer le compte sans toucher aux données (les deux scripts peuvent être relancés sans risque) :
+
+  ```bash
+  docker compose -f compose-local.yml up -d db   # recrée db avec MONITORING_DB_PASSWORD
+  docker compose -f compose-local.yml exec db sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f /docker-entrypoint-initdb.d/06_roles.sql && bash /docker-entrypoint-initdb.d/07_passwords.sh'
+  ```
 - Un tableau de bord modifié dans Grafana n'est pas sauvegardé : exporter son JSON dans `infra/monitoring/grafana/dashboards/`.
 
 ## Hooks pre-commit
