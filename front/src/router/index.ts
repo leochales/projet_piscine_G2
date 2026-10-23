@@ -22,7 +22,14 @@ const router = createRouter({
       component: () => import('@/views/AlertsView.vue'),
       meta: { title: 'Alertes et recommandations' },
     },
-    { path: '/:pathMatch(.*)*', redirect: '/' },
+    // Adresse inconnue : une vraie page plutôt qu'un renvoi silencieux vers l'accueil,
+    // qui laisserait croire que le lien fonctionne
+    {
+      path: '/:pathMatch(.*)*',
+      name: 'not-found',
+      component: () => import('@/views/NotFoundView.vue'),
+      meta: { title: 'Page introuvable' },
+    },
   ],
 })
 

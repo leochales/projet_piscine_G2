@@ -9,6 +9,8 @@ import type { Recommendation } from '@/types/energy'
 const props = defineProps<{
   recommendation: Recommendation
   canAct: boolean
+  /** Décision en cours d'envoi : les deux boutons sont bloqués */
+  pending?: boolean
 }>()
 const emit = defineEmits<{ accept: [id: string]; refuse: [id: string] }>()
 
@@ -32,8 +34,15 @@ const gain = computed(() => {
       <Badge v-if="recommendation.statut === 'acceptee'" variant="secondary">Acceptée</Badge>
       <Badge v-else-if="recommendation.statut === 'refusee'" variant="outline">Refusée</Badge>
       <div v-else-if="canAct" class="flex gap-2">
-        <Button size="sm" @click="emit('accept', recommendation.id)">Accepter</Button>
-        <Button size="sm" variant="outline" @click="emit('refuse', recommendation.id)">
+        <Button size="sm" :disabled="pending" @click="emit('accept', recommendation.id)">
+          Accepter
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          :disabled="pending"
+          @click="emit('refuse', recommendation.id)"
+        >
           Refuser
         </Button>
       </div>

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Line } from 'vue-chartjs'
+import { useMediaQuery } from '@vueuse/core'
 import {
   CategoryScale,
   Chart as ChartJS,
@@ -14,7 +15,7 @@ import {
   type Plugin,
 } from 'chart.js'
 
-import { formatKw } from '@/lib/format'
+import { formatAxisHour, formatKw } from '@/lib/format'
 import type { SiteSeries } from '@/types/energy'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler, Tooltip)
@@ -78,12 +79,8 @@ const peak = computed(() => {
   return best
 })
 
-const labels = computed(() =>
-  points.value.map((p) => {
-    const d = new Date(p.t)
-    return `${d.toLocaleDateString('fr-FR', { weekday: 'short' })} ${d.getHours()} h`
-  }),
-)
+// Heure de Paris, quel que soit le fuseau du poste
+const labels = computed(() => points.value.map((p) => formatAxisHour(p.t)))
 
 const data = computed<ChartData<'line'>>(() => ({
   labels: labels.value,
@@ -155,6 +152,9 @@ const nowLine: Plugin<'line'> = {
   },
 }
 
+// Sur un écran étroit, 8 dates (« jeu. 14 h ») ne tiennent pas sans se chevaucher
+const wide = useMediaQuery('(min-width: 640px)')
+
 const options = computed<ChartOptions<'line'>>(() => ({
   responsive: true,
   maintainAspectRatio: false,
@@ -162,7 +162,7 @@ const options = computed<ChartOptions<'line'>>(() => ({
   scales: {
     x: {
       grid: { display: false },
-      ticks: { maxTicksLimit: 8, color: colors.value.muted, maxRotation: 0 },
+      ticks: { maxTicksLimit: wide.value ? 8 : 4, color: colors.value.muted, maxRotation: 0 },
     },
     y: {
       beginAtZero: false,
