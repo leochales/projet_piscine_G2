@@ -49,6 +49,7 @@ services:
       MODEL_DB_PASSWORD: ${MODEL_DB_PASSWORD}
       API_DB_PASSWORD: ${API_DB_PASSWORD}
       BACKUP_DB_PASSWORD: ${BACKUP_DB_PASSWORD}
+      KEYCLOAK_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
       # Facultatif : sans lui, le compte monitoring ne peut pas se connecter
       MONITORING_DB_PASSWORD: ${MONITORING_DB_PASSWORD:-}
     volumes:
@@ -82,6 +83,37 @@ services:
     networks:
       - postgres_network
 
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4
+    container_name: keycloak
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://db:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KEYCLOAK_ADMIN_CLIENT_SECRET: ${KEYCLOAK_ADMIN_CLIENT_SECRET}
+      # Adresses du front autorisées en retour de connexion (redirectUris du realm)
+      FRONT_URL: ${FRONT_URL:-http://localhost}
+      FRONT_DEV_URL: ${FRONT_DEV_URL:-http://localhost:5173}
+      KC_HEALTH_ENABLED: "true"
+    volumes:
+      - ./infra/keycloak/realm-enervision.json:/opt/keycloak/data/import/realm-enervision.json:ro
+    ports:
+      - "127.0.0.1:${KEYCLOAK_PORT:-8081}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - postgres_network
+
   api:
     build:
       context: .                  # racine : l'API embarque aussi common/
@@ -91,6 +123,7 @@ services:
       POSTGRES_HOST: db           # nom du service Postgres
       POSTGRES_PORT: 5432         # port interne au réseau Docker
       POSTGRES_DB: ${POSTGRES_DB}
+      PRIX_KWH_EUR: ${PRIX_KWH_EUR:-0.14}
       POSTGRES_USER: api
       POSTGRES_PASSWORD: ${API_DB_PASSWORD}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -123,6 +156,28 @@ services:
         condition: service_healthy
     networks:
       - postgres_network
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v3.17.0
+    container_name: mlflow
+    command: >
+      mlflow server
+      --host 0.0.0.0
+      --port 5000
+      --backend-store-uri sqlite:////mlflow/mlflow.db
+      --artifacts-destination /mlflow/artifacts
+      --serve-artifacts
+      --allowed-hosts mlflow,mlflow:5000,localhost,localhost:*
+      --static-prefix /mlflow
+    volumes:
+      - mlflow_data:/mlflow
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.mlflow.rule=PathPrefix(`/mlflow`)
+      - traefik.http.routers.mlflow.entrypoints=web
+      - traefik.http.services.mlflow.loadbalancer.server.port=5000
+    networks:
+      - proxy_network
 
   front:
     build:
@@ -235,6 +290,7 @@ volumes:
   prometheus_data:
   loki_data:
   grafana_data:
+  mlflow_data:
 
 networks:
   postgres_network:
