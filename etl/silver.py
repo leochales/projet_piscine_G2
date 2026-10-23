@@ -43,6 +43,7 @@ from sqlalchemy import Connection, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from common.db import get_engine
+from common.logs import configure_logging
 from etl.collect import STEP, load_declared_sites
 from etl.schemas import EnergyReading
 
@@ -357,7 +358,5 @@ def transform() -> dict[str, int]:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
-    )
+    configure_logging("etl")
     transform()
