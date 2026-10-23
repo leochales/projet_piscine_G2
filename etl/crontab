@@ -2,8 +2,9 @@
 # Le script s'exécute depuis /app ; l'heure est celle du conteneur (UTC par défaut).
 #
 # Toutes les minutes : collecte bronze depuis l'API Mock (SMARTOPS-21), puis
-# transformation bronze → silver (SMARTOPS-24).
+# transformation bronze → silver (SMARTOPS-24), puis consommation horaire
+# dans gold, heure en cours comprise (SMARTOPS-25).
 # Au premier passage, collect.py remonte 24 h (amorçage, SMARTOPS-22).
-# « ; » et non « && » : silver traite ce qui est déjà en bronze même si la
-# collecte a échoué (API Mock injoignable).
-* * * * * python -m etl.collect; python -m etl.silver
+# « ; » et non « && » : chaque étape traite ce qui est déjà disponible même si
+# la précédente a échoué (API Mock injoignable…).
+* * * * * python -m etl.collect; python -m etl.silver; python -m etl.gold_hourly
