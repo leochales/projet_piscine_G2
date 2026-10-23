@@ -21,6 +21,14 @@
   "internationalizationEnabled": true,
   "supportedLocales": ["fr", "en"],
   "defaultLocale": "fr",
+  "eventsEnabled": true,
+  "eventsExpiration": 7776000,
+  "eventsListeners": ["jboss-logging"],
+  "adminEventsEnabled": true,
+  "adminEventsDetailsEnabled": false,
+  "attributes": {
+    "adminEventsExpiration": "7776000"
+  },
   "roles": {
     "realm": [
       {
@@ -56,7 +64,7 @@
       "implicitFlowEnabled": false,
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": false,
-      "redirectUris": ["http://localhost/*", "http://localhost:5173/*"],
+      "redirectUris": ["${FRONT_URL}/*", "${FRONT_DEV_URL}/*"],
       "webOrigins": ["+"],
       "attributes": {
         "pkce.code.challenge.method": "S256",

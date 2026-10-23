@@ -35,6 +35,13 @@ docker compose -f compose-local.yml down -v
 
 Une fois la base déployée, toute modification des droits passe par un script de migration, pas par ces fichiers d'initialisation.
 
+Si `keycloak` ne démarre pas parce que sa base n'existe pas (volume créé avant l'ajout de Keycloak), créer la base `keycloak` sans toucher aux données (le script peut être relancé sans risque) :
+
+```bash
+docker compose -f compose-local.yml up -d db   # recrée db avec KEYCLOAK_DB_PASSWORD
+docker compose -f compose-local.yml exec db bash /docker-entrypoint-initdb.d/08_keycloak.sh
+```
+
 ## Hooks pre-commit
 
 Les vérifications (ruff, sqlfluff, hadolint, prettier, eslint, gitleaks…) tournent avant chaque commit ; les tests avec couverture (pytest, vitest), le typage (mypy, vue-tsc) et Trivy avant chaque push. Configuration : `.pre-commit-config.yaml`.

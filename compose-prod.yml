@@ -54,6 +54,10 @@ services:
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN}
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
       KEYCLOAK_ADMIN_CLIENT_SECRET: ${KEYCLOAK_ADMIN_CLIENT_SECRET}
+      # Adresse du front autorisée en retour de connexion (redirectUris du realm).
+      # Pas de serveur Vite sur la VM : FRONT_DEV_URL reprend FRONT_URL.
+      FRONT_URL: ${FRONT_URL}
+      FRONT_DEV_URL: ${FRONT_URL}
       KC_HEALTH_ENABLED: "true"
     volumes:
       - ./infra/keycloak/realm-enervision.json:/opt/keycloak/data/import/realm-enervision.json:ro
