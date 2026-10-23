@@ -60,6 +60,9 @@ jobs:
       # compose-prod.yml les interpole à chaque commande docker compose (pull, migration,
       # démarrage). Le contexte env n'existant pas encore ici, le préfixe PROD/DEV est
       # recalculé dans chaque expression au lieu de lire ENV_PREFIX.
+      # Toutes les étapes du job reçoivent donc ces secrets, y compris actions/checkout :
+      # risque accepté, les actions étant fixées par leur SHA. Le jeton GHCR, lui, reste
+      # limité à l'étape « Récupérer les images ».
       POSTGRES_USER: ${{ vars[format('{0}_POSTGRES_USER', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
       POSTGRES_DB: ${{ vars[format('{0}_POSTGRES_DB', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
       ETL_ENABLED: ${{ vars[format('{0}_ETL_ENABLED', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
