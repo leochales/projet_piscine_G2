@@ -20,4 +20,6 @@ ALTER ROLE keycloak PASSWORD :'keycloak_pwd';
 SELECT 'CREATE DATABASE keycloak OWNER keycloak'
 WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'keycloak') \gexec
 REVOKE ALL ON DATABASE keycloak FROM PUBLIC;
+-- Sauvegarde : pg_read_all_data (06_roles.sql) donne la lecture des tables, pas la connexion
+GRANT CONNECT ON DATABASE keycloak TO backup;
 EOSQL
