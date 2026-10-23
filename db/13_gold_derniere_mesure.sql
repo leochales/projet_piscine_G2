@@ -94,16 +94,39 @@ GRANT EXECUTE ON FUNCTION gold.mettre_a_jour_derniere_mesure() TO etl;
 -- État de chaque site actif, lu par l'API (bandeau « sites qui ne transmettent
 -- plus » et état des capteurs). Une vue et non une table : « ne transmet plus »
 -- dépend de l'heure de lecture.
---   - transmet : une mesure reçue depuis moins de 5 minutes (la collecte
---     tourne chaque minute ; la marge absorbe un passage de l'ETL en retard).
---     Un site qui n'a jamais transmis est à false ;
+--   - collecte_a_jour : l'ETL a reçu une mesure de l'API Mock, pour au
+--     moins un site, depuis moins de 5 minutes (les mesures « perte réseau »
+--     comptent : l'API a répondu). Faux si la panne est de notre côté : ETL
+--     arrêté, API Mock injoignable ;
+--   - transmet : une mesure transmise par le site depuis moins de 5 minutes
+--     (la collecte tourne chaque minute ; la marge absorbe un passage de l'ETL
+--     en retard). Un site qui n'a jamais transmis est à false. NULL (inconnu)
+--     quand la collecte n'est pas à jour : le bandeau « ne transmet plus » ne
+--     doit pas accuser les sites d'une panne de la collecte ;
 --   - etat_capteurs : critical si le capteur réseau est en panne (aucune
 --     donnée), degraded si un autre capteur l'est, ok sinon ; NULL tant que
 --     l'état des capteurs n'a jamais été lu. Même règle que le champ overall
 --     de l'API Mock.
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE VIEW gold.etat_site AS
-WITH c AS (
+WITH collecte AS (
+    -- Dernière mesure reçue en bronze, tous sites actifs confondus. Une
+    -- recherche par site sur la clé unique (id_site, horodatage) de bronze :
+    -- le coût ne dépend pas de la taille de bronze.
+    SELECT max(b.horodatage) AS derniere_collecte_le
+    FROM app.site AS s
+    CROSS JOIN
+        LATERAL (
+            SELECT br.horodatage
+            FROM bronze.raw_readings AS br
+            WHERE br.id_site = s.id_site
+            ORDER BY br.horodatage DESC
+            LIMIT 1
+        ) AS b
+    WHERE s.statut = 'active'
+),
+
+c AS (
     SELECT
         ec.id_site,
         count(*) AS nb_capteurs,
@@ -121,12 +144,24 @@ WITH c AS (
     GROUP BY ec.id_site
 )
 
+-- Une fois la vue déployée, toute nouvelle colonne s'ajoute à la fin :
+-- CREATE OR REPLACE VIEW (rejoué par la migration) refuse de réordonner ou de
+-- renommer les colonnes existantes
 SELECT
     s.id_site,
     d.horodatage AS derniere_mesure_le,
+    k.derniere_collecte_le,
     c.retablissement_prevu,
     c.capteurs_mis_a_jour_le,
-    coalesce(d.horodatage >= now() - INTERVAL '5 minutes', false) AS transmet,
+    coalesce(
+        k.derniere_collecte_le >= now() - INTERVAL '5 minutes', false
+    ) AS collecte_a_jour,
+    CASE
+        WHEN NOT coalesce(
+            k.derniere_collecte_le >= now() - INTERVAL '5 minutes', false
+        ) THEN null
+        ELSE coalesce(d.horodatage >= now() - INTERVAL '5 minutes', false)
+    END AS transmet,
     CASE
         WHEN c.nb_capteurs IS null THEN null
         WHEN 'network' = any(c.capteurs_en_panne) THEN 'critical'
@@ -135,6 +170,7 @@ SELECT
     END AS etat_capteurs,
     coalesce(c.capteurs_en_panne, '{}') AS capteurs_en_panne
 FROM app.site AS s
+CROSS JOIN collecte AS k
 LEFT JOIN gold.derniere_mesure AS d ON s.id_site = d.id_site
 LEFT JOIN c ON s.id_site = c.id_site
 WHERE s.statut = 'active';
