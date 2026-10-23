@@ -24,6 +24,8 @@ jobs:
       - name: Trivy - Scan filesystem
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
+          # Même version que images.yml (la valeur par défaut de l'action est plus ancienne)
+          version: "v0.76.1"
           scan-type: "fs"
           scan-ref: "."
           severity: "HIGH,CRITICAL"
@@ -31,42 +33,4 @@ jobs:
           format: "table"
           trivyignores: ".trivyignore"
 
-  # Construit chaque image (un Dockerfile cassé bloque la PR), puis la scanne.
-  # --ignore-unfixed : on ne bloque que sur ce qui a un correctif disponible.
-  images:
-    name: Image ${{ matrix.name }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: api
-            context: .
-            dockerfile: api/Dockerfile
-          - name: etl
-            context: .
-            dockerfile: etl/Dockerfile
-          - name: front
-            context: front
-            dockerfile: front/Dockerfile
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Build
-        run: >
-          docker build --pull
-          -t enervision-${{ matrix.name }}:ci
-          -f ${{ matrix.dockerfile }}
-          --build-arg VITE_API_URL=/api
-          ${{ matrix.context }}
-
-      - name: Trivy - Scan image
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          scan-type: "image"
-          image-ref: "enervision-${{ matrix.name }}:ci"
-          severity: "HIGH,CRITICAL"
-          ignore-unfixed: true
-          exit-code: "1"
-          format: "table"
-          trivyignores: ".trivyignore"
+  # Les images Docker sont construites, testées et scannées par images.yml
