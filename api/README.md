@@ -9,6 +9,51 @@ Avec Docker Compose, l'API passe par Traefik (http://localhost) ; lancée en loc
 | http://localhost/api/docs | http://localhost:8000/api/docs | Swagger UI (tester les routes) |
 | http://localhost/api/openapi.json | http://localhost:8000/api/openapi.json | Schéma OpenAPI |
 
+### Authentification
+
+Toutes les routes `/api` demandent un jeton d'accès Keycloak, sauf `/api/health` et la documentation (`/api/docs`, `/api/openapi.json`). Le front l'envoie dans l'en-tête `Authorization: Bearer <jeton>`. Le fonctionnement complet est décrit sur la page Confluence « Authentification (Keycloak) ».
+
+L'API vérifie (`api/auth.py`) :
+
+- la signature (RS256), avec les clés publiques lues en interne sur `http://keycloak:8080/auth` et gardées en cache ;
+- l'émetteur (`iss`), qui doit valoir l'adresse publique de Keycloak (`KEYCLOAK_EMETTEUR`, calculée à partir de `FRONT_URL` dans les compose) ;
+- l'audience (`enervision-api`) et l'expiration ;
+- les rôles du realm (`realm_access.roles`).
+
+| Code | Cas |
+|---|---|
+| 401 | Jeton absent, illisible, mal signé, d'un autre émetteur, d'une autre audience ou expiré |
+| 403 | Aucun des rôles demandés par la route, ou compte non rattaché à un client |
+| 503 | Clés de Keycloak injoignables |
+
+Les routes de données (mesures, consommation) sont ouvertes aux rôles `CONSULT-SITE`, `CONSULT-CLIENT`, `GESTION-SITE` et `GESTION-CLIENT`. Le rôle `MONITORING` seul n'y donne pas accès.
+
+**Protéger une nouvelle route** : ajouter la dépendance `exiger_role(...)` au routeur dans `main.py`, ou à la route pour récupérer l'utilisateur connecté :
+
+```python
+from api.auth import Utilisateur, exiger_role
+
+GESTIONNAIRE = exiger_role("GESTION-SITE", "GESTION-CLIENT")
+
+
+@router.post("/recommandations/{id}/decision")
+def decider(utilisateur: Annotated[Utilisateur, Depends(GESTIONNAIRE)]):
+    # utilisateur.id (sub Keycloak), utilisateur.id_client, utilisateur.roles
+    ...
+```
+
+Le test `test_toutes_les_routes_api_exigent_un_jeton` échoue si une route `/api` est ouverte sans jeton.
+
+**Entreprise de l'utilisateur** : le jeton ne dit pas à quelle entreprise (client) appartient l'utilisateur. L'API la lit dans `app.utilisateur`, grâce au `sub` du jeton. Cette ligne est écrite à la création du compte par l'API (`POST /api/utilisateurs`, SMARTOPS-84), qui rattache le nouveau compte à l'entreprise du gestionnaire qui le crée. L'API n'écrit jamais cette ligne à la connexion : un compte créé hors de l'API (par exemple dans la console Keycloak) reçoit un 403, car son entreprise est inconnue.
+
+**Tester dans Swagger** : récupérer un jeton depuis le front connecté (outils de développement du navigateur, en-tête `Authorization` d'un appel `/api`), puis le coller avec le bouton « Authorize ».
+
+| Variable | Par défaut | Rôle |
+|---|---|---|
+| `KEYCLOAK_URL_INTERNE` | `http://keycloak:8080/auth` | Adresse de Keycloak sur le réseau Docker (lecture des clés) |
+| `KEYCLOAK_EMETTEUR` | `http://localhost/auth/realms/enervision` | Émetteur attendu dans les jetons |
+| `KEYCLOAK_AUDIENCE` | `enervision-api` | Audience attendue |
+
 ### `GET /api/health`
 
 | Code | Réponse | Cas |
@@ -75,11 +120,11 @@ pip install -r api/requirements-dev.txt
 Lancer la base seule, puis l'API avec rechargement automatique :
 
 ```bash
-docker compose -f compose-local.yml up -d db
-POSTGRES_HOST=localhost uvicorn api.main:app --reload
+docker compose -f compose-local.yml up -d db traefik keycloak
+POSTGRES_HOST=localhost KEYCLOAK_URL_INTERNE=http://localhost/auth uvicorn api.main:app --reload
 ```
 
-> `POSTGRES_HOST=localhost` remplace la valeur `db` du `.env`, qui n'existe que dans le réseau Docker.
+> `POSTGRES_HOST=localhost` remplace la valeur `db` du `.env`, qui n'existe que dans le réseau Docker. De même, `KEYCLOAK_URL_INTERNE=http://localhost/auth` fait lire les clés de Keycloak par Traefik, car `keycloak:8080` n'est joignable que dans le réseau Docker.
 
 ## Vérifications
 
