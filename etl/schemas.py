@@ -1,15 +1,21 @@
 """Contrat des réponses de l'API Mock (OpenAPI v1.1.0), validé avec Pydantic.
 
-À l'extraction, seule la clé d'une mesure (``site_id`` et ``timestamp``) est
-contrôlée par ``ReadingKey`` : c'est ce qu'il faut pour l'écrire en bronze.
-Le reste du payload est stocké tel quel, même mal formé, pour pouvoir être
-analysé ; la validation complète se fait au passage bronze → silver.
+Deux niveaux de validation :
+  - ``ReadingKey`` à l'extraction : seuls ``site_id`` et ``timestamp`` sont
+    contrôlés, car ils forment la clé de bronze. Le reste du payload est
+    stocké tel quel, même s'il est mal formé, pour pouvoir être analysé ;
+  - ``EnergyReading`` au passage bronze → silver : contrôle complet. Une
+    mesure qui échoue part en quarantaine (``silver.rejected_readings``).
+
+Les plages physiques (tension, facteur de puissance…) ne sont pas vérifiées
+ici : une valeur hors plage ne rejette pas la mesure, elle est mise à NULL
+en silver avec une raison (voir ``etl.silver``).
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
@@ -21,6 +27,16 @@ def _force_utc(ts: datetime) -> datetime:
 
 
 UtcDatetime = Annotated[datetime, AfterValidator(_force_utc)]
+
+NullReason = Literal[
+    "consumption_sensor_failure",
+    "electrical_sensor_failure",
+    "temperature_sensor_failure",
+    "humidity_sensor_failure",
+    "network_loss",
+]
+
+DataQuality = Literal["good", "partial", "degraded", "critical"]
 
 
 class SiteInfo(BaseModel):
@@ -43,3 +59,22 @@ class ReadingKey(BaseModel):
 
     site_id: str = Field(min_length=1, max_length=20)
     timestamp: UtcDatetime
+
+
+class EnergyReading(ReadingKey):
+    """GET /api/v1/readings : une mesure complète.
+
+    ``consumption_kwh`` est volontairement absent : l'API le renvoie toujours
+    égal à ``consumption_kw``, ce n'est pas une énergie. Les kWh sont
+    calculés en gold.
+    """
+
+    site_type: str
+    consumption_kw: float | None = None
+    voltage_v: float | None = None
+    current_a: float | None = None
+    power_factor: float | None = None
+    temperature_celsius: float | None = None
+    humidity_percent: float | None = None
+    null_reasons: list[NullReason] = []
+    data_quality: DataQuality = "good"
