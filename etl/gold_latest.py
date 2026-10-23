@@ -14,7 +14,9 @@ capteurs n'est pas modifié (il garde sa date ``mis_a_jour_le``), mais la
 dernière mesure est quand même mise à jour.
 
 Le bandeau « sites qui ne transmettent plus » du dashboard lit la vue
-``gold.etat_site``, calculée à la lecture.
+``gold.etat_site``, calculée à la lecture. Elle distingue un site muet d'une
+collecte interrompue (ETL arrêté, API Mock injoignable) : dans ce cas,
+``collecte_a_jour`` est faux et ``transmet`` inconnu (NULL) pour tous les sites.
 """
 
 from __future__ import annotations

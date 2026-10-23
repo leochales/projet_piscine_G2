@@ -223,6 +223,7 @@ BEGIN
         'la vue doit lister les 3 sites actifs, sans le site inactif';
 
     SELECT * INTO e FROM gold.etat_site WHERE id_site = 'SITE-A';
+    ASSERT e.collecte_a_jour, 'collecte à jour : SITE-A a transmis il y a 1 minute';
     ASSERT e.transmet AND e.etat_capteurs = 'ok' AND e.capteurs_en_panne = '{}',
         'SITE-A : transmet, capteurs ok';
 
@@ -255,6 +256,30 @@ BEGIN
         NULL;
     END;
     RAISE NOTICE 'OK 5 : api en lecture seule';
+END
+$$;
+
+RESET ROLE;
+
+-- 6. Collecte interrompue (ETL arrêté, API Mock injoignable) : aucune mesure
+--    reçue depuis 1 heure, pour aucun site. Les autres sites actifs sont mis
+--    hors jeu pour ne pas dépendre des données d'une base locale.
+UPDATE app.site SET statut = 'inactive'
+WHERE statut = 'active' AND id_site NOT LIKE 'SITE-_';
+UPDATE bronze.raw_readings SET horodatage = horodatage - interval '1 hour'
+WHERE id_site LIKE 'SITE-_';
+
+SET ROLE api;
+
+DO $$
+BEGIN
+    ASSERT NOT EXISTS (
+        SELECT 1 FROM gold.etat_site WHERE collecte_a_jour
+    ), 'sans mesure reçue depuis 1 heure, la collecte n''est pas à jour';
+    ASSERT NOT EXISTS (
+        SELECT 1 FROM gold.etat_site WHERE transmet IS NOT null
+    ), 'collecte interrompue : transmet doit être inconnu (NULL) pour tous';
+    RAISE NOTICE 'OK 6 : collecte interrompue, aucun site accusé';
 END
 $$;
 
