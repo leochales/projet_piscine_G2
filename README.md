@@ -35,7 +35,16 @@ docker compose -f compose-local.yml down -v
 
 Une fois la base déployée, toute modification des droits passe par un script de migration, pas par ces fichiers d'initialisation.
 
-Les actions du dashboard (décisions sur les recommandations, prises en compte des alertes) sont enregistrées dans `app` par `db/08_actions.sql`, et non dans `gold`, que l'ETL et le modèle recalculent. Ce sont des historiques : l'API peut ajouter des lignes, mais ni les modifier ni les supprimer. L'état courant se lit dans les vues `app.recommandation_etat` et `app.alerte_etat`.
+Les sites à collecter sont déclarés dans `app.site` par l'application (`db/08_sites_demo.sql` pour les 7 sites de démo) : l'ETL ne fait que les lire.
+
+Si `keycloak` ne démarre pas parce que sa base n'existe pas (volume créé avant l'ajout de Keycloak), créer la base `keycloak` sans toucher aux données (le script peut être relancé sans risque) :
+
+```bash
+docker compose -f compose-local.yml up -d db   # recrée db avec KEYCLOAK_DB_PASSWORD
+docker compose -f compose-local.yml exec db bash /docker-entrypoint-initdb.d/09_keycloak.sh
+```
+
+Les actions du dashboard (décisions sur les recommandations, prises en compte des alertes) sont enregistrées dans `app` par `db/10_actions.sql`, et non dans `gold`, que l'ETL et le modèle recalculent. Ce sont des historiques : l'API peut ajouter des lignes, mais ni les modifier ni les supprimer. Une alerte n'est prise en compte qu'une fois : la base refuse la deuxième. L'état courant se lit dans les vues `app.recommandation_etat` et `app.alerte_etat`.
 
 Les tests SQL de `db/tests/` (droits des comptes, actions du dashboard) sont lancés par la CI (`images.yml`, sur la base de la stack de test). En local, sur une base qui tourne :
 

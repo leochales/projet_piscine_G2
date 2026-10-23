@@ -118,10 +118,19 @@ jobs:
           MODEL_DB_PASSWORD: ${{ secrets[format('{0}_MODEL_DB_PASSWORD', env.ENV_PREFIX)] }}
           API_DB_PASSWORD: ${{ secrets[format('{0}_API_DB_PASSWORD', env.ENV_PREFIX)] }}
           BACKUP_DB_PASSWORD: ${{ secrets[format('{0}_BACKUP_DB_PASSWORD', env.ENV_PREFIX)] }}
+          KEYCLOAK_ADMIN: ${{ vars[format('{0}_KEYCLOAK_ADMIN', env.ENV_PREFIX)] }}
+          KEYCLOAK_ADMIN_PASSWORD: ${{ secrets[format('{0}_KEYCLOAK_ADMIN_PASSWORD', env.ENV_PREFIX)] }}
+          KEYCLOAK_DB_PASSWORD: ${{ secrets[format('{0}_KEYCLOAK_DB_PASSWORD', env.ENV_PREFIX)] }}
+          KEYCLOAK_ADMIN_CLIENT_SECRET: ${{ secrets[format('{0}_KEYCLOAK_ADMIN_CLIENT_SECRET', env.ENV_PREFIX)] }}
+          # Adresse publique du front (redirectUris de Keycloak) : https://<VM_IP> en prod,
+          # https://<VM_IP>:8443 en dev. Le port 443 est omis, comme dans l'adresse du navigateur.
+          FRONT_URL: ${{ format('https://{0}{1}', vars.VM_IP, env.HTTPS_PORT != '443' && format(':{0}', env.HTTPS_PORT) || '') }}
         run: |
           # ETL_ENABLED est facultatif (true par défaut dans compose-prod.yml)
           for key in POSTGRES_USER POSTGRES_DB POSTGRES_PASSWORD ETL_DB_PASSWORD \
-                     MODEL_DB_PASSWORD API_DB_PASSWORD BACKUP_DB_PASSWORD; do
+                     MODEL_DB_PASSWORD API_DB_PASSWORD BACKUP_DB_PASSWORD \
+                     KEYCLOAK_ADMIN KEYCLOAK_ADMIN_PASSWORD KEYCLOAK_DB_PASSWORD \
+                     KEYCLOAK_ADMIN_CLIENT_SECRET; do
             if [ -z "${!key}" ]; then
               echo "::error::${ENV_PREFIX}_${key} manquant (Settings → Secrets and variables → Actions)"
               exit 1
@@ -133,6 +142,23 @@ jobs:
           trap 'docker logout ghcr.io >/dev/null' EXIT
           docker compose -f compose-prod.yml pull --quiet
           docker logout ghcr.io >/dev/null
+          # Base keycloak : les scripts de db/ ne tournent que sur un volume vide, mais
+          # 09_keycloak.sh peut être relancé sans risque. Créée ici si elle manque.
+          docker compose -f compose-prod.yml up -d --no-build --pull never db
+          ready=false
+          for _ in $(seq 1 60); do
+            if docker compose -f compose-prod.yml exec -T db \
+                 pg_isready -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" != true ]; then
+            echo "::error::PostgreSQL ne répond pas après 120 s"
+            exit 1
+          fi
+          docker compose -f compose-prod.yml exec -T db bash /docker-entrypoint-initdb.d/09_keycloak.sh
           docker compose -f compose-prod.yml up -d --no-build --pull never --remove-orphans
 
       # Passe par Traefik comme un client (-k : certificat auto-signé)

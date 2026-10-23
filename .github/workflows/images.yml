@@ -43,6 +43,11 @@ jobs:
       MODEL_DB_PASSWORD: ci-model
       API_DB_PASSWORD: ci-api
       BACKUP_DB_PASSWORD: ci-backup
+      KEYCLOAK_ADMIN: ci-admin
+      KEYCLOAK_ADMIN_PASSWORD: ci-keycloak-admin
+      KEYCLOAK_DB_PASSWORD: ci-keycloak
+      KEYCLOAK_ADMIN_CLIENT_SECRET: ci-keycloak-client
+      FRONT_URL: https://localhost:8443
     steps:
       # Pas de jeton dans .git/config : le job a packages: write et exécute le code de la PR
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -134,11 +139,14 @@ jobs:
           # mot de passe (trust dans pg_hba.conf) : le test ne prouverait rien.
           login() {
             docker compose -f compose-prod.yml exec -T -e PGPASSWORD="$2" db \
-              psql -h db -U "$1" -d "$POSTGRES_DB" -tAc 'SELECT 1' >/dev/null
+              psql -h db -U "$1" -d "${3:-$POSTGRES_DB}" -tAc 'SELECT 1' >/dev/null
           }
           login etl "$ETL_DB_PASSWORD"
           login model "$MODEL_DB_PASSWORD"
           login backup "$BACKUP_DB_PASSWORD"
+          # Base keycloak (09_keycloak.sh) : son compte, et backup pour la sauvegarde
+          login keycloak "$KEYCLOAK_DB_PASSWORD" keycloak
+          login backup "$BACKUP_DB_PASSWORD" keycloak
           if login api "mauvais-mot-de-passe" 2>/dev/null; then
             echo "::error::Le compte api accepte un mauvais mot de passe"
             exit 1

@@ -29,6 +29,7 @@ services:
       MODEL_DB_PASSWORD: ${MODEL_DB_PASSWORD}
       API_DB_PASSWORD: ${API_DB_PASSWORD}
       BACKUP_DB_PASSWORD: ${BACKUP_DB_PASSWORD}
+      KEYCLOAK_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
     volumes:
       - postgresql_data:/var/lib/postgresql
       # Scripts d'init : exécutés seulement au premier démarrage (volume vide)
@@ -38,6 +39,40 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    networks:
+      - postgres_network
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4
+    restart: unless-stopped
+    command:
+      - start
+      - --import-realm
+      - --http-enabled=true
+      - --hostname-strict=false
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://db:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KEYCLOAK_ADMIN_CLIENT_SECRET: ${KEYCLOAK_ADMIN_CLIENT_SECRET}
+      # Adresse du front autorisée en retour de connexion (redirectUris du realm).
+      # Pas de serveur Vite sur la VM : FRONT_DEV_URL reprend FRONT_URL.
+      FRONT_URL: ${FRONT_URL}
+      FRONT_DEV_URL: ${FRONT_URL}
+      KC_HEALTH_ENABLED: "true"
+    volumes:
+      - ./infra/keycloak/realm-enervision.json:/opt/keycloak/data/import/realm-enervision.json:ro
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    depends_on:
+      db:
+        condition: service_healthy
     networks:
       - postgres_network
 
