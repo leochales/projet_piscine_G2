@@ -108,6 +108,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: api
       POSTGRES_PASSWORD: ${API_DB_PASSWORD}
+      # Émetteur des jetons = adresse publique de Keycloak (même valeur que KC_HOSTNAME)
+      KEYCLOAK_EMETTEUR: ${FRONT_URL}/auth/realms/enervision
     labels:
       - traefik.enable=true
       - traefik.http.routers.enervision-${DEPLOY_ENV}-api.rule=PathPrefix(`/api`)
@@ -116,6 +118,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      keycloak:
+        condition: service_started
     networks:
       - postgres_network
       - traefik_public

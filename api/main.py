@@ -1,9 +1,10 @@
 """Point d'entrée de l'API métier EnerVision."""
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
 
+from api.auth import REPONSES_AUTH, ROLES_METIER, exiger_role
 from api.routers import health, mesures
 from common.config import get_settings
 from common.logs import configure_logging
@@ -29,8 +30,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# /api/health reste public : Docker, Traefik et la supervision l'appellent sans jeton.
+# Tout autre routeur ajouté ici doit être protégé par exiger_role
+# (test_auth.py vérifie qu'aucune route /api n'est ouverte par erreur).
 app.include_router(health.router, prefix=API_PREFIX)
-app.include_router(mesures.router, prefix=API_PREFIX)
+app.include_router(
+    mesures.router,
+    prefix=API_PREFIX,
+    dependencies=[Depends(exiger_role(*ROLES_METIER))],
+    responses=REPONSES_AUTH,
+)
 
 # Métriques Prometheus sur /metrics, hors de /api : Traefik ne les expose pas,
 # seul Prometheus les lit par le réseau Docker. Absent de Swagger et de Schemathesis.

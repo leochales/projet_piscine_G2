@@ -2,11 +2,13 @@ from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
+from uuid import UUID
 
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from api.auth import Utilisateur, utilisateur_courant
 from api.main import app
 from api.routers.mesures import calculer_cout, calculer_periode
 from common.db import get_session
@@ -30,8 +32,17 @@ class FausseSession:
         return self.lignes
 
 
+# Les règles d'accès sont testées dans test_auth.py : ici, un utilisateur autorisé
+UTILISATEUR_AUTORISE = Utilisateur(
+    id=UUID("00000000-0000-0000-0000-000000000001"),
+    id_client=1,
+    roles=frozenset({"CONSULT-CLIENT"}),
+)
+
+
 @pytest.fixture
 def client() -> Iterator[TestClient]:
+    app.dependency_overrides[utilisateur_courant] = lambda: UTILISATEUR_AUTORISE
     yield TestClient(app)
     app.dependency_overrides.clear()
 
