@@ -3,7 +3,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routers import health
+from api.routers import health, mesures
 from common.config import get_settings
 
 # Toutes les routes sont sous /api : Traefik transmet /api tel quel à ce service
@@ -26,3 +26,4 @@ app.add_middleware(
 )
 
 app.include_router(health.router, prefix=API_PREFIX)
+app.include_router(mesures.router, prefix=API_PREFIX)

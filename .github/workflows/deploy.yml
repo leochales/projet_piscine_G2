@@ -26,26 +26,45 @@ jobs:
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
     uses: ./.github/workflows/security.yml
 
-  api-contract:
-    name: API contract
+  # Build unique, test de la stack (contrat d'API compris), scan, puis publication sur GHCR
+  images:
+    name: Images
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
-    uses: ./.github/workflows/api-contract.yml
+    uses: ./.github/workflows/images.yml
+    with:
+      push: true
+    permissions:
+      contents: read
+      packages: write
 
   deploy:
     name: Deploy ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
-    needs: [checks, security, api-contract]
+    needs: [checks, security, images]
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
     runs-on: [self-hosted, linux]
     timeout-minutes: 30
+    permissions:
+      contents: read
+      # Téléchargement des images publiées par le job images
+      packages: read
     env:
       # Lu par compose-prod.yml : projet Docker enervision-<env>, entrypoint Traefik https-<env>
       DEPLOY_ENV: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
+      # Images testées et publiées pour ce commit (IMAGE_REPO : voir l'étape « Noms des images »)
+      IMAGE_TAG: ${{ github.sha }}
       # Préfixe des secrets et variables GitHub de l'environnement
       ENV_PREFIX: ${{ github.ref_name == 'main' && 'PROD' || 'DEV' }}
       # Port HTTPS de l'environnement sur le Traefik partagé (infra/traefik/compose.yml)
       HTTPS_PORT: ${{ github.ref_name == 'main' && '443' || '8443' }}
     steps:
+      # Pas de jeton dans .git/config : le runner de la VM conserve ses fichiers entre les jobs
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Même calcul que dans images.yml (GHCR exige des minuscules)
+      - name: Noms des images
+        run: echo "IMAGE_REPO=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
 
       # Certificat auto-signé de la VM (pas de domaine ni d'accès Internet entrant) :
       # généré une seule fois et conservé hors du dossier de travail, pour que l'exception
@@ -88,8 +107,9 @@ jobs:
             docker compose -f infra/traefik/compose.yml restart traefik
           fi
 
-      - name: Construire et démarrer les conteneurs
+      - name: Récupérer et démarrer les conteneurs
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           POSTGRES_USER: ${{ vars[format('{0}_POSTGRES_USER', env.ENV_PREFIX)] }}
           POSTGRES_DB: ${{ vars[format('{0}_POSTGRES_DB', env.ENV_PREFIX)] }}
           ETL_ENABLED: ${{ vars[format('{0}_ETL_ENABLED', env.ENV_PREFIX)] }}
@@ -116,18 +136,30 @@ jobs:
               exit 1
             fi
           done
-          # --pull : images de base à jour, comme celles scannées par security.yml
-          docker compose -f compose-prod.yml build --pull
-          docker compose -f compose-prod.yml up -d db
+          # Images testées et scannées par images.yml : aucune reconstruction sur la VM.
+          # Identifiants GHCR retirés dès la fin du téléchargement, même en cas d'échec.
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          trap 'docker logout ghcr.io >/dev/null' EXIT
+          docker compose -f compose-prod.yml pull --quiet
+          docker logout ghcr.io >/dev/null
+          # Base keycloak : les scripts de db/ ne tournent que sur un volume vide, mais
+          # 08_keycloak.sh peut être relancé sans risque. Créée ici si elle manque.
+          docker compose -f compose-prod.yml up -d --no-build --pull never db
+          ready=false
           for _ in $(seq 1 60); do
             if docker compose -f compose-prod.yml exec -T db \
                  pg_isready -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null; then
+              ready=true
               break
             fi
             sleep 2
           done
+          if [ "$ready" != true ]; then
+            echo "::error::PostgreSQL ne répond pas après 120 s"
+            exit 1
+          fi
           docker compose -f compose-prod.yml exec -T db bash /docker-entrypoint-initdb.d/08_keycloak.sh
-          docker compose -f compose-prod.yml up -d --remove-orphans
+          docker compose -f compose-prod.yml up -d --no-build --pull never --remove-orphans
 
       # Passe par Traefik comme un client (-k : certificat auto-signé)
       - name: Vérifier la santé de l'API
@@ -144,9 +176,12 @@ jobs:
           docker compose -p "enervision-${DEPLOY_ENV}" logs --tail=50 api
           exit 1
 
-      # Images orphelines et cache de build de plus de 7 jours
+      # Images orphelines, et anciennes versions de nos images qu'aucun conteneur
+      # (dev ou prod) n'utilise plus. Elles restent récupérables sur GHCR.
       - name: Nettoyer les anciennes images
         if: always()
+        env:
+          REPO_URL: https://github.com/${{ github.repository }}
         run: |
           docker image prune -f
-          docker builder prune -f --filter until=168h
+          docker image prune -af --filter "label=org.opencontainers.image.source=${REPO_URL}"

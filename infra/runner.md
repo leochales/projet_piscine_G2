@@ -72,14 +72,14 @@ Utiliser des mots de passe différents entre dev et prod. Ils ne sont appliqués
 
 ## Déroulement d'un déploiement
 
-1. **Contrôles**, sur des runners GitHub : `pre-commit.yml` (lint, tests), `security.yml` (Trivy sur le code et les images), `api-contract.yml` (Schemathesis). Le déploiement ne démarre que s'ils réussissent tous.
+1. **Contrôles**, en parallèle sur des runners GitHub : `pre-commit.yml` (lint, tests), `security.yml` (Trivy sur le code) et `images.yml`. Ce dernier construit api, etl et front **une seule fois**, démarre la stack de prod complète avec ces images (Traefik, scripts `db/`, comptes PostgreSQL, ETL, front), lance Schemathesis sur le conteneur de l'API, scanne les images avec Trivy, puis les publie sur GHCR (`ghcr.io/<owner>/enervision-<service>:<sha du commit>`). Le déploiement ne démarre que si tout réussit.
 2. **Certificat HTTPS** : auto-signé pour `VM_IP`, stocké dans `~/traefik-certs`, régénéré s'il expire sous 30 jours ou si `VM_IP` change.
 3. **Traefik** : démarré s'il ne tourne pas. Il lit Docker via `docker-socket-proxy` (lecture seule, réseau interne), sans accès direct au socket.
-4. **Application** : vérification des secrets, `docker compose -f compose-prod.yml build --pull`, démarrage de Postgres, création de la base `keycloak` si elle manque (`db/08_keycloak.sh`), puis `up -d --remove-orphans`.
+4. **Application** : vérification des secrets, `docker compose pull` des images du commit (connexion à GHCR avec le `GITHUB_TOKEN` du job, retirée juste après), démarrage de Postgres et création de la base `keycloak` si elle manque (`db/08_keycloak.sh`), puis `up -d --no-build`. La VM ne reconstruit rien : elle démarre exactement les images testées et scannées.
 5. **Santé** : `https://localhost:<port>/api/health` pendant 60 s. En cas d'échec, le job affiche l'état des conteneurs et les logs de l'API.
-6. **Nettoyage** : images orphelines et cache de build de plus de 7 jours.
+6. **Nettoyage** : images orphelines et anciennes versions de nos images qu'aucun conteneur n'utilise. Sur GHCR, seules les 20 dernières versions de chaque image sont conservées.
 
-Un seul déploiement à la fois par environnement. Pour **revenir en arrière** : `git revert` sur la branche, puis redéployer (automatique sur `main`, **Run workflow** pour `develop`).
+Un seul déploiement à la fois par environnement. Pour **revenir en arrière** : rouvrir le run **Deploy** d'un commit précédent et relancer **uniquement le job Deploy** (icône ↻ du job). Les images de ce commit sont reprises sur GHCR telles quelles. Relancer tout le run reconstruirait les images. Au-delà des 20 dernières versions, faire un `git revert` sur la branche et redéployer.
 
 **Avertissement du navigateur** : le certificat est auto-signé. Pour le supprimer, importer `/home/github-runner/traefik-certs/cert.pem` comme autorité racine de confiance sur le poste (à refaire après chaque régénération).
 
@@ -162,4 +162,5 @@ Correctif si le dépôt passe sur GitHub Pro, Team, Enterprise ou en public : en
 | Ports 80/443/8080/8443 déjà utilisés         | Autre service sur la VM                         | Libérer le port, puis relancer le déploiement.                   |
 | `password authentication failed` (api, etl)  | Secret modifié après la création de la base     | Mettre à jour le mot de passe en base, ou recréer le volume (**perte des données**). |
 | Vérification de santé en échec               | API ou base qui ne démarre pas                  | Logs du job, puis `docker compose -p enervision-<env> logs api db`. |
-| `no space left on device`                    | Images et cache de build accumulés              | `docker system prune -af` et `docker builder prune -af` (les volumes sont conservés). |
+| `pull access denied` / `manifest unknown` (ghcr.io) | Image absente de GHCR (job `images` en échec, ou version purgée) | Vérifier le job `images` du run ; au-delà de 20 versions, redéployer un commit récent. |
+| `no space left on device`                    | Images accumulées                               | `docker system prune -af` (les volumes sont conservés). |

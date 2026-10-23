@@ -109,9 +109,10 @@ jobs:
           fi
 
       # Rapports HTML détaillés (lignes non couvertes en couleur), à télécharger
-      # depuis la page du workflow, rubrique « Artifacts »
+      # depuis la page du workflow, rubrique « Artifacts ». Seulement sur les PR : avant un
+      # déploiement, la couverture est déjà vérifiée et le résumé ci-dessus suffit.
       - name: Upload coverage reports
-        if: always()
+        if: always() && github.event_name == 'pull_request'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage
@@ -119,4 +120,5 @@ jobs:
             coverage-html/back
             front/coverage
           if-no-files-found: ignore
-          retention-days: 14
+          # Court : seul usage, la relecture de la PR (quota de 500 Mo partagé en plan Free)
+          retention-days: 3

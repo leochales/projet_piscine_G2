@@ -1,5 +1,9 @@
-# Usage : docker compose -f compose-prod.yml up -d --build
-# Lancé par le workflow .github/workflows/deploy.yml sur la VM (runner auto-hébergé).
+# Stack déployée sur la VM, et testée telle quelle en CI avant le déploiement.
+#   CI  (.github/workflows/images.yml) : construit api, etl et front, teste la stack, scanne
+#        les images, puis les publie sur GHCR, taguées par le SHA du commit
+#   VM  (.github/workflows/deploy.yml) : docker compose pull, puis up --no-build ; la VM
+#        démarre exactement les images testées, sans rien reconstruire
+# IMAGE_REPO (ghcr.io/<owner>) et IMAGE_TAG (SHA du commit) sont fournis par les workflows.
 # Pas de fichier .env : le workflow passe les variables (DEPLOY_ENV, POSTGRES_USER, mots de
 # passe…) dans l'environnement, depuis les secrets et variables GitHub DEV_* / PROD_*.
 #
@@ -73,6 +77,7 @@ services:
       - postgres_network
 
   api:
+    image: ${IMAGE_REPO:?IMAGE_REPO manquant}/enervision-api:${IMAGE_TAG:?IMAGE_TAG manquant}
     build:
       context: .
       dockerfile: api/Dockerfile
@@ -96,6 +101,7 @@ services:
       - traefik_public
 
   etl:
+    image: ${IMAGE_REPO:?IMAGE_REPO manquant}/enervision-etl:${IMAGE_TAG:?IMAGE_TAG manquant}
     build:
       context: .
       dockerfile: etl/Dockerfile
@@ -114,6 +120,7 @@ services:
       - postgres_network
 
   front:
+    image: ${IMAGE_REPO:?IMAGE_REPO manquant}/enervision-front:${IMAGE_TAG:?IMAGE_TAG manquant}
     build:
       context: ./front
       args:
