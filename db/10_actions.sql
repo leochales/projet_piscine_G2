@@ -64,31 +64,8 @@ FROM api;
 -- État courant, croisé avec gold : ce que lit le dashboard
 -- -----------------------------------------------------------------------------
 
--- Une ligne par recommandation de gold. statut = dernière décision,
--- ou 'proposee' tant que personne n'a décidé.
-CREATE OR REPLACE VIEW app.recommandation_etat AS
-SELECT
-    r.id_recommandation,
-    r.id_site,
-    r.id_alerte,
-    r.regle,
-    r.titre,
-    r.description,
-    r.date_creation,
-    d.id_utilisateur AS decide_par,
-    d.decide_le,
-    coalesce(d.statut, 'proposee') AS statut
-FROM gold.recommandation AS r
-LEFT JOIN LATERAL (
-    SELECT
-        dr.statut,
-        dr.id_utilisateur,
-        dr.decide_le
-    FROM app.decision_recommandation AS dr
-    WHERE dr.id_recommandation = r.id_recommandation
-    ORDER BY dr.decide_le DESC, dr.id_decision DESC
-    LIMIT 1
-) AS d ON true;
+-- La vue app.recommandation_etat est définie dans 14_gold_gain_fourchette.sql :
+-- elle lit le gain estimé, ajouté à gold.recommandation par le script 14.
 
 -- Une ligne par alerte de gold, avec sa prise en compte si elle existe.
 CREATE OR REPLACE VIEW app.alerte_etat AS
@@ -111,7 +88,7 @@ LEFT JOIN app.prise_en_compte_alerte AS p ON a.id_alerte = p.id_alerte;
 
 -- Les vues se lisent seulement : l'écriture passe par les tables d'historique
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE
-ON app.recommandation_etat, app.alerte_etat
+ON app.alerte_etat
 FROM api;
 
 COMMIT;
