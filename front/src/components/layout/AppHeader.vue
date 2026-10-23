@@ -12,6 +12,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Button } from '@/components/ui/button'
+import ThemeToggle from '@/components/layout/ThemeToggle.vue'
 import { ROLE_LABELS, useUserStore, type Role } from '@/stores/user'
 
 const { role, roleLabel } = storeToRefs(useUserStore())
@@ -48,25 +49,29 @@ const demoRoles = import.meta.env.DEV || import.meta.env.VITE_DEMO_ROLES === 'tr
         </RouterLink>
       </nav>
 
-      <!-- Choix du rôle : démonstration en attendant Keycloak -->
-      <DropdownMenu v-if="demoRoles">
-        <DropdownMenuTrigger as-child>
-          <Button variant="ghost" size="sm" class="text-muted-foreground">
-            {{ roleLabel }}
-            <ChevronDown />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          <DropdownMenuLabel>Rôle (démo)</DropdownMenuLabel>
-          <DropdownMenuSeparator />
-          <DropdownMenuRadioGroup v-model="role">
-            <DropdownMenuRadioItem v-for="[value, label] in roles" :key="value" :value="value">
-              {{ label }}
-            </DropdownMenuRadioItem>
-          </DropdownMenuRadioGroup>
-        </DropdownMenuContent>
-      </DropdownMenu>
-      <span v-else class="text-sm text-muted-foreground">{{ roleLabel }}</span>
+      <div class="flex items-center gap-1">
+        <!-- Choix du rôle : démonstration en attendant Keycloak -->
+        <DropdownMenu v-if="demoRoles">
+          <DropdownMenuTrigger as-child>
+            <Button variant="ghost" size="sm" class="text-muted-foreground">
+              {{ roleLabel }}
+              <ChevronDown />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuLabel>Rôle (démo)</DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuRadioGroup v-model="role">
+              <DropdownMenuRadioItem v-for="[value, label] in roles" :key="value" :value="value">
+                {{ label }}
+              </DropdownMenuRadioItem>
+            </DropdownMenuRadioGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <span v-else class="px-2 text-sm text-muted-foreground">{{ roleLabel }}</span>
+
+        <ThemeToggle />
+      </div>
     </div>
   </header>
 </template>
