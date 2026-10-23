@@ -54,6 +54,19 @@ describe('AlertsTable', () => {
     wrapper.unmount()
   })
 
+  it('indique qui a pris l’alerte en compte, et quand', () => {
+    const done: Alert = {
+      ...alerts[0]!,
+      priseEnCompte: true,
+      prisePar: 'Léa Bernard',
+      priseLe: new Date().toISOString(),
+    }
+    const wrapper = mount(AlertsTable, { props: { alerts: [done], canActOn: () => true } })
+    expect(wrapper.text()).toContain('Prise en compte')
+    expect(wrapper.text()).toMatch(/par Léa Bernard, aujourd'hui à \d{2}:\d{2}/)
+    expect(wrapper.find('button').exists()).toBe(false)
+  })
+
   it('bloque le bouton pendant l’envoi de la prise en compte', () => {
     const wrapper = mount(AlertsTable, {
       props: { alerts, canActOn: () => true, pending: new Set(['A1']) },

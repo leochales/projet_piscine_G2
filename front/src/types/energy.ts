@@ -61,6 +61,10 @@ export interface Alert {
   gravite: Severity
   message: string
   priseEnCompte: boolean
+  // Qui l'a prise en compte et quand (app.alerte_etat : prise_par, prise_le) : que chacun
+  // sache qui traite quoi (US7). Absents tant qu'elle n'est pas prise en compte.
+  prisePar?: string
+  priseLe?: string // ISO 8601
 }
 
 export type RecommendationStatus = 'proposee' | 'acceptee' | 'refusee'

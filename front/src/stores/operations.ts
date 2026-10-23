@@ -8,6 +8,7 @@ import {
   fetchPreviousSavings,
   fetchRecommendations,
 } from '@/services/dashboard'
+import { useUserStore } from '@/stores/user'
 import type { Alert, Recommendation } from '@/types/energy'
 
 const WEEKS_PER_MONTH = 52 / 12
@@ -59,10 +60,17 @@ export const useOperationsStore = defineStore('operations', () => {
     const alert = alerts.value.find((a) => a.id === alertId)
     // Une alerte prise en compte le reste : pas de deuxième prise en compte (US7)
     if (!alert || alert.priseEnCompte) return
+    // Qui et quand : affiché sous l'alerte pour tous ceux qui suivent le site
+    const user = useUserStore()
     await send(
       alertId,
       () => acknowledgeAlert(alertId),
-      () => (alert.priseEnCompte = true),
+      () =>
+        Object.assign(alert, {
+          priseEnCompte: true,
+          prisePar: user.nom,
+          priseLe: new Date().toISOString(),
+        }),
     )
   }
 

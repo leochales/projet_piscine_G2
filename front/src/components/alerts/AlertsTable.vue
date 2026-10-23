@@ -23,6 +23,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import SeverityBadge from '@/components/alerts/SeverityBadge.vue'
+import { formatRelativeDateTime } from '@/lib/format'
 import type { Alert } from '@/types/energy'
 
 const props = defineProps<{
@@ -68,12 +69,21 @@ const isPending = (alert: Alert) => props.pending?.has(alert.id) ?? false
         <TableCell>{{ alert.siteId }}</TableCell>
         <TableCell class="whitespace-normal">{{ alert.message }}</TableCell>
         <TableCell class="text-right">
-          <span
+          <!-- Qui l'a prise en compte et quand : tout le monde sait qui traite quoi (US7) -->
+          <div
             v-if="alert.priseEnCompte"
-            class="inline-flex items-center gap-1 text-sm text-muted-foreground"
+            class="inline-flex flex-col items-end text-sm text-muted-foreground"
           >
-            <Check class="size-4" aria-hidden="true" /> Prise en compte
-          </span>
+            <span class="inline-flex items-center gap-1">
+              <Check class="size-4" aria-hidden="true" /> Prise en compte
+            </span>
+            <span v-if="alert.prisePar" class="text-xs">
+              par {{ alert.prisePar
+              }}<template v-if="alert.priseLe"
+                >, {{ formatRelativeDateTime(alert.priseLe) }}</template
+              >
+            </span>
+          </div>
           <Button
             v-else-if="canActOn(alert.siteId)"
             variant="outline"

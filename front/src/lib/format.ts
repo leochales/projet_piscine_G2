@@ -79,6 +79,16 @@ export function formatAxisHour(iso: string) {
 /** Heure exacte : « 14:05 » (heure de Paris) */
 export const formatClock = (date: Date) => clock.format(date)
 
+/** Moment d'une action : « aujourd'hui à 14:05 », « hier à 17:40 », sinon « jeu. 23 à 9:12 » */
+export function formatRelativeDateTime(iso: string, now = new Date()) {
+  const date = new Date(iso)
+  const time = formatClock(date)
+  const dayDiff = parisDayDiff(date, now)
+  if (dayDiff === 0) return `aujourd'hui à ${time}`
+  if (dayDiff === -1) return `hier à ${time}`
+  return `${weekdayAndDay.format(date)} à ${time}`
+}
+
 /** Âge d'une donnée : « à l'instant », « il y a 30 s », « il y a 5 min », « il y a 2 h » */
 export function formatAge(from: Date, now = new Date()) {
   const seconds = Math.max(0, Math.floor((now.getTime() - from.getTime()) / 1000))

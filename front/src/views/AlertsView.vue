@@ -1,15 +1,20 @@
 <script setup lang="ts">
+import { computed, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { toast } from 'vue-sonner'
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import EmptyState from '@/components/common/EmptyState.vue'
 import RequestError from '@/components/common/RequestError.vue'
 import TableSkeleton from '@/components/common/TableSkeleton.vue'
 import AlertsTable from '@/components/alerts/AlertsTable.vue'
 import RecommendationItem from '@/components/alerts/RecommendationItem.vue'
+import { alertSites, filterAlerts, NO_FILTER, type AlertFilter } from '@/lib/alerts'
 import { formatEur } from '@/lib/format'
+import { SEVERITY_LABELS } from '@/lib/labels'
 import { useRequest } from '@/lib/request'
 import { useOperationsStore } from '@/stores/operations'
 import { useUserStore } from '@/stores/user'
@@ -22,6 +27,22 @@ const { alerts, recommendations, savings, pending } = storeToRefs(operations)
 
 // Le store ne recharge pas ce qu'il a déjà : revenir sur l'écran garde les actions faites
 const request = useRequest(() => operations.load())
+
+// Filtres de la liste des alertes : gravité et site
+const filter = ref<AlertFilter>({ ...NO_FILTER })
+const filtered = computed(() => filterAlerts(alerts.value, filter.value))
+const sites = computed(() => alertSites(alerts.value))
+const isFiltered = computed(
+  () => filter.value.gravite !== NO_FILTER.gravite || filter.value.siteId !== NO_FILTER.siteId,
+)
+const severities = Object.keys(SEVERITY_LABELS) as (keyof typeof SEVERITY_LABELS)[]
+
+// En type="single", recliquer sur le bouton actif le désélectionne : on revient à « Toutes »
+function setGravite(value: unknown) {
+  filter.value.gravite =
+    typeof value === 'string' && value !== '' ? (value as AlertFilter['gravite']) : 'toutes'
+}
+const resetFilter = () => (filter.value = { ...NO_FILTER })
 
 // Retour après chaque action : confirmation discrète, ou erreur à réessayer.
 // Rien n'est affiché comme fait tant que le service ne l'a pas confirmé (store).
@@ -70,7 +91,38 @@ async function decide(id: string, statut: 'acceptee' | 'refusee') {
 
     <div v-else class="grid gap-4 lg:grid-cols-2">
       <Card>
-        <CardHeader><CardTitle>Alertes actives</CardTitle></CardHeader>
+        <CardHeader class="gap-3">
+          <CardTitle>Alertes actives</CardTitle>
+          <div v-if="alerts.length > 0" class="flex flex-wrap items-center gap-2">
+            <ToggleGroup
+              :model-value="filter.gravite"
+              type="single"
+              variant="outline"
+              size="sm"
+              aria-label="Filtrer par gravité"
+              @update:model-value="setGravite"
+            >
+              <ToggleGroupItem value="toutes">Toutes</ToggleGroupItem>
+              <ToggleGroupItem v-for="g in severities" :key="g" :value="g" class="capitalize">
+                {{ SEVERITY_LABELS[g] }}
+              </ToggleGroupItem>
+            </ToggleGroup>
+            <label for="filtre-site" class="sr-only">Filtrer par site</label>
+            <select
+              id="filtre-site"
+              v-model="filter.siteId"
+              class="h-8 rounded-md border border-input bg-card px-2 text-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+            >
+              <option value="tous">Tous les sites</option>
+              <option v-for="siteId in sites" :key="siteId" :value="siteId">{{ siteId }}</option>
+            </select>
+            <!-- Annoncé quand le nombre change : la liste vient d'être filtrée -->
+            <p v-if="isFiltered" class="text-sm text-muted-foreground" aria-live="polite">
+              {{ filtered.length }} alerte{{ filtered.length > 1 ? 's' : '' }} sur
+              {{ alerts.length }}
+            </p>
+          </div>
+        </CardHeader>
         <CardContent>
           <TableSkeleton v-if="request.status.value === 'loading'" :rows="4" />
           <EmptyState
@@ -78,9 +130,16 @@ async function decide(id: string, statut: 'acceptee' | 'refusee') {
             title="Aucune alerte active"
             description="Tous les sites fonctionnent normalement."
           />
+          <div v-else-if="filtered.length === 0" class="flex flex-col items-center">
+            <EmptyState
+              title="Aucune alerte ne correspond aux filtres"
+              description="Modifiez la gravité ou le site choisis."
+            />
+            <Button variant="outline" size="sm" @click="resetFilter">Effacer les filtres</Button>
+          </div>
           <AlertsTable
             v-else
-            :alerts="alerts"
+            :alerts="filtered"
             :can-act-on="user.canActOn"
             :pending="pending"
             @acknowledge="acknowledge"

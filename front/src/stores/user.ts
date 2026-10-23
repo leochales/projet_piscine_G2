@@ -13,6 +13,9 @@ export const ROLE_LABELS: Record<Role, string> = {
 
 export const useUserStore = defineStore('user', () => {
   const role = ref<Role>('energy_manager')
+  // Nom affiché dans l'historique des actions. Démonstration : viendra du jeton Keycloak
+  // (SMARTOPS-85)
+  const nom = ref('Camille Martin')
   // Sites dont l'utilisateur est responsable (utilisé pour le rôle site_manager)
   const siteIds = ref<string[]>(['SITE002'])
 
@@ -28,5 +31,5 @@ export const useUserStore = defineStore('user', () => {
     return false
   }
 
-  return { role, siteIds, roleLabel, canActOn }
+  return { role, nom, siteIds, roleLabel, canActOn }
 })

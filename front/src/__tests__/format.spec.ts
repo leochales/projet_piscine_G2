@@ -7,6 +7,7 @@ import {
   formatEur,
   formatKw,
   formatPct,
+  formatRelativeDateTime,
   formatRelativeHour,
   formatSignedPct,
   formatTonnes,
@@ -82,6 +83,15 @@ describe('heures en heure de Paris', () => {
   it('suit le passage à l’heure d’été (29 mars 2026, UTC+1 puis UTC+2)', () => {
     expect(formatAxisHour('2026-03-29T00:30:00Z')).toBe('dim. 1 h')
     expect(formatAxisHour('2026-03-29T01:30:00Z')).toBe('dim. 3 h') // 2 h n'existe pas ce jour-là
+  })
+
+  it('date une action : aujourd’hui, hier, sinon le jour (heure de Paris)', () => {
+    const now = new Date('2026-10-23T08:00:00Z') // 10 h à Paris
+    expect(formatRelativeDateTime('2026-10-23T07:05:00Z', now)).toBe("aujourd'hui à 09:05")
+    expect(formatRelativeDateTime('2026-10-22T15:40:00Z', now)).toBe('hier à 17:40')
+    expect(formatRelativeDateTime('2026-10-20T07:12:00Z', now)).toBe('mar. 20 à 09:12')
+    // 23 h 30 UTC le 22 = 1 h 30 le 23 à Paris : c'est aujourd'hui, pas hier
+    expect(formatRelativeDateTime('2026-10-22T23:30:00Z', now)).toBe("aujourd'hui à 01:30")
   })
 
   it('donne l’heure exacte à Paris', () => {

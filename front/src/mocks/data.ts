@@ -61,6 +61,14 @@ export const kpis: FleetKpis = {
   co2JourTonnes: 2.1,
 }
 
+/** Hier à une heure donnée (heure du poste) : date de démonstration d'une action passée */
+function yesterdayAt(hour: number, minute: number) {
+  const d = new Date()
+  d.setDate(d.getDate() - 1)
+  d.setHours(hour, minute, 0, 0)
+  return d.toISOString()
+}
+
 export const alerts: Alert[] = [
   {
     id: 'ALR-1',
@@ -82,6 +90,16 @@ export const alerts: Alert[] = [
     gravite: 'faible',
     message: 'Consommation inhabituelle la nuit',
     priseEnCompte: false,
+  },
+  // Déjà prise en compte par une autre personne : montre « par qui, quand » sous l'alerte
+  {
+    id: 'ALR-4',
+    siteId: 'SITE004',
+    gravite: 'moyenne',
+    message: 'Température élevée en salle technique',
+    priseEnCompte: true,
+    prisePar: 'Léa Bernard',
+    priseLe: yesterdayAt(17, 40),
   },
 ]
 

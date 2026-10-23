@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from 'pinia'
 
 import * as service from '@/services/dashboard'
 import { monthlyGain, useOperationsStore } from '@/stores/operations'
+import { useUserStore } from '@/stores/user'
 import type { Recommendation } from '@/types/energy'
 
 const rec = (over: Partial<Recommendation>): Recommendation => ({
@@ -100,6 +101,17 @@ describe('useOperationsStore', () => {
       expect(send).toHaveBeenCalledOnce()
       expect(store.pending.has(alert.id)).toBe(false)
       expect(alert.priseEnCompte).toBe(true)
+    })
+
+    it('retient qui a pris l’alerte en compte, et quand', async () => {
+      const store = useOperationsStore()
+      await store.load()
+      const alert = store.alerts.find((a) => !a.priseEnCompte)!
+      const before = Date.now()
+
+      await store.acknowledge(alert.id)
+      expect(alert.prisePar).toBe(useUserStore().nom)
+      expect(new Date(alert.priseLe!).getTime()).toBeGreaterThanOrEqual(before)
     })
 
     it('ne renvoie pas la prise en compte d’une alerte déjà prise en compte (US7)', async () => {
