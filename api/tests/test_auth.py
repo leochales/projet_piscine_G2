@@ -15,7 +15,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 
-from api.auth import exiger_role, get_client_cles
+from api.auth import exiger_role, get_client_cles, retrouver_id_client
 from api.main import app
 from api.routers.health import database_status
 from common.config import get_settings
@@ -69,30 +69,27 @@ class Resultat:
 
 
 class FausseBase:
-    """Session simulée : tables app.client et app.utilisateur en mémoire."""
+    """Session simulée : table app.utilisateur en mémoire.
 
-    def __init__(self, clients: dict[str, int] | None = None) -> None:
-        self.clients = {"Démo EnerVision": 1} if clients is None else clients
-        self.utilisateurs: dict[UUID, int | None] = {}
+    Par défaut, l'utilisateur du jeton est enregistré (compte créé par l'API,
+    SMARTOPS-84) et rattaché au client 1.
+    """
+
+    def __init__(self) -> None:
+        self.utilisateurs: dict[UUID, int | None] = {UUID(SUB): 1}
+        self.requetes: list[str] = []
 
     def execute(
         self, requete: Any, parametres: dict[str, Any] | None = None
     ) -> Resultat:
         sql = str(requete)
+        self.requetes.append(sql)
         parametres = parametres or {}
-        if "INSERT INTO app.utilisateur" in sql:
-            id_client = self.clients.get(parametres["client_pilote"])
-            if id_client is not None:
-                self.utilisateurs.setdefault(parametres["id"], id_client)
-            return Resultat([])
         if "FROM app.utilisateur" in sql:
             if parametres["id"] in self.utilisateurs:
                 return Resultat([{"id_client": self.utilisateurs[parametres["id"]]}])
             return Resultat([])
         return Resultat([])  # requêtes des routes métier : aucune donnée
-
-    def commit(self) -> None:
-        pass
 
 
 def creer_jeton(
@@ -225,32 +222,36 @@ def test_role_metier_autorise(client: TestClient, role: str) -> None:
     assert client.get(ROUTE_PROTEGEE, headers=entete(jeton)).status_code == 200
 
 
-def test_premiere_connexion_cree_l_utilisateur_avec_le_client_pilote(
+def test_utilisateur_absent_de_la_base_403(
     client: TestClient, base: FausseBase
 ) -> None:
-    client.get(ROUTE_PROTEGEE, headers=entete(creer_jeton()))
-
-    assert base.utilisateurs == {UUID(SUB): 1}
-
-
-def test_utilisateur_existant_garde_son_client(
-    client: TestClient, base: FausseBase
-) -> None:
-    base.utilisateurs[UUID(SUB)] = 7  # créé par SMARTOPS-84 pour le client 7
-
-    response = client.get(ROUTE_PROTEGEE, headers=entete(creer_jeton()))
-
-    assert response.status_code == 200
-    assert base.utilisateurs == {UUID(SUB): 7}
-
-
-def test_client_pilote_introuvable_403(client: TestClient, base: FausseBase) -> None:
-    base.clients = {}
+    # Compte créé hors de l'API (ex. console Keycloak) : entreprise inconnue
+    base.utilisateurs = {}
 
     response = client.get(ROUTE_PROTEGEE, headers=entete(creer_jeton()))
 
     assert response.status_code == 403
+    assert response.json() == {"detail": "Compte non rattaché à un client"}
+
+
+def test_l_api_ne_cree_jamais_d_utilisateur(
+    client: TestClient, base: FausseBase
+) -> None:
+    base.utilisateurs = {}
+
+    client.get(ROUTE_PROTEGEE, headers=entete(creer_jeton()))
+
     assert base.utilisateurs == {}
+    assert not any("INSERT" in requete for requete in base.requetes)
+
+
+@pytest.mark.parametrize("id_client", [7, None])
+def test_retrouver_id_client_lit_le_client_enregistre(id_client: int | None) -> None:
+    # None : administrateur EnerVision, rattaché à aucun client
+    base = FausseBase()
+    base.utilisateurs = {UUID(SUB): id_client}
+
+    assert retrouver_id_client(base, UUID(SUB)) == id_client  # type: ignore[arg-type]
 
 
 # --- Keycloak injoignable -----------------------------------------------------

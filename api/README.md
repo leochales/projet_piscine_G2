@@ -44,7 +44,7 @@ def decider(utilisateur: Annotated[Utilisateur, Depends(GESTIONNAIRE)]):
 
 Le test `test_toutes_les_routes_api_exigent_un_jeton` échoue si une route `/api` est ouverte sans jeton.
 
-**Première connexion** : un utilisateur absent de `app.utilisateur` y est ajouté à sa première requête, rattaché au client pilote (`CLIENT_PILOTE`, par défaut « Démo EnerVision »). Les comptes créés par l'API (SMARTOPS-84) ont déjà leur ligne et gardent leur client.
+**Entreprise de l'utilisateur** : le jeton ne dit pas à quelle entreprise (client) appartient l'utilisateur. L'API la lit dans `app.utilisateur`, grâce au `sub` du jeton. Cette ligne est écrite à la création du compte par l'API (`POST /api/utilisateurs`, SMARTOPS-84), qui rattache le nouveau compte à l'entreprise du gestionnaire qui le crée. L'API n'écrit jamais cette ligne à la connexion : un compte créé hors de l'API (par exemple dans la console Keycloak) reçoit un 403, car son entreprise est inconnue.
 
 **Tester dans Swagger** : récupérer un jeton depuis le front connecté (outils de développement du navigateur, en-tête `Authorization` d'un appel `/api`), puis le coller avec le bouton « Authorize ».
 
@@ -53,7 +53,6 @@ Le test `test_toutes_les_routes_api_exigent_un_jeton` échoue si une route `/api
 | `KEYCLOAK_URL_INTERNE` | `http://keycloak:8080/auth` | Adresse de Keycloak sur le réseau Docker (lecture des clés) |
 | `KEYCLOAK_EMETTEUR` | `http://localhost/auth/realms/enervision` | Émetteur attendu dans les jetons |
 | `KEYCLOAK_AUDIENCE` | `enervision-api` | Audience attendue |
-| `CLIENT_PILOTE` | `Démo EnerVision` | Client des utilisateurs créés à la première connexion |
 
 ### `GET /api/health`
 

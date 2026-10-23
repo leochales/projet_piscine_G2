@@ -3,7 +3,8 @@
 Le front obtient un jeton d'accès auprès de Keycloak et l'envoie dans l'en-tête
 « Authorization: Bearer <jeton> ». L'API vérifie ce jeton à chaque requête :
 signature, émetteur, audience et expiration. Elle lit ensuite les rôles et
-retrouve l'utilisateur dans app.utilisateur grâce au sub du jeton.
+retrouve l'utilisateur dans app.utilisateur grâce au sub du jeton, pour connaître
+son entreprise (le jeton ne la contient pas).
 
 Pour protéger des routes :
 
@@ -115,45 +116,28 @@ def lire_jeton(
         raise refuser_jeton("Jeton invalide") from None
 
 
-def retrouver_id_client(
-    session: Session, id_utilisateur: UUID, client_pilote: str
-) -> int | None:
-    """Renvoie le client de l'utilisateur, en le créant à sa première connexion.
+def retrouver_id_client(session: Session, id_utilisateur: UUID) -> int | None:
+    """Renvoie le client de l'utilisateur, lu dans app.utilisateur.
 
-    Les comptes créés par l'API (SMARTOPS-84) ont déjà leur ligne. Les autres
-    (gestionnaires créés dans la console Keycloak) sont rattachés au client pilote.
-    Lève 403 si le client pilote n'existe pas : on ne crée pas de compte sans client.
+    La ligne est écrite à la création du compte par l'API (SMARTOPS-84), qui
+    connaît l'entreprise : celle du gestionnaire qui crée le compte. Le jeton ne
+    contient pas l'entreprise, donc l'API ne crée jamais de ligne elle-même.
+    Lève 403 si l'utilisateur est absent : compte créé hors de l'API (par exemple
+    dans la console Keycloak), on ne sait pas à quelle entreprise il appartient.
     """
-    lire = text("SELECT id_client FROM app.utilisateur WHERE id = :id")
-    ligne = session.execute(lire, {"id": id_utilisateur}).mappings().first()
-    if ligne is not None:
-        return ligne["id_client"]
-
-    # ON CONFLICT : deux premières requêtes simultanées ne créent qu'une ligne
-    creer = text(
-        """
-        INSERT INTO app.utilisateur (id, id_client)
-        SELECT :id, id_client FROM app.client WHERE nom = :client_pilote
-        ON CONFLICT (id) DO NOTHING
-        """
-    )
-    session.execute(creer, {"id": id_utilisateur, "client_pilote": client_pilote})
-    session.commit()
-
-    ligne = session.execute(lire, {"id": id_utilisateur}).mappings().first()
+    requete = text("SELECT id_client FROM app.utilisateur WHERE id = :id")
+    ligne = session.execute(requete, {"id": id_utilisateur}).mappings().first()
     if ligne is None:
-        logger.error("Client pilote introuvable : %s", client_pilote)
+        logger.warning("Utilisateur absent de app.utilisateur : %s", id_utilisateur)
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, "Compte non rattaché à un client"
         )
-    logger.info("Utilisateur créé à sa première connexion : %s", id_utilisateur)
     return ligne["id_client"]
 
 
 def utilisateur_courant(
     contenu: Annotated[dict[str, Any], Depends(lire_jeton)],
     session: Annotated[Session, Depends(get_session)],
-    settings: Annotated[Settings, Depends(get_settings)],
 ) -> Utilisateur:
     """Utilisateur connecté : identifiant (sub), client et rôles du realm."""
     try:
@@ -162,7 +146,7 @@ def utilisateur_courant(
         raise refuser_jeton("Jeton invalide") from None
 
     roles = frozenset(contenu.get("realm_access", {}).get("roles", []))
-    id_client = retrouver_id_client(session, id_utilisateur, settings.client_pilote)
+    id_client = retrouver_id_client(session, id_utilisateur)
     return Utilisateur(id=id_utilisateur, id_client=id_client, roles=roles)
 
 

@@ -34,10 +34,6 @@ class Settings(BaseSettings):
     keycloak_emetteur: str = "http://localhost/auth/realms/enervision"
     keycloak_audience: str = "enervision-api"
 
-    # Client auquel est rattaché un utilisateur inconnu de app.utilisateur à sa
-    # première connexion (MVP : un seul client pilote)
-    client_pilote: str = "Démo EnerVision"
-
     @property
     def keycloak_url_cles(self) -> str:
         """Adresse des clés publiques (JWKS) du realm, jointe en interne."""
