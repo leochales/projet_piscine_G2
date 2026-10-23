@@ -1,13 +1,14 @@
 -- =============================================================================
 -- EnerVision : actions du dashboard (écran « Alertes et recommandations »)
--- 08 : décisions sur les recommandations et prises en compte des alertes
+-- 10 : décisions sur les recommandations et prises en compte des alertes
 --
 -- Ces actions sont des données de l'application : elles vont dans app, où l'API
 -- écrit. gold reste en lecture seule pour l'API, car l'ETL et le modèle le
 -- recalculent : une action stockée dans gold pourrait être écrasée.
 --
--- Historique complet : une ligne par action, jamais modifiée. L'état courant
--- (dernière décision, première prise en compte) est donné par les vues.
+-- Une ligne par action, jamais modifiée. Les décisions gardent tout leur
+-- historique (la dernière l'emporte) ; une alerte n'est prise en compte qu'une
+-- fois. L'état courant est donné par les vues.
 --
 -- Après 05_gold.sql (clés étrangères vers gold) et 06_roles.sql (droits par
 -- défaut du compte api sur app, appliqués aux tables créées ici).
@@ -40,14 +41,13 @@ ON app.decision_recommandation (
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS app.prise_en_compte_alerte (
     id_prise_en_compte BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    id_alerte BIGINT NOT NULL REFERENCES gold.alerte (id_alerte),
+    -- Une seule prise en compte par alerte (US7) : la base refuse la deuxième,
+    -- même si deux utilisateurs cliquent en même temps (l'API répond 409)
+    id_alerte BIGINT NOT NULL UNIQUE REFERENCES gold.alerte (id_alerte),
     -- Identifiant Keycloak de l'utilisateur qui a pris l'alerte en compte
     id_utilisateur UUID NOT NULL REFERENCES app.utilisateur (id),
     prise_le TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
-CREATE INDEX IF NOT EXISTS idx_prise_en_compte_alerte
-ON app.prise_en_compte_alerte (id_alerte, prise_le, id_prise_en_compte);
 
 
 -- -----------------------------------------------------------------------------
@@ -90,8 +90,7 @@ LEFT JOIN LATERAL (
     LIMIT 1
 ) AS d ON true;
 
--- Une ligne par alerte de gold. Prise en compte dès la première action ;
--- prise_par et prise_le décrivent cette première prise en compte.
+-- Une ligne par alerte de gold, avec sa prise en compte si elle existe.
 CREATE OR REPLACE VIEW app.alerte_etat AS
 SELECT
     a.id_alerte,
@@ -108,16 +107,7 @@ SELECT
     p.prise_le,
     p.id_alerte IS NOT null AS prise_en_compte
 FROM gold.alerte AS a
-LEFT JOIN LATERAL (
-    SELECT
-        pa.id_alerte,
-        pa.id_utilisateur,
-        pa.prise_le
-    FROM app.prise_en_compte_alerte AS pa
-    WHERE pa.id_alerte = a.id_alerte
-    ORDER BY pa.prise_le, pa.id_prise_en_compte
-    LIMIT 1
-) AS p ON true;
+LEFT JOIN app.prise_en_compte_alerte AS p ON a.id_alerte = p.id_alerte;
 
 -- Les vues se lisent seulement : l'écriture passe par les tables d'historique
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE

@@ -1,5 +1,5 @@
 -- =============================================================================
--- Tests des actions du dashboard (db/08_actions.sql) et des droits du
+-- Tests des actions du dashboard (db/10_actions.sql) et des droits du
 -- compte api
 --
 -- Lancé par la CI (.github/workflows/images.yml) sur une base neuve, avec
@@ -96,31 +96,34 @@ BEGIN
 END
 $$;
 
--- 2. L'API enregistre des prises en compte : la première est retenue.
+-- 2. L'API enregistre une prise en compte ; la deuxième est refusée (US7).
 INSERT INTO app.prise_en_compte_alerte (id_alerte, id_utilisateur)
 VALUES (
     (SELECT alerte FROM ids),
     '00000000-0000-0000-0000-00000000000a'
-);
-INSERT INTO app.prise_en_compte_alerte (id_alerte, id_utilisateur)
-VALUES (
-    (SELECT alerte FROM ids),
-    '00000000-0000-0000-0000-00000000000b'
 );
 
 DO $$
 DECLARE
     etat app.alerte_etat;
 BEGIN
+    BEGIN
+        INSERT INTO app.prise_en_compte_alerte (id_alerte, id_utilisateur)
+        SELECT alerte, '00000000-0000-0000-0000-00000000000b' FROM ids;
+        RAISE EXCEPTION 'une deuxième prise en compte devrait être refusée';
+    EXCEPTION WHEN unique_violation THEN
+        NULL;  -- refus attendu : l'API répondra 409
+    END;
+
     SELECT ae.* INTO etat FROM app.alerte_etat AS ae, ids WHERE ae.id_alerte = ids.alerte;
     ASSERT etat.prise_en_compte, 'l''alerte doit être prise en compte';
     ASSERT etat.prise_par = '00000000-0000-0000-0000-00000000000a',
-        'prise_par doit être le premier utilisateur';
+        'prise_par doit être l''utilisateur de la prise en compte';
 
     SELECT ae.* INTO etat FROM app.alerte_etat AS ae, ids WHERE ae.id_alerte = ids.alerte_seule;
     ASSERT NOT etat.prise_en_compte AND etat.prise_par IS NULL,
         'une alerte sans action ne doit pas être prise en compte';
-    RAISE NOTICE 'OK 2 : prises en compte enregistrées, première retenue';
+    RAISE NOTICE 'OK 2 : prise en compte enregistrée, deuxième refusée';
 END
 $$;
 
