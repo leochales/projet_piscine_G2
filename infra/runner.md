@@ -64,7 +64,7 @@ Le dépôt est privé sur un plan Free, sans *GitHub Environments*. Les secrets 
 | `VM_IP`                                      | oui         | IP de la VM, inscrite dans le certificat et dans l'adresse de retour de connexion de Keycloak (`FRONT_URL`) |
 
 Utiliser des mots de passe différents entre dev et prod. Ils ne sont appliqués qu'à la **création** de la base (volume vide) : modifier un secret ensuite ne change pas le mot de passe en base. Exceptions :
-- `KEYCLOAK_DB_PASSWORD` est réappliqué à chaque déploiement par `db/08_keycloak.sh` ;
+- `KEYCLOAK_DB_PASSWORD` est réappliqué à chaque déploiement par `db/09_keycloak.sh` ;
 - `KEYCLOAK_ADMIN` et `KEYCLOAK_ADMIN_PASSWORD` ne servent qu'au premier démarrage de Keycloak, pour créer l'administrateur du realm `master`. Le modifier ensuite se fait dans la console de Keycloak ;
 - `KEYCLOAK_ADMIN_CLIENT_SECRET` n'est lu qu'à l'import du realm : le changer demande aussi une action dans Keycloak (voir [Faire évoluer le realm Keycloak](#faire-évoluer-le-realm-keycloak)).
 
@@ -75,7 +75,7 @@ Utiliser des mots de passe différents entre dev et prod. Ils ne sont appliqués
 1. **Contrôles**, en parallèle sur des runners GitHub : `pre-commit.yml` (lint, tests), `security.yml` (Trivy sur le code) et `images.yml`. Ce dernier construit api, etl et front **une seule fois**, démarre la stack de prod complète avec ces images (Traefik, scripts `db/`, comptes PostgreSQL, ETL, front), lance Schemathesis sur le conteneur de l'API, scanne les images avec Trivy, puis les publie sur GHCR (`ghcr.io/<owner>/enervision-<service>:<sha du commit>`). Le déploiement ne démarre que si tout réussit.
 2. **Certificat HTTPS** : auto-signé pour `VM_IP`, stocké dans `~/traefik-certs`, régénéré s'il expire sous 30 jours ou si `VM_IP` change.
 3. **Traefik** : démarré s'il ne tourne pas. Il lit Docker via `docker-socket-proxy` (lecture seule, réseau interne), sans accès direct au socket.
-4. **Application** : vérification des secrets, `docker compose pull` des images du commit (connexion à GHCR avec le `GITHUB_TOKEN` du job, retirée juste après), démarrage de Postgres et création de la base `keycloak` si elle manque (`db/08_keycloak.sh`), puis `up -d --no-build`. La VM ne reconstruit rien : elle démarre exactement les images testées et scannées.
+4. **Application** : vérification des secrets, `docker compose pull` des images du commit (connexion à GHCR avec le `GITHUB_TOKEN` du job, retirée juste après), démarrage de Postgres et création de la base `keycloak` si elle manque (`db/09_keycloak.sh`), puis `up -d --no-build`. La VM ne reconstruit rien : elle démarre exactement les images testées et scannées.
 5. **Santé** : `https://localhost:<port>/api/health` pendant 60 s. En cas d'échec, le job affiche l'état des conteneurs et les logs de l'API.
 6. **Nettoyage** : images orphelines et anciennes versions de nos images qu'aucun conteneur n'utilise. Sur GHCR, seules les 20 dernières versions de chaque image sont conservées.
 

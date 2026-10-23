@@ -144,7 +144,7 @@ jobs:
           login etl "$ETL_DB_PASSWORD"
           login model "$MODEL_DB_PASSWORD"
           login backup "$BACKUP_DB_PASSWORD"
-          # Base keycloak (08_keycloak.sh) : son compte, et backup pour la sauvegarde
+          # Base keycloak (09_keycloak.sh) : son compte, et backup pour la sauvegarde
           login keycloak "$KEYCLOAK_DB_PASSWORD" keycloak
           login backup "$BACKUP_DB_PASSWORD" keycloak
           if login api "mauvais-mot-de-passe" 2>/dev/null; then

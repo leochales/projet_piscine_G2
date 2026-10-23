@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 # EnerVision : base de données de Keycloak
-# 08 : crée la base keycloak et son compte, séparés de la base enervision.
+# 09 : crée la base keycloak et son compte, séparés de la base enervision.
 #      Le mot de passe vient de KEYCLOAK_DB_PASSWORD.
 # =============================================================================
 set -euo pipefail

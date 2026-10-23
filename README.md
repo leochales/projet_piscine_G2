@@ -41,7 +41,7 @@ Si `keycloak` ne démarre pas parce que sa base n'existe pas (volume créé avan
 
 ```bash
 docker compose -f compose-local.yml up -d db   # recrée db avec KEYCLOAK_DB_PASSWORD
-docker compose -f compose-local.yml exec db bash /docker-entrypoint-initdb.d/08_keycloak.sh
+docker compose -f compose-local.yml exec db bash /docker-entrypoint-initdb.d/09_keycloak.sh
 ```
 
 ## Hooks pre-commit

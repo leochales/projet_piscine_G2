@@ -143,7 +143,7 @@ jobs:
           docker compose -f compose-prod.yml pull --quiet
           docker logout ghcr.io >/dev/null
           # Base keycloak : les scripts de db/ ne tournent que sur un volume vide, mais
-          # 08_keycloak.sh peut être relancé sans risque. Créée ici si elle manque.
+          # 09_keycloak.sh peut être relancé sans risque. Créée ici si elle manque.
           docker compose -f compose-prod.yml up -d --no-build --pull never db
           ready=false
           for _ in $(seq 1 60); do
@@ -158,7 +158,7 @@ jobs:
             echo "::error::PostgreSQL ne répond pas après 120 s"
             exit 1
           fi
-          docker compose -f compose-prod.yml exec -T db bash /docker-entrypoint-initdb.d/08_keycloak.sh
+          docker compose -f compose-prod.yml exec -T db bash /docker-entrypoint-initdb.d/09_keycloak.sh
           docker compose -f compose-prod.yml up -d --no-build --pull never --remove-orphans
 
       # Passe par Traefik comme un client (-k : certificat auto-signé)
