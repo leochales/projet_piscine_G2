@@ -27,28 +27,22 @@ docker compose up --build
 
 ### Base de données
 
-Les scripts de `db/` (schémas, comptes des services, droits) ne sont exécutés par PostgreSQL qu'au premier démarrage, quand le volume est vide. Après une modification de ces scripts, ou si `api` et `etl` échouent avec `password authentication failed`, recréer la base (**supprime les données locales**) :
+Les scripts de `db/` (schémas, comptes des services, droits) sont exécutés par PostgreSQL au premier démarrage, quand le volume est vide. Sur une base existante, `db/tools/migrate.sh` les **rejoue tous**, dans l'ordre, sans toucher aux données. Le déploiement le lance à chaque fois. En local, le lancer après un `git pull` qui modifie `db/` ou `.env`, ou si un service échoue avec `password authentication failed`, si `keycloak` ne trouve pas sa base, ou si PostgreSQL apparaît « injoignable » dans Grafana :
 
 ```bash
-docker compose -f compose-local.yml down -v
+docker compose -f compose-local.yml up -d db   # recrée db si .env a changé (nouveau mot de passe…)
+docker compose -f compose-local.yml exec db bash /docker-entrypoint-initdb.d/tools/migrate.sh
 ```
 
-Une fois la base déployée, toute modification des droits passe par un script de migration, pas par ces fichiers d'initialisation.
+Chaque script de `db/` doit donc pouvoir être **rejoué sans effet** sur une base à jour : `CREATE TABLE IF NOT EXISTS`, `CREATE OR REPLACE VIEW`, `ON CONFLICT DO NOTHING`… La CI (`images.yml`) rejoue la migration sur sa base de test et échoue sinon. Règles :
 
-Les migrations sont dans `db/migrations/` (ignorées au premier démarrage, la base étant déjà à jour). Pour mettre à niveau une base existante, les exécuter dans l'ordre :
+- Ne jamais modifier une table dans le script qui l'a créée : un `CREATE TABLE IF NOT EXISTS` modifié ne change pas une table existante. Ajouter un nouveau script numéroté (`11_….sql`) avec `ALTER TABLE … ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`…
+- Un seul script par numéro, exécutés dans l'ordre du nom.
+- Les mots de passe des comptes sont réappliqués à chaque migration depuis les variables d'environnement.
 
-```bash
-docker exec -i postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < db/migrations/001_silver_grille.sql
-```
+Pour repartir d'une base vide (**supprime les données locales**) : `docker compose -f compose-local.yml down -v`.
 
-Les sites à collecter sont déclarés dans `app.site` par l'application (`db/08_sites_demo.sql` pour les 7 sites de démo) : l'ETL ne fait que les lire.
-
-Si `keycloak` ne démarre pas parce que sa base n'existe pas (volume créé avant l'ajout de Keycloak), créer la base `keycloak` sans toucher aux données (le script peut être relancé sans risque) :
-
-```bash
-docker compose -f compose-local.yml up -d db   # recrée db avec KEYCLOAK_DB_PASSWORD
-docker compose -f compose-local.yml exec db bash /docker-entrypoint-initdb.d/09_keycloak.sh
-```
+Les sites à collecter sont déclarés dans `app.site` par l'application (`db/08_sites_demo.sql` pour les 7 sites de démo) : l'ETL ne fait que les lire. Comme les autres scripts, il est rejoué à chaque migration : un site de démo supprimé à la main réapparaît.
 
 Les actions du dashboard (décisions sur les recommandations, prises en compte des alertes) sont enregistrées dans `app` par `db/10_actions.sql`, et non dans `gold`, que l'ETL et le modèle recalculent. Ce sont des historiques : l'API peut ajouter des lignes, mais ni les modifier ni les supprimer. Une alerte n'est prise en compte qu'une fois : la base refuse la deuxième. L'état courant se lit dans les vues `app.recommandation_etat` et `app.alerte_etat`.
 
@@ -83,12 +77,7 @@ Grafana : http://localhost/grafana (compte `admin`, mot de passe `GRAFANA_ADMIN_
 
 - L'API écrit ses logs en JSON avec `common/logs.py`. Chaque service Python doit appeler `configure_logging("nom-du-service")` au démarrage, plutôt que `logging.basicConfig` : sinon ses logs restent en texte et Grafana ne peut pas les filtrer par niveau.
 - L'API expose ses métriques sur `/metrics`, hors de `/api` : Traefik ne les publie pas, seul Prometheus les lit.
-- Le compte `monitoring` n'existe que dans une base créée après l'ajout de la supervision. Sur une base plus ancienne, PostgreSQL apparaît « injoignable » dans Grafana : créer le compte sans toucher aux données (les deux scripts peuvent être relancés sans risque) :
-
-  ```bash
-  docker compose -f compose-local.yml up -d db   # recrée db avec MONITORING_DB_PASSWORD
-  docker compose -f compose-local.yml exec db sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f /docker-entrypoint-initdb.d/06_roles.sql && bash /docker-entrypoint-initdb.d/07_passwords.sh'
-  ```
+- Le compte `monitoring` n'existe que dans une base créée ou migrée après l'ajout de la supervision. Si PostgreSQL apparaît « injoignable » dans Grafana, lancer la migration (voir **Base de données** ci-dessus).
 - Un tableau de bord modifié dans Grafana n'est pas sauvegardé : exporter son JSON dans `infra/monitoring/grafana/dashboards/`.
 
 ## Hooks pre-commit

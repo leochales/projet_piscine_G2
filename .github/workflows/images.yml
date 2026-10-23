@@ -156,6 +156,12 @@ jobs:
           [ -n "$(docker compose -f compose-prod.yml ps etl --status running -q)" ] \
             || { echo "::error::Le conteneur etl n'est pas démarré"; exit 1; }
 
+      # Même migration que deploy.yml. Les scripts de db/ ont déjà tourné à la création de
+      # la base : ce second passage échoue si l'un d'eux ne peut pas être rejoué sur une
+      # base existante. Les tests SQL qui suivent portent donc sur une base migrée.
+      - name: Rejouer la migration de la base
+        run: docker compose -f compose-prod.yml exec -T db bash /docker-entrypoint-initdb.d/tools/migrate.sh
+
       # Tests SQL de db/tests/ (droits des comptes, actions du dashboard), sur la base
       # créée par les scripts d'initialisation de la stack. Lancés en superutilisateur :
       # chaque script prend lui-même les droits d'un compte (SET ROLE) et annule tout (ROLLBACK).

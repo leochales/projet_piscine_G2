@@ -63,8 +63,8 @@ Le dépôt est privé sur un plan Free, sans *GitHub Environments*. Les secrets 
 | `DEV_KEYCLOAK_ADMIN` / `PROD_KEYCLOAK_ADMIN` | oui         | Identifiant de l'administrateur initial de Keycloak |
 | `VM_IP`                                      | oui         | IP de la VM, inscrite dans le certificat et dans l'adresse de retour de connexion de Keycloak (`FRONT_URL`) |
 
-Utiliser des mots de passe différents entre dev et prod. Ils ne sont appliqués qu'à la **création** de la base (volume vide) : modifier un secret ensuite ne change pas le mot de passe en base. Exceptions :
-- `KEYCLOAK_DB_PASSWORD` est réappliqué à chaque déploiement par `db/09_keycloak.sh` ;
+Utiliser des mots de passe différents entre dev et prod. Les mots de passe des comptes des services (`ETL_`, `MODEL_`, `API_`, `BACKUP_`, `KEYCLOAK_DB_PASSWORD`) sont **réappliqués à chaque déploiement** par la migration de la base : pour en changer un, modifier le secret puis redéployer. Exceptions :
+- `POSTGRES_PASSWORD` (superutilisateur) n'est appliqué qu'à la **création** de la base (volume vide). Le changer ensuite : `ALTER ROLE` dans la base, puis mettre à jour le secret ;
 - `KEYCLOAK_ADMIN` et `KEYCLOAK_ADMIN_PASSWORD` ne servent qu'au premier démarrage de Keycloak, pour créer l'administrateur du realm `master`. Le modifier ensuite se fait dans la console de Keycloak ;
 - `KEYCLOAK_ADMIN_CLIENT_SECRET` n'est lu qu'à l'import du realm : le changer demande aussi une action dans Keycloak (voir [Faire évoluer le realm Keycloak](#faire-évoluer-le-realm-keycloak)).
 
@@ -72,12 +72,15 @@ Utiliser des mots de passe différents entre dev et prod. Ils ne sont appliqués
 
 ## Déroulement d'un déploiement
 
-1. **Contrôles**, en parallèle sur des runners GitHub : `pre-commit.yml` (lint, tests), `security.yml` (Trivy sur le code) et `images.yml`. Ce dernier construit api, etl et front **une seule fois**, démarre la stack de prod complète avec ces images (Traefik, scripts `db/`, comptes PostgreSQL, ETL, front), lance Schemathesis sur le conteneur de l'API, scanne les images avec Trivy, puis les publie sur GHCR (`ghcr.io/<owner>/enervision-<service>:<sha du commit>`). Le déploiement ne démarre que si tout réussit.
+1. **Contrôles**, en parallèle sur des runners GitHub : `pre-commit.yml` (lint, tests), `security.yml` (Trivy sur le code) et `images.yml`. Ce dernier construit api, etl et front **une seule fois**, démarre la stack de prod complète avec ces images (Traefik, scripts `db/`, comptes PostgreSQL, ETL, front), rejoue la migration de la base, lance les tests SQL et Schemathesis sur le conteneur de l'API, scanne les images avec Trivy, puis les publie sur GHCR (`ghcr.io/<owner>/enervision-<service>:<sha du commit>`). Le déploiement ne démarre que si tout réussit.
 2. **Certificat HTTPS** : auto-signé pour `VM_IP`, stocké dans `~/traefik-certs`, régénéré s'il expire sous 30 jours ou si `VM_IP` change.
 3. **Traefik** : démarré s'il ne tourne pas. Il lit Docker via `docker-socket-proxy` (lecture seule, réseau interne), sans accès direct au socket.
-4. **Application** : vérification des secrets, `docker compose pull` des images du commit (connexion à GHCR avec le `GITHUB_TOKEN` du job, retirée juste après), démarrage de Postgres et création de la base `keycloak` si elle manque (`db/09_keycloak.sh`), puis `up -d --no-build`. La VM ne reconstruit rien : elle démarre exactement les images testées et scannées.
-5. **Santé** : `https://localhost:<port>/api/health` pendant 60 s. En cas d'échec, le job affiche l'état des conteneurs et les logs de l'API.
-6. **Nettoyage** : images orphelines et anciennes versions de nos images qu'aucun conteneur n'utilise. Sur GHCR, seules les 20 dernières versions de chaque image sont conservées.
+4. **Vérifier les secrets** : toutes les variables et tous les secrets obligatoires, avant de toucher à la VM. Le job liste ceux qui manquent et s'arrête.
+5. **Récupérer les images** : `docker compose pull` des images du commit (connexion à GHCR avec le `GITHUB_TOKEN` du job, retirée juste après). La VM ne reconstruit rien : elle démarre exactement les images testées et scannées.
+6. **Migrer la base** : démarrage de Postgres, attente qu'il réponde (120 s au plus, sinon le déploiement s'arrête avec les logs de `db`), puis `db/tools/migrate.sh`, qui rejoue tous les scripts de `db/` sur la base existante : nouvelles tables, comptes, droits et mots de passe. Les scripts doivent pouvoir être rejoués sans effet (voir la section **Base de données** du README). Si un script échoue, les nouveaux conteneurs ne sont pas démarrés : l'ancienne version continue de tourner, sur une base **partiellement migrée** (les scripts précédents restent appliqués, chaque script annulant seulement ses propres changements). Le risque est faible tant que les scripts ne font qu'ajouter (tables, colonnes, droits) : l'ancienne version les ignore. Corriger le script et redéployer : la migration reprend depuis le début.
+7. **Déployer** : `up -d --no-build --remove-orphans`.
+8. **Santé** : `https://localhost:<port>/api/health` pendant 60 s. En cas d'échec, le job affiche l'état des conteneurs et les logs de l'API.
+9. **Nettoyage** : images orphelines et anciennes versions de nos images qu'aucun conteneur n'utilise. Sur GHCR, seules les 20 dernières versions de chaque image sont conservées.
 
 Un seul déploiement à la fois par environnement. Pour **revenir en arrière** : rouvrir le run **Deploy** d'un commit précédent et relancer **uniquement le job Deploy** (icône ↻ du job). Les images de ce commit sont reprises sur GHCR telles quelles. Relancer tout le run reconstruirait les images. Au-delà des 20 dernières versions, faire un `git revert` sur la branche et redéployer.
 
@@ -160,7 +163,8 @@ Correctif si le dépôt passe sur GitHub Pro, Team, Enterprise ou en public : en
 | `DEV_…` / `PROD_… manquant`                  | Secret ou variable absent                       | Le créer dans **Settings → Secrets and variables → Actions**.    |
 | `permission denied … /var/run/docker.sock`   | `github-runner` hors du groupe `docker`         | `sudo usermod -aG docker github-runner`, puis redémarrer le service. |
 | Ports 80/443/8080/8443 déjà utilisés         | Autre service sur la VM                         | Libérer le port, puis relancer le déploiement.                   |
-| `password authentication failed` (api, etl)  | Secret modifié après la création de la base     | Mettre à jour le mot de passe en base, ou recréer le volume (**perte des données**). |
+| `password authentication failed` (api, etl)  | Base non migrée depuis le changement du secret  | Redéployer : l'étape « Migrer la base » réapplique les mots de passe. |
+| Étape « Migrer la base » en échec            | Script de `db/` qui ne peut pas être rejoué, ou erreur SQL | Log de l'étape (le script fautif est le dernier `== …` affiché). L'ancienne version tourne toujours : corriger le script et redéployer. |
 | Vérification de santé en échec               | API ou base qui ne démarre pas                  | Logs du job, puis `docker compose -p enervision-<env> logs api db`. |
 | `pull access denied` / `manifest unknown` (ghcr.io) | Image absente de GHCR (job `images` en échec, ou version purgée) | Vérifier le job `images` du run ; au-delà de 20 versions, redéployer un commit récent. |
 | `no space left on device`                    | Images accumulées                               | `docker system prune -af` (les volumes sont conservés). |

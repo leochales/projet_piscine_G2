@@ -1,13 +1,11 @@
 -- =============================================================================
--- EnerVision : migration 001
--- Silver représente les minutes sans mesure, et une quarantaine accueille
--- les mesures refusées par la validation.
+-- EnerVision : silver sur la grille de 60 s (SMARTOPS-24)
+-- 11 : silver représente les minutes sans mesure, et une quarantaine accueille
+--      les mesures refusées par la validation.
 --
--- À exécuter une fois sur une base créée avant ce changement (les scripts
--- de db/ ne tournent qu'au premier démarrage). Rejouable sans effet.
---   docker exec -i postgres \
---     sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
---     < db/migrations/001_silver_grille.sql
+-- 04_silver.sql crée déjà ces tables sur une base neuve : ce script n'a
+-- d'effet que sur une base créée avant ce changement, que la migration
+-- (db/tools/migrate.sh) met à niveau. Rejouable sans effet.
 -- =============================================================================
 
 BEGIN;
