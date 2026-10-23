@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  formatAge,
   formatEur,
   formatKw,
   formatPct,
@@ -36,5 +37,19 @@ describe('format', () => {
     expect(plain(formatPct(87))).toBe('87 %')
     expect(plain(formatTonnes(2.14))).toBe('2,1 t')
     expect(plain(formatSignedPct(0))).toBe('0 %')
+  })
+
+  it('donne l’âge d’une donnée, arrondi à l’unité affichée', () => {
+    const now = new Date('2026-10-23T12:00:00Z')
+    const ago = (seconds: number) => new Date(now.getTime() - seconds * 1000)
+    expect(formatAge(ago(0), now)).toBe("à l'instant")
+    expect(formatAge(ago(9), now)).toBe("à l'instant")
+    expect(formatAge(ago(30), now)).toBe('il y a 30 s')
+    expect(formatAge(ago(59), now)).toBe('il y a 59 s')
+    expect(formatAge(ago(60), now)).toBe('il y a 1 min')
+    expect(formatAge(ago(59 * 60 + 59), now)).toBe('il y a 59 min')
+    expect(formatAge(ago(2 * 3600), now)).toBe('il y a 2 h')
+    // Horloge du poste en retard sur la réponse : jamais de durée négative
+    expect(formatAge(ago(-5), now)).toBe("à l'instant")
   })
 })

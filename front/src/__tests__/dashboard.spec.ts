@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   fetchAlerts,
@@ -6,7 +6,10 @@ import {
   fetchOverview,
   fetchSiteCosts,
   fetchSiteOverview,
+  fetchRecommendations,
   fetchSiteSeries,
+  readSimulation,
+  SLOW_DELAY_MS,
 } from '@/services/dashboard'
 
 describe('services/dashboard', () => {
@@ -37,5 +40,49 @@ describe('services/dashboard', () => {
     const first = await fetchAlerts()
     first[0]!.priseEnCompte = true
     expect((await fetchAlerts())[0]!.priseEnCompte).toBe(false)
+  })
+})
+
+describe('simulation des cas réels (?simulation=…)', () => {
+  const simulate = (value: string) => window.history.replaceState(null, '', `/?simulation=${value}`)
+
+  afterEach(() => {
+    window.history.replaceState(null, '', '/')
+    vi.useRealTimers()
+  })
+
+  it('lit la simulation demandée, et seulement en développement', () => {
+    expect(readSimulation('?simulation=erreur', true)).toBe('erreur')
+    expect(readSimulation('?simulation=inconnue', true)).toBeNull()
+    expect(readSimulation('', true)).toBeNull()
+    expect(readSimulation('?simulation=erreur', false)).toBeNull()
+  })
+
+  it('« erreur » fait échouer les appels', async () => {
+    simulate('erreur')
+    await expect(fetchOverview()).rejects.toThrow('API simulée en erreur')
+  })
+
+  it('« vide » renvoie des listes et des courbes vides', async () => {
+    simulate('vide')
+    expect(await fetchOverview()).toEqual([])
+    expect(await fetchAlerts()).toEqual([])
+    expect(await fetchRecommendations()).toEqual([])
+    expect(await fetchSiteSeries('SITE002', '24h')).toEqual({ mesures: [], predictions: [] })
+    // Les indicateurs du parc n'ont pas de version « vide » : ils restent renseignés
+    expect((await fetchKpis()).nbSites).toBe(7)
+  })
+
+  it('« lent » retarde la réponse', async () => {
+    vi.useFakeTimers()
+    simulate('lent')
+    let done = false
+    const call = fetchOverview().then(() => (done = true))
+
+    await vi.advanceTimersByTimeAsync(SLOW_DELAY_MS - 1)
+    expect(done).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    await call
+    expect(done).toBe(true)
   })
 })

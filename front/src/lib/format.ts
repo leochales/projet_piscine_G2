@@ -29,6 +29,16 @@ export function formatRelativeHour(iso: string, now = new Date()) {
   return `${day} ${hour}`
 }
 
+/** Âge d'une donnée : « à l'instant », « il y a 30 s », « il y a 5 min », « il y a 2 h » */
+export function formatAge(from: Date, now = new Date()) {
+  const seconds = Math.max(0, Math.floor((now.getTime() - from.getTime()) / 1000))
+  if (seconds < 10) return "à l'instant"
+  if (seconds < 60) return `il y a ${seconds} s`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `il y a ${minutes} min`
+  return `il y a ${Math.floor(minutes / 60)} h`
+}
+
 function startOfDay(date: Date) {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate())
 }
