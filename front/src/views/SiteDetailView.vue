@@ -1,10 +1,20 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { ChevronDown } from '@lucide/vue'
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import DataFreshness from '@/components/common/DataFreshness.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import RequestError from '@/components/common/RequestError.vue'
@@ -36,11 +46,10 @@ function setRange(value: unknown) {
 }
 
 // Chaque appel est relancé quand le site (ou la période) change ; useRequest ignore la
-// réponse d'un site quitté entre-temps. Sans identifiant (onglet « Sites »), seule la liste
-// des sites est chargée, pour en choisir un.
-const siteList = useRequest(async () => (props.siteId ? undefined : fetchOverview()), {
-  watch: () => props.siteId,
-})
+// réponse d'un site quitté entre-temps. Sans identifiant (onglet « Sites »), on ne charge que
+// la liste des sites, pour en choisir un.
+// Liste des sites : choix d'un site (onglet « Sites ») et menu pour changer de site
+const siteList = useRequest(fetchOverview)
 const site = useRequest(async () => (props.siteId ? fetchSiteOverview(props.siteId) : undefined), {
   watch: () => props.siteId,
 })
@@ -135,10 +144,48 @@ const openSite = (siteId: string) => router.push({ name: 'sites', params: { site
   </Card>
 
   <section v-else-if="current" class="space-y-4">
+    <nav aria-label="Fil d'Ariane" class="text-sm text-muted-foreground">
+      <ol class="flex items-center gap-1.5">
+        <li>
+          <RouterLink :to="{ name: 'sites' }" class="hover:text-foreground hover:underline">
+            Sites
+          </RouterLink>
+        </li>
+        <li aria-hidden="true">›</li>
+        <li aria-current="page" class="text-foreground">{{ current.site.id }}</li>
+      </ol>
+    </nav>
+
     <div class="flex flex-wrap items-end justify-between gap-3">
-      <h1 class="text-xl font-semibold">
-        {{ current.site.id }} · {{ current.site.nom }}
-        <span class="ml-1 text-sm font-normal text-muted-foreground">
+      <h1 class="flex flex-wrap items-baseline gap-x-2 text-xl font-semibold">
+        <!-- Le titre ouvre la liste des sites : on change de site sans revenir en arrière -->
+        <DropdownMenu v-if="siteList.data.value?.length">
+          <DropdownMenuTrigger
+            class="-ml-1 inline-flex items-center gap-1 rounded-md px-1 hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+          >
+            {{ current.site.id }} · {{ current.site.nom }}
+            <ChevronDown class="size-4 text-muted-foreground" aria-hidden="true" />
+            <span class="sr-only">(changer de site)</span>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" class="max-h-80 overflow-y-auto">
+            <DropdownMenuLabel>Changer de site</DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuRadioGroup
+              :model-value="current.site.id"
+              @update:model-value="(value) => openSite(String(value))"
+            >
+              <DropdownMenuRadioItem
+                v-for="row in siteList.data.value"
+                :key="row.site.id"
+                :value="row.site.id"
+              >
+                {{ row.site.id }} · {{ row.site.nom }}
+              </DropdownMenuRadioItem>
+            </DropdownMenuRadioGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <span v-else>{{ current.site.id }} · {{ current.site.nom }}</span>
+        <span class="text-sm font-normal text-muted-foreground">
           capacité {{ formatKw(current.site.capaciteKw) }}
         </span>
       </h1>
