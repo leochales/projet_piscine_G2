@@ -8,7 +8,8 @@ const euros = new Intl.NumberFormat('fr-FR', {
   maximumFractionDigits: 0,
 })
 
-export const formatKw = (kw: number) => `${integer.format(kw)} kW`
+// null : pas de mesure (capteur en panne). Jamais « 0 kW », qui ferait croire à un site arrêté.
+export const formatKw = (kw: number | null) => (kw === null ? '—' : `${integer.format(kw)} kW`)
 export const formatEur = (eur: number) => euros.format(eur)
 export const formatPct = (pct: number) => `${integer.format(pct)} %`
 export const formatTonnes = (t: number) => `${oneDecimal.format(t)} t`

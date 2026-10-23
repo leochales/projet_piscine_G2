@@ -11,6 +11,7 @@ import TableSkeleton from '@/components/common/TableSkeleton.vue'
 import KpiCard from '@/components/overview/KpiCard.vue'
 import SitesTable from '@/components/overview/SitesTable.vue'
 import { formatEur, formatKw, formatSignedPct, formatTonnes } from '@/lib/format'
+import { trend } from '@/lib/indicators'
 import { useAutoRefresh } from '@/lib/refresh'
 import { useRequest } from '@/lib/request'
 import { fetchKpis, fetchOverview } from '@/services/dashboard'
@@ -28,6 +29,8 @@ const sites = useRequest(fetchOverview)
 // Alertes et économies ne sont pas rafraîchies : le store garderait sinon les actions faites
 // à l'écran 3 seulement jusqu'au rafraîchissement suivant (pas encore d'API pour les enregistrer)
 const freshness = useAutoRefresh([kpis, sites])
+
+const sitesWithoutReading = (n: number) => (n > 1 ? `${n} sites sans mesure` : '1 site sans mesure')
 
 const openSite = (siteId: string) => router.push({ name: 'sites', params: { siteId } })
 </script>
@@ -51,15 +54,22 @@ const openSite = (siteId: string) => router.push({ name: 'sites', params: { site
       </CardContent>
     </Card>
     <div v-else-if="kpis.data.value" class="grid grid-cols-2 gap-4 lg:grid-cols-5">
+      <!-- Un site sans mesure est exclu du total : on le dit, sinon le total paraît complet -->
       <KpiCard
         label="Consommation actuelle"
         :value="formatKw(kpis.data.value.consommationKw)"
-        :hint="`${kpis.data.value.nbSites} sites`"
+        :hint="
+          kpis.data.value.nbSitesSansMesure > 0
+            ? `Données incomplètes : ${sitesWithoutReading(kpis.data.value.nbSitesSansMesure)}`
+            : `${kpis.data.value.nbSites} sites`
+        "
+        :warning="kpis.data.value.nbSitesSansMesure > 0"
       />
       <KpiCard
         label="Coût aujourd'hui"
         :value="formatEur(kpis.data.value.coutJourEur)"
         :hint="`${formatSignedPct(kpis.data.value.variationCoutPct)} vs hier`"
+        :trend="trend(kpis.data.value.variationCoutPct, 'baisse')"
       />
       <KpiCard
         label="CO₂ aujourd'hui"

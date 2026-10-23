@@ -40,7 +40,8 @@ export const overview: SiteOverview[] = [
   },
   {
     site: site('SITE003'),
-    consommationKw: 980,
+    // Capteur de consommation en panne (alerte ALR-2) : pas de mesure, comme dans l'API Mock
+    consommationKw: null,
     picPrevu: null,
     qualite: { statut: 'partielle', heuresManquantes: 2 },
   },
@@ -51,8 +52,10 @@ export const overview: SiteOverview[] = [
 ]
 
 export const kpis: FleetKpis = {
-  consommationKw: 4820,
+  // Total des 6 sites mesurés : SITE003 n'a pas de mesure
+  consommationKw: 3840,
   nbSites: 7,
+  nbSitesSansMesure: 1,
   coutJourEur: 6140,
   variationCoutPct: 4,
   co2JourTonnes: 2.1,

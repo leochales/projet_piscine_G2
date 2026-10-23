@@ -20,14 +20,17 @@ export interface PredictedPeak {
 
 export interface SiteOverview {
   site: Site
-  consommationKw: number
+  // null : pas de mesure, l'API Mock renvoie consumption_kw: null quand le capteur est en panne
+  consommationKw: number | null
   picPrevu: PredictedPeak | null // seulement s'il dépasse le seuil d'alerte
   qualite: DataQuality
 }
 
 export interface FleetKpis {
+  // Somme des sites qui ont une mesure : ceux qui n'en ont pas sont exclus du total
   consommationKw: number
   nbSites: number
+  nbSitesSansMesure: number
   coutJourEur: number
   variationCoutPct: number // par rapport à la veille
   co2JourTonnes: number

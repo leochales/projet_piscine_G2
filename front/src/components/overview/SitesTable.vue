@@ -12,13 +12,17 @@ import {
 import CapacityBar from '@/components/overview/CapacityBar.vue'
 import DataQualityBadge from '@/components/overview/DataQualityBadge.vue'
 import { formatKw, formatPct, formatRelativeHour } from '@/lib/format'
+import { capacityPct } from '@/lib/indicators'
 import { SITE_TYPE_LABELS } from '@/lib/labels'
 import type { SiteOverview } from '@/types/energy'
 
 defineProps<{ rows: SiteOverview[] }>()
 const emit = defineEmits<{ select: [siteId: string] }>()
 
-const pourcentage = (row: SiteOverview) => (row.consommationKw / row.site.capaciteKw) * 100
+// « — » sans mesure : la raison est donnée au survol et aux lecteurs d'écran
+const noReading = 'Pas de mesure : capteur de consommation en panne'
+
+const pourcentage = (row: SiteOverview) => capacityPct(row.consommationKw, row.site.capaciteKw)
 </script>
 
 <template>
@@ -41,7 +45,13 @@ const pourcentage = (row: SiteOverview) => (row.consommationKw / row.site.capaci
         <DataQualityBadge :qualite="row.qualite" />
       </div>
       <div class="flex items-center justify-between gap-3">
-        <span class="text-sm font-semibold tabular-nums">{{ formatKw(row.consommationKw) }}</span>
+        <span
+          class="text-sm font-semibold tabular-nums"
+          :title="row.consommationKw === null ? noReading : undefined"
+        >
+          {{ formatKw(row.consommationKw) }}
+          <span v-if="row.consommationKw === null" class="sr-only">{{ noReading }}</span>
+        </span>
         <CapacityBar :pourcentage="pourcentage(row)" />
       </div>
       <p v-if="row.picPrevu" class="flex items-center gap-1 text-sm font-semibold">
@@ -81,7 +91,13 @@ const pourcentage = (row: SiteOverview) => (row.consommationKw / row.site.capaci
           </RouterLink>
         </TableCell>
         <TableCell>{{ SITE_TYPE_LABELS[row.site.type] }}</TableCell>
-        <TableCell class="tabular-nums">{{ formatKw(row.consommationKw) }}</TableCell>
+        <TableCell
+          class="tabular-nums"
+          :title="row.consommationKw === null ? noReading : undefined"
+        >
+          {{ formatKw(row.consommationKw) }}
+          <span v-if="row.consommationKw === null" class="sr-only">{{ noReading }}</span>
+        </TableCell>
         <TableCell><CapacityBar :pourcentage="pourcentage(row)" /></TableCell>
         <TableCell>
           <span v-if="row.picPrevu" class="inline-flex items-center gap-1 font-semibold">

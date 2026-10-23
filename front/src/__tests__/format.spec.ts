@@ -52,4 +52,9 @@ describe('format', () => {
     // Horloge du poste en retard sur la réponse : jamais de durée négative
     expect(formatAge(ago(-5), now)).toBe("à l'instant")
   })
+
+  it('affiche « — » sans mesure, jamais « 0 kW »', () => {
+    expect(formatKw(null)).toBe('—')
+    expect(plain(formatKw(0))).toBe('0 kW')
+  })
 })

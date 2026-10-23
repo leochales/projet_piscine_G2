@@ -12,6 +12,7 @@ import TableSkeleton from '@/components/common/TableSkeleton.vue'
 import ConsumptionChart from '@/components/site/ConsumptionChart.vue'
 import SitesTable from '@/components/overview/SitesTable.vue'
 import { formatEur, formatKw, formatRelativeHour, formatTonnes } from '@/lib/format'
+import { SEUIL_ALERTE_PCT } from '@/lib/indicators'
 import { useAutoRefresh } from '@/lib/refresh'
 import { useRequest } from '@/lib/request'
 import {
@@ -25,7 +26,7 @@ import {
 const props = defineProps<{ siteId?: string }>()
 const router = useRouter()
 
-const SEUIL_PCT = 90
+const SEUIL_PCT = SEUIL_ALERTE_PCT
 
 const range = ref<SeriesRange>('24h')
 

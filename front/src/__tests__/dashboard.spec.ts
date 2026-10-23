@@ -33,6 +33,13 @@ describe('services/dashboard', () => {
   it('donne les indicateurs, les sites et des coûts positifs', async () => {
     expect((await fetchKpis()).nbSites).toBe(7)
     expect(await fetchOverview()).toHaveLength(7)
+  })
+
+  it('exclut du total du parc les sites sans mesure, et le signale', async () => {
+    const [kpis, sites] = await Promise.all([fetchKpis(), fetchOverview()])
+    const measured = sites.filter((s) => s.consommationKw !== null)
+    expect(kpis.nbSitesSansMesure).toBe(sites.length - measured.length)
+    expect(kpis.consommationKw).toBe(measured.reduce((t, s) => t + s.consommationKw!, 0))
     const costs = await fetchSiteCosts('SITE001')
     expect(costs.coutEur).toBeGreaterThan(0)
     expect(costs.co2Tonnes).toBeGreaterThan(0)
