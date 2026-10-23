@@ -39,6 +39,7 @@ services:
       MODEL_DB_PASSWORD: ${MODEL_DB_PASSWORD}
       API_DB_PASSWORD: ${API_DB_PASSWORD}
       BACKUP_DB_PASSWORD: ${BACKUP_DB_PASSWORD}
+      KEYCLOAK_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
     volumes:
       - postgresql_data:/var/lib/postgresql
       - ./db:/docker-entrypoint-initdb.d:ro
@@ -64,6 +65,37 @@ services:
       - ./infra/pgadmin/servers.json:/pgadmin4/servers.json:ro
     ports:
       - "127.0.0.1:${PGADMIN_PORT:-5050}:80"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - postgres_network
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4
+    container_name: keycloak
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://db:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KEYCLOAK_ADMIN_CLIENT_SECRET: ${KEYCLOAK_ADMIN_CLIENT_SECRET}
+      # Adresses du front autorisées en retour de connexion (redirectUris du realm)
+      FRONT_URL: ${FRONT_URL:-http://localhost}
+      FRONT_DEV_URL: ${FRONT_DEV_URL:-http://localhost:5173}
+      KC_HEALTH_ENABLED: "true"
+    volumes:
+      - ./infra/keycloak/realm-enervision.json:/opt/keycloak/data/import/realm-enervision.json:ro
+    ports:
+      - "127.0.0.1:${KEYCLOAK_PORT:-8081}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
     depends_on:
       db:
         condition: service_healthy
