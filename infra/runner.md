@@ -9,6 +9,8 @@ Un **runner GitHub auto-hébergé**, installé sur la VM, exécute le workflow [
 
 Les deux environnements ont leurs propres conteneurs, volumes et base. Un **Traefik partagé** ([`infra/traefik/compose.yml`](traefik/compose.yml)) les sert en HTTPS, chacun sur son port, car la VM n'a pas de nom de domaine. Un lancement manuel sur une autre branche ne déploie rien (run *skipped*).
 
+Keycloak est servi à la même adresse, sous `/auth` (`https://<VM_IP>/auth`, `https://<VM_IP>:8443/auth`). Seuls le realm `enervision` (`/auth/realms/enervision`) et les fichiers des pages de connexion (`/auth/resources`) sont routés : la console d'administration et le realm `master` ne sont pas exposés. L'administration se fait avec `kcadm.sh` (voir [Faire évoluer le realm Keycloak](#faire-évoluer-le-realm-keycloak)).
+
 ---
 
 ## Installation du runner
@@ -51,26 +53,36 @@ Le dépôt est privé sur un plan Free, sans *GitHub Environments*. Les secrets 
 | `DEV_MODEL_DB_PASSWORD` / `PROD_MODEL_DB_PASSWORD`   | Compte `model`              |
 | `DEV_API_DB_PASSWORD` / `PROD_API_DB_PASSWORD`       | Compte `api`                |
 | `DEV_BACKUP_DB_PASSWORD` / `PROD_BACKUP_DB_PASSWORD` | Compte `backup`             |
+| `DEV_KEYCLOAK_DB_PASSWORD` / `PROD_KEYCLOAK_DB_PASSWORD` | Compte `keycloak` (base `keycloak`) |
+| `DEV_KEYCLOAK_ADMIN_PASSWORD` / `PROD_KEYCLOAK_ADMIN_PASSWORD` | Administrateur initial de Keycloak |
+| `DEV_KEYCLOAK_ADMIN_CLIENT_SECRET` / `PROD_KEYCLOAK_ADMIN_CLIENT_SECRET` | Secret du client `enervision-admin` (création des comptes par l'API) |
 
 | Variables                                    | Obligatoire | Rôle                                          |
 |----------------------------------------------|-------------|-----------------------------------------------|
 | `DEV_POSTGRES_USER` / `PROD_POSTGRES_USER`   | oui         | Nom du superutilisateur PostgreSQL            |
 | `DEV_POSTGRES_DB` / `PROD_POSTGRES_DB`       | oui         | Nom de la base                                |
 | `DEV_ETL_ENABLED` / `PROD_ETL_ENABLED`       | non         | `false` pour désactiver l'ETL (défaut `true`) |
-| `VM_IP`                                      | oui         | IP de la VM, inscrite dans le certificat      |
+| `DEV_KEYCLOAK_ADMIN` / `PROD_KEYCLOAK_ADMIN` | oui         | Identifiant de l'administrateur initial de Keycloak |
+| `VM_IP`                                      | oui         | IP de la VM, inscrite dans le certificat et dans l'adresse de retour de connexion de Keycloak (`FRONT_URL`) |
 
-Utiliser des mots de passe différents entre dev et prod. Ils ne sont appliqués qu'à la **création** de la base (volume vide) : modifier un secret ensuite ne change pas le mot de passe en base.
+Utiliser des mots de passe différents entre dev et prod. Les mots de passe des comptes des services (`ETL_`, `MODEL_`, `API_`, `BACKUP_`, `KEYCLOAK_DB_PASSWORD`) sont **réappliqués à chaque déploiement** par la migration de la base : pour en changer un, modifier le secret puis redéployer. Exceptions :
+- `POSTGRES_PASSWORD` (superutilisateur) n'est appliqué qu'à la **création** de la base (volume vide). Le changer ensuite : `ALTER ROLE` dans la base, puis mettre à jour le secret ;
+- `KEYCLOAK_ADMIN` et `KEYCLOAK_ADMIN_PASSWORD` ne servent qu'au premier démarrage de Keycloak, pour créer l'administrateur du realm `master`. Le modifier ensuite se fait dans la console de Keycloak ;
+- `KEYCLOAK_ADMIN_CLIENT_SECRET` n'est lu qu'à l'import du realm : le changer demande aussi une action dans Keycloak (voir [Faire évoluer le realm Keycloak](#faire-évoluer-le-realm-keycloak)).
 
 ---
 
 ## Déroulement d'un déploiement
 
-1. **Contrôles**, en parallèle sur des runners GitHub : `pre-commit.yml` (lint, tests), `security.yml` (Trivy sur le code) et `images.yml`. Ce dernier construit api, etl et front **une seule fois**, démarre la stack de prod complète avec ces images (Traefik, scripts `db/`, comptes PostgreSQL, ETL, front), lance Schemathesis sur le conteneur de l'API, scanne les images avec Trivy, puis les publie sur GHCR (`ghcr.io/<owner>/enervision-<service>:<sha du commit>`). Le déploiement ne démarre que si tout réussit.
+1. **Contrôles**, en parallèle sur des runners GitHub : `pre-commit.yml` (lint, tests), `security.yml` (Trivy sur le code) et `images.yml`. Ce dernier construit api, etl et front **une seule fois**, démarre la stack de prod complète avec ces images (Traefik, scripts `db/`, comptes PostgreSQL, ETL, front), rejoue la migration de la base, lance les tests SQL et Schemathesis sur le conteneur de l'API, scanne les images avec Trivy, puis les publie sur GHCR (`ghcr.io/<owner>/enervision-<service>:<sha du commit>`). Le déploiement ne démarre que si tout réussit.
 2. **Certificat HTTPS** : auto-signé pour `VM_IP`, stocké dans `~/traefik-certs`, régénéré s'il expire sous 30 jours ou si `VM_IP` change.
 3. **Traefik** : démarré s'il ne tourne pas. Il lit Docker via `docker-socket-proxy` (lecture seule, réseau interne), sans accès direct au socket.
-4. **Application** : vérification des secrets, `docker compose pull` des images du commit (connexion à GHCR avec le `GITHUB_TOKEN` du job, retirée juste après), puis `up -d --no-build`. La VM ne reconstruit rien : elle démarre exactement les images testées et scannées.
-5. **Santé** : `https://localhost:<port>/api/health` pendant 60 s. En cas d'échec, le job affiche l'état des conteneurs et les logs de l'API.
-6. **Nettoyage** : images orphelines et anciennes versions de nos images qu'aucun conteneur n'utilise. Sur GHCR, seules les 20 dernières versions de chaque image sont conservées.
+4. **Vérifier les secrets** : toutes les variables et tous les secrets obligatoires, avant de toucher à la VM. Le job liste ceux qui manquent et s'arrête.
+5. **Récupérer les images** : `docker compose pull` des images du commit (connexion à GHCR avec le `GITHUB_TOKEN` du job, retirée juste après). La VM ne reconstruit rien : elle démarre exactement les images testées et scannées.
+6. **Migrer la base** : démarrage de Postgres, attente qu'il réponde (120 s au plus, sinon le déploiement s'arrête avec les logs de `db`), puis `db/tools/migrate.sh`, qui rejoue tous les scripts de `db/` sur la base existante : nouvelles tables, comptes, droits et mots de passe. Les scripts doivent pouvoir être rejoués sans effet (voir la section **Base de données** du README). Si un script échoue, les nouveaux conteneurs ne sont pas démarrés : l'ancienne version continue de tourner, sur une base **partiellement migrée** (les scripts précédents restent appliqués, chaque script annulant seulement ses propres changements). Le risque est faible tant que les scripts ne font qu'ajouter (tables, colonnes, droits) : l'ancienne version les ignore. Corriger le script et redéployer : la migration reprend depuis le début.
+7. **Déployer** : `up -d --no-build --remove-orphans`.
+8. **Santé** : `https://localhost:<port>/api/health` pendant 60 s. En cas d'échec, le job affiche l'état des conteneurs et les logs de l'API.
+9. **Nettoyage** : images orphelines et anciennes versions de nos images qu'aucun conteneur n'utilise. Sur GHCR, seules les 20 dernières versions de chaque image sont conservées.
 
 Un seul déploiement à la fois par environnement. Pour **revenir en arrière** : rouvrir le run **Deploy** d'un commit précédent et relancer **uniquement le job Deploy** (icône ↻ du job). Les images de ce commit sont reprises sur GHCR telles quelles. Relancer tout le run reconstruirait les images. Au-delà des 20 dernières versions, faire un `git revert` sur la branche et redéployer.
 
@@ -90,6 +102,45 @@ Commandes à lancer depuis un compte administrateur, dans `/home/github-runner/a
 | État des conteneurs       | `docker compose -p <traefik\|enervision-dev\|enervision-prod> ps` |
 
 Le runner **se met à jour tout seul**. Pour le réenregistrer (runner supprimé côté GitHub, changement de nom) : `./svc.sh stop`, `./svc.sh uninstall`, `./config.sh remove --token <TOKEN>`, puis reprendre l'étape 2 de l'installation. Après un redémarrage de la VM, le service et les conteneurs repartent seuls.
+
+---
+
+## Faire évoluer le realm Keycloak
+
+Keycloak démarre avec `--import-realm` : il importe [`infra/keycloak/realm-enervision.json`](keycloak/realm-enervision.json) **seulement si le realm `enervision` n'existe pas encore**, c'est-à-dire au premier déploiement d'un environnement. Ensuite, le realm vit dans la base `keycloak` et les déploiements suivants ignorent le fichier.
+
+Conséquence : une modification du JSON (rôle, redirect URI, politique de mot de passe, client…) n'atteint **pas** les environnements déjà déployés. Pour faire évoluer le realm :
+
+1. Modifier le JSON et le commiter : il reste la référence pour le local et les futurs environnements.
+2. Reporter le même changement sur dev, vérifier, puis sur prod, avec `kcadm.sh` dans le conteneur (la console d'administration n'est pas exposée sur la VM).
+
+Ne pas supprimer le realm pour forcer un nouvel import : les comptes des utilisateurs seraient perdus.
+
+```bash
+# Se connecter (une fois par session ; demande le mot de passe KEYCLOAK_ADMIN_PASSWORD de l'environnement)
+docker compose -p enervision-<env> exec keycloak /opt/keycloak/bin/kcadm.sh config credentials \
+  --server http://localhost:8080/auth --realm master --user <KEYCLOAK_ADMIN>
+
+# Raccourci pour les commandes suivantes
+kcadm() { docker compose -p enervision-<env> exec keycloak /opt/keycloak/bin/kcadm.sh "$@"; }
+
+# Ajouter un rôle du realm
+kcadm create roles -r enervision -s name=NOUVEAU-ROLE -s 'description=…'
+
+# Identifiant interne d'un client (nécessaire pour le modifier)
+kcadm get clients -r enervision -q clientId=enervision-front --fields id
+
+# Remplacer les redirect URIs du front
+kcadm update clients/<id> -r enervision -s 'redirectUris=["https://<VM_IP>/*"]'
+```
+
+### Changer le secret de `enervision-admin`
+
+Le secret est injecté dans le realm à l'import : modifier `<ENV>_KEYCLOAK_ADMIN_CLIENT_SECRET` dans GitHub ne suffit pas.
+
+1. Générer un nouveau secret dans Keycloak : `kcadm create clients/<id>/client-secret -r enervision`, puis le lire avec `kcadm get clients/<id>/client-secret -r enervision`.
+2. Le copier dans le secret GitHub `DEV_KEYCLOAK_ADMIN_CLIENT_SECRET` ou `PROD_KEYCLOAK_ADMIN_CLIENT_SECRET`.
+3. Redéployer, pour que l'API reçoive le nouveau secret. Entre l'étape 1 et la fin du déploiement, la création de comptes par l'API échoue.
 
 ---
 
@@ -114,7 +165,8 @@ Correctif si le dépôt passe sur GitHub Pro, Team, Enterprise ou en public : en
 | `DEV_…` / `PROD_… manquant`                  | Secret ou variable absent                       | Le créer dans **Settings → Secrets and variables → Actions**.    |
 | `permission denied … /var/run/docker.sock`   | `github-runner` hors du groupe `docker`         | `sudo usermod -aG docker github-runner`, puis redémarrer le service. |
 | Ports 80/443/8080/8443 déjà utilisés         | Autre service sur la VM                         | Libérer le port, puis relancer le déploiement.                   |
-| `password authentication failed` (api, etl)  | Secret modifié après la création de la base     | Mettre à jour le mot de passe en base, ou recréer le volume (**perte des données**). |
+| `password authentication failed` (api, etl)  | Base non migrée depuis le changement du secret  | Redéployer : l'étape « Migrer la base » réapplique les mots de passe. |
+| Étape « Migrer la base » en échec            | Script de `db/` qui ne peut pas être rejoué, ou erreur SQL | Log de l'étape (le script fautif est le dernier `== …` affiché). L'ancienne version tourne toujours : corriger le script et redéployer. |
 | Vérification de santé en échec               | API ou base qui ne démarre pas                  | Logs du job, puis `docker compose -p enervision-<env> logs api db`. |
 | `pull access denied` / `manifest unknown` (ghcr.io) | Image absente de GHCR (job `images` en échec, ou version purgée) | Vérifier le job `images` du run ; au-delà de 20 versions, redéployer un commit récent. |
 | `no space left on device`                    | Images accumulées                               | `docker system prune -af` (les volumes sont conservés). |

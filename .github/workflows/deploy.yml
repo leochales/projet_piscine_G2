@@ -56,6 +56,28 @@ jobs:
       ENV_PREFIX: ${{ github.ref_name == 'main' && 'PROD' || 'DEV' }}
       # Port HTTPS de l'environnement sur le Traefik partagé (infra/traefik/compose.yml)
       HTTPS_PORT: ${{ github.ref_name == 'main' && '443' || '8443' }}
+      # Variables et secrets de l'environnement, déclarés une fois pour toutes les étapes :
+      # compose-prod.yml les interpole à chaque commande docker compose (pull, migration,
+      # démarrage). Le contexte env n'existant pas encore ici, le préfixe PROD/DEV est
+      # recalculé dans chaque expression au lieu de lire ENV_PREFIX.
+      # Toutes les étapes du job reçoivent donc ces secrets, y compris actions/checkout :
+      # risque accepté, les actions étant fixées par leur SHA. Le jeton GHCR, lui, reste
+      # limité à l'étape « Récupérer les images ».
+      POSTGRES_USER: ${{ vars[format('{0}_POSTGRES_USER', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
+      POSTGRES_DB: ${{ vars[format('{0}_POSTGRES_DB', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
+      ETL_ENABLED: ${{ vars[format('{0}_ETL_ENABLED', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
+      KEYCLOAK_ADMIN: ${{ vars[format('{0}_KEYCLOAK_ADMIN', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
+      POSTGRES_PASSWORD: ${{ secrets[format('{0}_POSTGRES_PASSWORD', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
+      ETL_DB_PASSWORD: ${{ secrets[format('{0}_ETL_DB_PASSWORD', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
+      MODEL_DB_PASSWORD: ${{ secrets[format('{0}_MODEL_DB_PASSWORD', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
+      API_DB_PASSWORD: ${{ secrets[format('{0}_API_DB_PASSWORD', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
+      BACKUP_DB_PASSWORD: ${{ secrets[format('{0}_BACKUP_DB_PASSWORD', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
+      KEYCLOAK_ADMIN_PASSWORD: ${{ secrets[format('{0}_KEYCLOAK_ADMIN_PASSWORD', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
+      KEYCLOAK_DB_PASSWORD: ${{ secrets[format('{0}_KEYCLOAK_DB_PASSWORD', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
+      KEYCLOAK_ADMIN_CLIENT_SECRET: ${{ secrets[format('{0}_KEYCLOAK_ADMIN_CLIENT_SECRET', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
+      # Adresse publique du front (redirectUris de Keycloak) : https://<VM_IP> en prod,
+      # https://<VM_IP>:8443 en dev. Le port 443 est omis, comme dans l'adresse du navigateur.
+      FRONT_URL: ${{ format('https://{0}{1}', vars.VM_IP, github.ref_name != 'main' && ':8443' || '') }}
     steps:
       # Pas de jeton dans .git/config : le runner de la VM conserve ses fichiers entre les jobs
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -107,33 +129,60 @@ jobs:
             docker compose -f infra/traefik/compose.yml restart traefik
           fi
 
-      - name: Récupérer et démarrer les conteneurs
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          POSTGRES_USER: ${{ vars[format('{0}_POSTGRES_USER', env.ENV_PREFIX)] }}
-          POSTGRES_DB: ${{ vars[format('{0}_POSTGRES_DB', env.ENV_PREFIX)] }}
-          ETL_ENABLED: ${{ vars[format('{0}_ETL_ENABLED', env.ENV_PREFIX)] }}
-          POSTGRES_PASSWORD: ${{ secrets[format('{0}_POSTGRES_PASSWORD', env.ENV_PREFIX)] }}
-          ETL_DB_PASSWORD: ${{ secrets[format('{0}_ETL_DB_PASSWORD', env.ENV_PREFIX)] }}
-          MODEL_DB_PASSWORD: ${{ secrets[format('{0}_MODEL_DB_PASSWORD', env.ENV_PREFIX)] }}
-          API_DB_PASSWORD: ${{ secrets[format('{0}_API_DB_PASSWORD', env.ENV_PREFIX)] }}
-          BACKUP_DB_PASSWORD: ${{ secrets[format('{0}_BACKUP_DB_PASSWORD', env.ENV_PREFIX)] }}
+      # Avant toute action sur la VM : un secret manquant arrêterait sinon le déploiement
+      # au milieu (base migrée, conteneurs non démarrés).
+      - name: Vérifier les secrets
         run: |
           # ETL_ENABLED est facultatif (true par défaut dans compose-prod.yml)
+          missing=0
           for key in POSTGRES_USER POSTGRES_DB POSTGRES_PASSWORD ETL_DB_PASSWORD \
-                     MODEL_DB_PASSWORD API_DB_PASSWORD BACKUP_DB_PASSWORD; do
+                     MODEL_DB_PASSWORD API_DB_PASSWORD BACKUP_DB_PASSWORD \
+                     KEYCLOAK_ADMIN KEYCLOAK_ADMIN_PASSWORD KEYCLOAK_DB_PASSWORD \
+                     KEYCLOAK_ADMIN_CLIENT_SECRET; do
             if [ -z "${!key}" ]; then
               echo "::error::${ENV_PREFIX}_${key} manquant (Settings → Secrets and variables → Actions)"
-              exit 1
+              missing=1
             fi
           done
-          # Images testées et scannées par images.yml : aucune reconstruction sur la VM.
-          # Identifiants GHCR retirés dès la fin du téléchargement, même en cas d'échec.
+          exit "$missing"
+
+      # Images testées et scannées par images.yml : aucune reconstruction sur la VM.
+      # Le jeton GHCR n'est donné qu'à cette étape, et retiré dès la fin du téléchargement,
+      # même en cas d'échec.
+      - name: Récupérer les images
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
           echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           trap 'docker logout ghcr.io >/dev/null' EXIT
           docker compose -f compose-prod.yml pull --quiet
-          docker logout ghcr.io >/dev/null
-          docker compose -f compose-prod.yml up -d --no-build --pull never --remove-orphans
+
+      # Les scripts de db/ ne tournent qu'à la création du volume : migrate.sh les rejoue
+      # tous sur la base existante (nouvelles tables, comptes, droits, mots de passe).
+      # Avant le démarrage des nouvelles images, qui peuvent dépendre du nouveau schéma.
+      - name: Migrer la base
+        run: |
+          docker compose -f compose-prod.yml up -d --no-build --pull never db
+          # -h 127.0.0.1 : au premier démarrage, le serveur temporaire de l'initialisation
+          # n'écoute que sur le socket local ; on attend le vrai serveur, scripts terminés.
+          ready=false
+          for _ in $(seq 1 60); do
+            if docker compose -f compose-prod.yml exec -T db \
+                 pg_isready -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" != true ]; then
+            echo "::error::PostgreSQL ne répond pas après 120 s : migration et déploiement annulés"
+            docker compose -p "enervision-${DEPLOY_ENV}" logs --tail=50 db
+            exit 1
+          fi
+          docker compose -f compose-prod.yml exec -T db bash /docker-entrypoint-initdb.d/tools/migrate.sh
+
+      - name: Déployer
+        run: docker compose -f compose-prod.yml up -d --no-build --pull never --remove-orphans
 
       # Passe par Traefik comme un client (-k : certificat auto-signé)
       - name: Vérifier la santé de l'API
