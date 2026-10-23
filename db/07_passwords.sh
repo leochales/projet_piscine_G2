@@ -26,3 +26,13 @@ ALTER ROLE model  PASSWORD :'model_pwd';
 ALTER ROLE api    PASSWORD :'api_pwd';
 ALTER ROLE backup PASSWORD :'backup_pwd';
 EOSQL
+
+# Compte de supervision : facultatif. Sans mot de passe, le compte existe mais ne peut
+# pas se connecter (environnements où la supervision n'est pas encore déployée).
+if [ -n "${MONITORING_DB_PASSWORD:-}" ]; then
+    psql -v ON_ERROR_STOP=1 \
+         --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<'EOSQL'
+\getenv monitoring_pwd MONITORING_DB_PASSWORD
+ALTER ROLE monitoring PASSWORD :'monitoring_pwd';
+EOSQL
+fi

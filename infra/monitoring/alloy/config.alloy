@@ -1,0 +1,66 @@
+// Alloy : collecte les logs des conteneurs EnerVision et les envoie à Loki.
+// (Alloy remplace Promtail, en fin de vie.)
+
+discovery.docker "conteneurs" {
+  host = "unix:///var/run/docker.sock"
+}
+
+// 1. Choix des conteneurs : seulement ceux lancés par compose-local.yml ou compose-prod.yml.
+//    Les autres projets Docker de la machine ne sont pas lus.
+discovery.relabel "enervision" {
+  targets = discovery.docker.conteneurs.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project_config_files"]
+    regex         = ".*compose-(local|prod)\\.yml.*"
+    action        = "keep"
+  }
+}
+
+// 2. Labels Loki : nom du conteneur, service et projet Compose
+discovery.relabel "labels" {
+  targets = []
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    target_label  = "project"
+  }
+}
+
+loki.source.docker "conteneurs" {
+  host          = "unix:///var/run/docker.sock"
+  targets       = discovery.relabel.enervision.output
+  relabel_rules = discovery.relabel.labels.rules
+  forward_to    = [loki.process.niveau.receiver]
+}
+
+// Logs JSON (common/logs.py) : le champ « level » devient un label, pour filtrer par niveau.
+// Les lignes qui ne sont pas du JSON passent telles quelles, sans label level.
+loki.process "niveau" {
+  stage.json {
+    expressions = { level = "level" }
+  }
+
+  stage.labels {
+    values = { level = "" }
+  }
+
+  forward_to = [loki.write.loki.receiver]
+}
+
+loki.write "loki" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

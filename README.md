@@ -52,6 +52,39 @@ Les tests SQL de `db/tests/` (droits des comptes, actions du dashboard) sont lan
 docker compose -f compose-local.yml exec -T db psql -v ON_ERROR_STOP=1 -U enervision -d enervision < db/tests/test_actions.sql
 ```
 
+## Supervision (Prometheus, Grafana, Loki)
+
+Non démarrée par défaut (environ 1 Go de mémoire) : elle est dans le profil Compose `monitoring`.
+
+```bash
+docker compose -f compose-local.yml --profile monitoring up -d
+```
+
+Grafana : http://localhost/grafana (compte `admin`, mot de passe `GRAFANA_ADMIN_PASSWORD` du `.env`). Le tableau de bord **EnerVision : socle** montre :
+
+- les requêtes, erreurs 5xx et temps de réponse de chaque service routé par Traefik ;
+- le détail par route de l'API ;
+- l'état de PostgreSQL (connexion, taille, connexions) ;
+- les logs de tous les conteneurs EnerVision, filtrables par service et par niveau.
+
+| Composant | Rôle | Configuration |
+|---|---|---|
+| Prometheus | collecte les métriques (Traefik, API, PostgreSQL), conservées 15 jours | `infra/monitoring/prometheus/` |
+| postgres-exporter | statistiques de PostgreSQL, via le compte `monitoring` (rôle `pg_monitor`, aucune donnée métier) | `db/06_roles.sql` |
+| Alloy | lit les logs des conteneurs EnerVision et les envoie à Loki | `infra/monitoring/alloy/` |
+| Loki | stocke les logs, conservés 7 jours | `infra/monitoring/loki/` |
+| Grafana | tableaux de bord, chargés depuis le dépôt à chaque démarrage | `infra/monitoring/grafana/` |
+
+- L'API écrit ses logs en JSON avec `common/logs.py`. Chaque service Python doit appeler `configure_logging("nom-du-service")` au démarrage, plutôt que `logging.basicConfig` : sinon ses logs restent en texte et Grafana ne peut pas les filtrer par niveau.
+- L'API expose ses métriques sur `/metrics`, hors de `/api` : Traefik ne les publie pas, seul Prometheus les lit.
+- Le compte `monitoring` n'existe que dans une base créée après l'ajout de la supervision. Sur une base plus ancienne, PostgreSQL apparaît « injoignable » dans Grafana : créer le compte sans toucher aux données (les deux scripts peuvent être relancés sans risque) :
+
+  ```bash
+  docker compose -f compose-local.yml up -d db   # recrée db avec MONITORING_DB_PASSWORD
+  docker compose -f compose-local.yml exec db sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f /docker-entrypoint-initdb.d/06_roles.sql && bash /docker-entrypoint-initdb.d/07_passwords.sh'
+  ```
+- Un tableau de bord modifié dans Grafana n'est pas sauvegardé : exporter son JSON dans `infra/monitoring/grafana/dashboards/`.
+
 ## Hooks pre-commit
 
 Les vérifications (ruff, sqlfluff, hadolint, prettier, eslint, gitleaks…) tournent avant chaque commit ; les tests avec couverture (pytest, vitest), le typage (mypy, vue-tsc) et Trivy avant chaque push. Configuration : `.pre-commit-config.yaml`.

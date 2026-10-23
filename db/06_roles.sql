@@ -13,7 +13,7 @@ DO $$
 DECLARE
     r TEXT;
 BEGIN
-    FOREACH r IN ARRAY ARRAY['etl', 'model', 'api', 'backup'] LOOP
+    FOREACH r IN ARRAY ARRAY['etl', 'model', 'api', 'backup', 'monitoring'] LOOP
         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
             EXECUTE format('CREATE ROLE %I LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE', r);
         END IF;
@@ -25,7 +25,10 @@ $$;
 DO $$
 BEGIN
     EXECUTE format('REVOKE ALL ON DATABASE %I FROM PUBLIC', current_database());
-    EXECUTE format('GRANT CONNECT ON DATABASE %I TO etl, model, api, backup', current_database());
+    EXECUTE format(
+        'GRANT CONNECT ON DATABASE %I TO etl, model, api, backup, monitoring',
+        current_database()
+    );
 END
 $$;
 
@@ -104,5 +107,13 @@ GRANT USAGE ON SEQUENCES TO api;
 -- Sauvegarde : lecture seule sur tous les schémas (pg_dump)
 -- -----------------------------------------------------------------------------
 GRANT pg_read_all_data TO backup;
+
+
+-- -----------------------------------------------------------------------------
+-- Supervision : statistiques du serveur pour postgres_exporter (Prometheus)
+-- pg_monitor donne accès aux vues pg_stat_* et à la taille des bases,
+-- mais à aucune donnée des schémas bronze, silver, gold ou app.
+-- -----------------------------------------------------------------------------
+GRANT pg_monitor TO monitoring;
 
 COMMIT;
