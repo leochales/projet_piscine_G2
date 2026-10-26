@@ -14,7 +14,8 @@ BEGIN;
 --            sans mesure (bronze_id NULL) à ignorer ;
 --   SITE-B : ne transmet plus, dernière mesure il y a 20 minutes, suivie de
 --            mesures « perte réseau » (reçues, mais toutes à null) à ignorer ;
---   SITE-C : n'a jamais transmis ;
+--   SITE-C : n'a jamais transmis : il n'a que des mesures d'amorçage
+--            (historique simulé /readings), à ignorer ;
 --   SITE-I : inactif, ignoré même s'il a des mesures.
 INSERT INTO app.client (nom) VALUES ('Client test derniere mesure');
 
@@ -50,6 +51,14 @@ FROM (
     ('SITE-B', interval '20 minutes'),
     ('SITE-I', interval '1 minute')
 ) AS v (id_site, age);
+
+-- Amorçage de SITE-C : historique simulé, marqué dans le payload bronze
+INSERT INTO bronze.raw_readings (id_site, horodatage, payload)
+SELECT
+    'SITE-C' AS id_site,
+    date_trunc('minute', now()) - (n * interval '1 minute') AS horodatage,
+    '{"_source": "readings_amorcage"}'::jsonb AS payload
+FROM generate_series(3, 12) AS n;
 
 -- silver : les mesures reçues, plus la minute suivante de SITE-A sans mesure
 INSERT INTO silver.silver_readings (

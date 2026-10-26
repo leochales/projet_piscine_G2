@@ -22,7 +22,11 @@ COMMENT ON COLUMN gold.derniere_mesure.consommation_kw IS
 --   - les minutes sans mesure en bronze (bronze_id NULL : trou de collecte) ;
 --   - les mesures « perte réseau » : pendant une perte réseau, l'API Mock
 --     répond quand même, avec toutes les valeurs à null et la raison
---     network_loss. Le site n'a rien transmis.
+--     network_loss. Le site n'a rien transmis ;
+--   - les mesures d'amorçage (etl/bootstrap.py, payload bronze marqué
+--     "_source": "readings_amorcage") : historique simulé par /readings, pas
+--     une mesure transmise par le site. Sans cela, sur une base neuve, la
+--     dernière mesure serait une valeur simulée jusqu'au premier /current.
 -- La ligne garde alors la dernière mesure connue, et son horodatage vieillit,
 -- ce que la vue gold.etat_site signale. Une mesure refusée par la validation
 -- (rejected_reading) compte comme transmise : le site répond, mal.
@@ -68,6 +72,13 @@ BEGIN
             AND sr.bronze_id IS NOT null
             AND NOT 'network_loss' = any(sr.null_reasons)
             AND sr.horodatage > coalesce(g.horodatage, '-infinity')
+            -- Lecture de la ligne bronze par sa clé primaire
+            AND NOT EXISTS (
+                SELECT 1 FROM bronze.raw_readings AS br
+                WHERE
+                    br.id = sr.bronze_id
+                    AND br.payload ->> '_source' = 'readings_amorcage'
+            )
         ORDER BY sr.horodatage DESC
         LIMIT 1
     ) AS r
