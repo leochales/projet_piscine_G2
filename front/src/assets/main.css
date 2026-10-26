@@ -124,6 +124,21 @@
 }
 
 @layer base {
+  /* Changement de thème (lib/theme.ts) : pas de fondu par défaut entre l'ancienne et la
+     nouvelle page, c'est le cercle animé qui révèle le nouveau thème */
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation: none;
+    mix-blend-mode: normal;
+  }
+
+  /* Barres de défilement et champs natifs aux couleurs du thème */
+  :root {
+    color-scheme: light;
+  }
+  .dark {
+    color-scheme: dark;
+  }
   * {
     @apply border-border outline-ring/50;
   }

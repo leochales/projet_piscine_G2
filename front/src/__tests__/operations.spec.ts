@@ -1,7 +1,9 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
+import * as service from '@/services/dashboard'
 import { monthlyGain, useOperationsStore } from '@/stores/operations'
+import { useUserStore } from '@/stores/user'
 import type { Recommendation } from '@/types/energy'
 
 const rec = (over: Partial<Recommendation>): Recommendation => ({
@@ -32,12 +34,12 @@ describe('useOperationsStore', () => {
     expect(store.savings).toBe(380)
   })
 
-  it('enregistre la décision sur une recommandation', () => {
+  it('enregistre la décision sur une recommandation', async () => {
     const store = useOperationsStore()
     store.recommendations = [rec({ id: 'A' }), rec({ id: 'B' })]
-    store.decide('A', 'acceptee')
-    store.decide('B', 'refusee')
-    store.decide('inconnue', 'acceptee') // sans effet
+    await store.decide('A', 'acceptee')
+    await store.decide('B', 'refusee')
+    await store.decide('inconnue', 'acceptee') // sans effet
     expect(store.recommendations.map((r) => r.statut)).toEqual(['acceptee', 'refusee'])
   })
 
@@ -46,15 +48,15 @@ describe('useOperationsStore', () => {
     await store.load()
     const critical = store.alerts.find((a) => a.gravite === 'critique')!
     expect(store.pendingCritical).toBe(1)
-    store.acknowledge(critical.id)
-    store.acknowledge('inconnue') // sans effet
+    await store.acknowledge(critical.id)
+    await store.acknowledge('inconnue') // sans effet
     expect(store.pendingCritical).toBe(0)
   })
 
   it('ne recharge pas les données déjà chargées', async () => {
     const store = useOperationsStore()
     await store.load()
-    store.acknowledge(store.alerts[0]!.id)
+    await store.acknowledge(store.alerts[0]!.id)
     await store.load()
     expect(store.alerts[0]!.priseEnCompte).toBe(true)
   })
@@ -63,7 +65,64 @@ describe('useOperationsStore', () => {
     const store = useOperationsStore()
     await store.load()
     const before = store.pendingAlerts.length
-    store.acknowledge(store.alerts[0]!.id)
+    await store.acknowledge(store.alerts[0]!.id)
     expect(store.pendingAlerts).toHaveLength(before - 1)
+  })
+
+  describe('envoi des actions', () => {
+    afterEach(() => vi.restoreAllMocks())
+
+    it('n’affiche rien comme fait si le service échoue, et remonte l’erreur', async () => {
+      const store = useOperationsStore()
+      await store.load()
+      const alert = store.alerts[0]!
+      store.recommendations = [rec({ id: 'A' })]
+      vi.spyOn(service, 'acknowledgeAlert').mockRejectedValue(new Error('panne'))
+      vi.spyOn(service, 'decideRecommendation').mockRejectedValue(new Error('panne'))
+
+      await expect(store.acknowledge(alert.id)).rejects.toThrow('panne')
+      await expect(store.decide('A', 'acceptee')).rejects.toThrow('panne')
+      expect(alert.priseEnCompte).toBe(false)
+      expect(store.recommendations[0]!.statut).toBe('proposee')
+      expect(store.pending.size).toBe(0)
+    })
+
+    it('bloque l’élément pendant l’envoi, et n’envoie pas deux fois la même action', async () => {
+      const store = useOperationsStore()
+      await store.load()
+      const alert = store.alerts[0]!
+      const send = vi.spyOn(service, 'acknowledgeAlert')
+
+      const first = store.acknowledge(alert.id)
+      expect(store.pending.has(alert.id)).toBe(true)
+      await store.acknowledge(alert.id) // double clic
+      await first
+
+      expect(send).toHaveBeenCalledOnce()
+      expect(store.pending.has(alert.id)).toBe(false)
+      expect(alert.priseEnCompte).toBe(true)
+    })
+
+    it('retient qui a pris l’alerte en compte, et quand', async () => {
+      const store = useOperationsStore()
+      await store.load()
+      const alert = store.alerts.find((a) => !a.priseEnCompte)!
+      const before = Date.now()
+
+      await store.acknowledge(alert.id)
+      expect(alert.prisePar).toBe(useUserStore().nom)
+      expect(new Date(alert.priseLe!).getTime()).toBeGreaterThanOrEqual(before)
+    })
+
+    it('ne renvoie pas la prise en compte d’une alerte déjà prise en compte (US7)', async () => {
+      const store = useOperationsStore()
+      await store.load()
+      const alert = store.alerts[0]!
+      await store.acknowledge(alert.id)
+      const send = vi.spyOn(service, 'acknowledgeAlert')
+
+      await store.acknowledge(alert.id)
+      expect(send).not.toHaveBeenCalled()
+    })
   })
 })
