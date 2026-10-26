@@ -110,6 +110,14 @@ repos:
         pass_filenames: false
         stages: [pre-push]
 
+      - id: pytest-dataset-pull
+        name: pytest (infra/dataset)
+        entry: python infra/pre-commit/run_in_venv.py -m pytest -q infra/dataset
+        language: python
+        files: ^(infra/dataset/.*\.py|data/raw\.dvc)$
+        pass_filenames: false
+        stages: [pre-push]
+
       # Fichiers passés un par un : "mypy api common" échoue
       # si l'un des dossiers ne contient encore aucun .py
       - id: mypy-api

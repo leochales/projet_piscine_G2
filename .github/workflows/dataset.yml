@@ -1,0 +1,57 @@
+name: Dataset
+
+# Construit le jeu d'entraînement du modèle sur la VM, à la demande (Actions → Dataset →
+# Run workflow) : python -m model.dataset dans l'image du modèle déjà déployée, avec les
+# données brutes versionnées par DVC (data/raw.dvc, stockage DVC de la VM), puis
+# enregistrement dans le MLflow de l'environnement. develop construit le jeu de dev, main
+# celui de prod.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: dataset-${{ github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  dataset:
+    name: Jeu d'entraînement ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 15
+    env:
+      DEPLOY_ENV: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
+      DVC_STORE: ${{ vars.DVC_STORE }}
+    steps:
+      # Image du modèle publiée avec la version déployée : même commit que l'API en service
+      - name: Image déployée
+        run: |
+          tag=$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
+            "enervision-${DEPLOY_ENV}-api-1" 2>/dev/null || true)
+          if [ -z "$tag" ]; then
+            echo "::error::Aucune version déployée pour $DEPLOY_ENV : lancer d'abord le workflow Deploy"
+            exit 1
+          fi
+          echo "IMAGE_REPO=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=$tag" >> "$GITHUB_ENV"
+          echo "Version déployée : $tag"
+
+      # Code et data/raw.dvc de ce même commit, pas du dernier de la branche (pas encore
+      # déployé si un déploiement a échoué)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.IMAGE_TAG }}
+          persist-credentials: false
+
+      # data/raw du commit, depuis le stockage DVC de la VM ; monté par compose-prod.yml
+      - name: Récupérer les données brutes
+        run: |
+          python3 infra/dataset/pull.py
+          echo "DATASET_RAW_DIR=$GITHUB_WORKSPACE/data/raw" >> "$GITHUB_ENV"
+
+      # Image du modèle déjà sur la VM : récupérée et gardée par deploy.yml
+      - name: Construire le jeu
+        run: docker compose -f compose-prod.yml run --rm --pull never dataset

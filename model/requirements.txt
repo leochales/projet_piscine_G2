@@ -1,0 +1,4 @@
+-r ../common/requirements.txt
+pandas==3.0.6
+pyarrow==26.0.0
+mlflow-skinny==3.17.0

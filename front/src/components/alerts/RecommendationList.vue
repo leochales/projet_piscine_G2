@@ -1,0 +1,34 @@
+<script setup lang="ts">
+import { storeToRefs } from 'pinia'
+
+import RecommendationItem from '@/components/alerts/RecommendationItem.vue'
+import { useDecideRecommendation } from '@/lib/actions'
+import { canDecideRecommendations } from '@/services/dashboard'
+import { useOperationsStore } from '@/stores/operations'
+import { useUserStore } from '@/stores/user'
+import type { Recommendation } from '@/types/energy'
+
+// Liste des recommandations de l'écran 3 et de la page d'un site, avec les décisions
+defineProps<{ recommendations: Recommendation[] }>()
+
+const user = useUserStore()
+const { pending } = storeToRefs(useOperationsStore())
+const decide = useDecideRecommendation()
+
+// Rôle de l'utilisateur, et décisions enregistrables (pas avec les vraies données avant US7)
+const canAct = (siteId: string) => canDecideRecommendations() && user.canActOn(siteId)
+</script>
+
+<template>
+  <div class="divide-y">
+    <RecommendationItem
+      v-for="rec in recommendations"
+      :key="rec.id"
+      :recommendation="rec"
+      :can-act="canAct(rec.siteId)"
+      :pending="pending.has(rec.id)"
+      @accept="decide($event, 'acceptee')"
+      @refuse="decide($event, 'refusee')"
+    />
+  </div>
+</template>

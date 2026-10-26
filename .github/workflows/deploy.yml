@@ -155,7 +155,20 @@ jobs:
         run: |
           echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           trap 'docker logout ghcr.io >/dev/null' EXIT
-          docker compose -f compose-prod.yml pull --quiet
+          docker compose -f compose-prod.yml --profile jobs pull --quiet
+
+      # Données brutes du jeu d'entraînement (DVC, data/raw.dvc) : vérifie, sans rien
+      # copier ni installer, que le stockage DVC de la VM contient la version du commit.
+      # Sans effet sur l'application : un échec n'arrête pas le déploiement.
+      - name: Vérifier les données du jeu d'entraînement
+        continue-on-error: true
+        env:
+          DVC_STORE: ${{ vars.DVC_STORE }}
+        run: |
+          if ! python3 infra/dataset/pull.py --check; then
+            echo "::warning::Données du jeu absentes du stockage DVC de la VM (dvc push depuis un poste, voir infra/runner.md) : le workflow Dataset ne pourra pas construire le jeu"
+            exit 1
+          fi
 
       # Les scripts de db/ ne tournent qu'à la création du volume : migrate.sh les rejoue
       # tous sur la base existante (nouvelles tables, comptes, droits, mots de passe).
@@ -184,6 +197,11 @@ jobs:
       - name: Déployer
         run: docker compose -f compose-prod.yml up -d --no-build --pull never --remove-orphans
 
+      # Conteneur du job créé sans être démarré : le nettoyage ci-dessous garde ainsi l'image
+      # du modèle de la version déployée, que le workflow Dataset lance à la demande
+      - name: Préparer le job du jeu d'entraînement
+        run: docker compose -f compose-prod.yml create --no-build --pull never dataset
+
       # Passe par Traefik comme un client (-k : certificat auto-signé)
       - name: Vérifier la santé de l'API
         run: |
@@ -198,6 +216,26 @@ jobs:
           docker compose -p "enervision-${DEPLOY_ENV}" ps
           docker compose -p "enervision-${DEPLOY_ENV}" logs --tail=50 api
           exit 1
+
+      # Console d'administration exposée : le realm master bloque un compte après 5 mots de
+      # passe faux (15 min, puis plus longtemps). Un échec (mot de passe administrateur changé
+      # dans Keycloak depuis le premier démarrage) n'arrête pas le déploiement.
+      - name: Protéger la connexion à la console Keycloak
+        continue-on-error: true
+        run: |
+          kcadm() {
+            docker compose -f compose-prod.yml exec -T -e KC_CLI_PASSWORD keycloak \
+              /opt/keycloak/bin/kcadm.sh "$@" --config /tmp/kcadm-deploy.config
+          }
+          # Jeton de session kcadm : effacé du conteneur, même en cas d'échec
+          trap 'docker compose -f compose-prod.yml exec -T keycloak rm -f /tmp/kcadm-deploy.config' EXIT
+          if ! KC_CLI_PASSWORD="$KEYCLOAK_ADMIN_PASSWORD" kcadm config credentials \
+               --server http://localhost:8080/auth --realm master --user "$KEYCLOAK_ADMIN"; then
+            echo "::warning::Connexion kcadm refusée ($DEPLOY_ENV) : protection du realm master non vérifiée"
+            exit 1
+          fi
+          kcadm update realms/master -s bruteForceProtected=true -s failureFactor=5 \
+            -s waitIncrementSeconds=900 -s maxFailureWaitSeconds=3600 -s permanentLockout=false
 
       # Images orphelines, et anciennes versions de nos images qu'aucun conteneur
       # (dev ou prod) n'utilise plus. Elles restent récupérables sur GHCR.
