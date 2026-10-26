@@ -13,13 +13,15 @@ Sortie, dans ``DATASET_OUTPUT_DIR`` :
   - ``rapport_qualite.json`` : valeurs manquantes, imputées et nulles, par site et par jeu.
 
 Règles :
-  - horodatages sans fuseau lus comme de l'UTC, comme ceux de l'API Mock ;
+  - horodatages sans fuseau lus comme de l'UTC, comme ceux de l'API Mock (un fuseau
+    explicite est converti en UTC) ;
   - première version sans météo : seule la consommation est gardée ;
   - aucune ligne supprimée : une consommation négative devient manquante, un trou de
     MAX_IMPUTED_GAP heures au plus est comblé par interpolation linéaire, un trou plus
     long reste vide (taux_couverture = 0) ;
   - découpage chronologique sur des heures communes à tous les sites, pour qu'une même
-    heure ne soit jamais à la fois dans l'entraînement et dans le test.
+    heure ne soit jamais à la fois dans l'entraînement et dans le test ; l'imputation se
+    fait dans chaque jeu, sans valeur prise dans le jeu suivant.
 """
 
 from __future__ import annotations
@@ -29,6 +31,8 @@ import hashlib
 import json
 import logging
 import os
+import warnings
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -53,7 +57,7 @@ SPLITS = ("entrainement", "validation", "test")
 
 MLFLOW_EXPERIMENT = "jeu-entrainement"
 
-# Gold compte en minutes (nb_mesures, nb_imputees) : une heure du CSV en vaut 60
+# Gold compte en minutes (nb_mesures, nb_imputees) : une heure mesurée du CSV en vaut 60
 MINUTES_PER_HOUR = 60
 
 GOLD_COLUMNS = [
@@ -84,15 +88,25 @@ def load_raw(csv_path: Path) -> pd.DataFrame:
         usecols=["timestamp", "site_id", "consumption_kwh"],
         dtype={"site_id": "string", "consumption_kwh": "float64"},
     )
-    raw["heure"] = pd.to_datetime(raw["timestamp"]).dt.tz_localize("UTC")
+    raw["heure"] = to_utc(raw["timestamp"])
     return raw.rename(columns={"site_id": "id_site", "consumption_kwh": "brute"})[
         ["id_site", "heure", "brute"]
     ]
 
 
+def to_utc(timestamps: pd.Series) -> pd.Series:
+    """Horodatages ISO 8601 en UTC : sans fuseau, ils sont déjà en UTC."""
+    return pd.to_datetime(timestamps, format="ISO8601", utc=True)
+
+
+def hour_range(raw: pd.DataFrame) -> pd.DatetimeIndex:
+    """Toutes les heures, de la première à la dernière du fichier."""
+    return pd.date_range(raw["heure"].min(), raw["heure"].max(), freq="h")
+
+
 def complete_grid(raw: pd.DataFrame) -> pd.DataFrame:
     """Une ligne par site et par heure, de la première à la dernière heure du fichier."""
-    hours = pd.date_range(raw["heure"].min(), raw["heure"].max(), freq="h")
+    hours = hour_range(raw)
     grid = pd.MultiIndex.from_product(
         [sorted(raw["id_site"].unique()), hours], names=["id_site", "heure"]
     )
@@ -122,26 +136,36 @@ def impute_site(brute: pd.Series, max_gap: int = MAX_IMPUTED_GAP) -> pd.DataFram
     return pd.DataFrame({"consommation_kwh": value, "methode_imputation": method})
 
 
-def to_gold_format(raw: pd.DataFrame, max_gap: int = MAX_IMPUTED_GAP) -> pd.DataFrame:
-    """Nettoie et met au format de gold.consommation_horaire (une mesure par heure)."""
+def to_gold_format(
+    raw: pd.DataFrame, max_gap: int = MAX_IMPUTED_GAP, bounds: Sequence[Any] = ()
+) -> pd.DataFrame:
+    """Nettoie et met au format de gold.consommation_horaire (une mesure par heure).
+
+    ``bounds`` : premières heures de la validation et du test. Chaque jeu est imputé à
+    part : un trou à la frontière n'est pas comblé avec une valeur du jeu suivant."""
     data = complete_grid(raw).sort_values(["id_site", "heure"], ignore_index=True)
     data["consommation_kwh_brute"] = data["brute"].where(data["brute"] >= 0)
+    segment = pd.Index(bounds).searchsorted(data["heure"], side="right")
     imputed = [
         impute_site(group["consommation_kwh_brute"], max_gap)
-        for _, group in data.groupby("id_site", sort=False)
+        for _, group in data.groupby(["id_site", segment], sort=False)
     ]
     data = data.join(pd.concat(imputed))
 
     # Mêmes précisions que gold : NUMERIC(12, 3) pour les kWh, NUMERIC(10, 2) pour les kW
     data["consommation_kwh"] = data["consommation_kwh"].round(3)
-    has_value = data["consommation_kwh"].notna()
-    imputed = data["methode_imputation"] != "none"
+    measured = data["consommation_kwh_brute"].notna()
     # Pic des minutes de l'heure : inconnu avec une mesure horaire, laissé vide
     data["pic_kw"] = float("nan")
     data["moyenne_kw"] = data["consommation_kwh"].round(2)
-    data["nb_mesures"] = has_value.astype("int64") * MINUTES_PER_HOUR
-    data["nb_imputees"] = imputed.astype("int64") * MINUTES_PER_HOUR
+    # Comme l'ETL, qui n'impute que des trous de quelques minutes : une heure interpolée
+    # ici n'aurait aucune mesure en gold. Sa valeur sert à l'entraînement, repérée par
+    # methode_imputation, mais ne compte ni comme mesurée ni comme imputée.
+    data["nb_mesures"] = measured.astype("int64") * MINUTES_PER_HOUR
+    data["nb_imputees"] = 0
     data["taux_couverture"] = data["nb_mesures"] / MINUTES_PER_HOUR
+    # Gold : vrai quand silver a les 60 minutes de l'heure, avec ou sans consommation.
+    # Toutes les heures de l'historique sont terminées.
     data["heure_complete"] = True
     return data[[*GOLD_COLUMNS, "consommation_kwh_brute", "methode_imputation"]]
 
@@ -160,10 +184,10 @@ def split_bounds(
 
 
 def assign_split(
-    data: pd.DataFrame, ratios: tuple[float, float] = SPLIT_RATIOS
+    data: pd.DataFrame, bounds: Sequence[Any] | None = None
 ) -> pd.DataFrame:
     """Ordonne chronologiquement et ajoute la colonne ``jeu``."""
-    start_valid, start_test = split_bounds(data["heure"], ratios)
+    start_valid, start_test = bounds or split_bounds(data["heure"])
     ordered = data.sort_values(["heure", "id_site"], ignore_index=True)
     ordered["jeu"] = SPLITS[0]
     ordered.loc[ordered["heure"] >= start_valid, "jeu"] = SPLITS[1]
@@ -189,7 +213,7 @@ def load_anomalies(raw_dir: Path) -> pd.DataFrame:
     anomalies = pd.DataFrame(
         rows, columns=["id_site", "debut", "type", "gravite", "description"]
     )
-    anomalies["debut"] = pd.to_datetime(anomalies["debut"]).dt.tz_localize("UTC")
+    anomalies["debut"] = to_utc(anomalies["debut"])
     return anomalies.sort_values(["debut", "id_site"], ignore_index=True)
 
 
@@ -234,7 +258,9 @@ def fingerprint(data: pd.DataFrame, anomalies: pd.DataFrame) -> str:
 
 def build(raw_dir: Path, out_dir: Path) -> DatasetFiles:
     """Produit le jeu, les anomalies et le rapport de qualité."""
-    data = assign_split(to_gold_format(load_raw(raw_dir / CSV_NAME)))
+    raw = load_raw(raw_dir / CSV_NAME)
+    bounds = split_bounds(pd.Series(hour_range(raw)))
+    data = assign_split(to_gold_format(raw, bounds=bounds), bounds)
     anomalies = load_anomalies(raw_dir)
     report = quality_report(data)
 
@@ -266,7 +292,16 @@ def build(raw_dir: Path, out_dir: Path) -> DatasetFiles:
 def log_to_mlflow(files: DatasetFiles, source: Path) -> str:
     """Enregistre le jeu comme entrée d'un run MLflow et renvoie l'identifiant du run."""
     import mlflow
+    from mlflow.data.dataset_source_registry import resolve_dataset_source
     from mlflow.data.pandas_dataset import from_pandas
+
+    # MLflow enregistre la même source de fichiers locaux pour les chemins et les URI
+    # file:// : il prévient d'une ambiguïté qui n'en est pas une
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", "The specified dataset source can be interpreted", UserWarning
+        )
+        dataset_source = resolve_dataset_source(str(source))
 
     data = pd.read_parquet(files.dataset)
     report = json.loads(files.report.read_text(encoding="utf-8"))
@@ -276,7 +311,7 @@ def log_to_mlflow(files: DatasetFiles, source: Path) -> str:
             subset = data[data["jeu"] == jeu]
             dataset = from_pandas(
                 subset,
-                source=str(source),
+                source=dataset_source,
                 name=f"historique-csv-{jeu}",
                 digest=files.fingerprint[:16],
             )
@@ -317,6 +352,9 @@ def main(argv: list[str] | None = None) -> DatasetFiles:
         "--sans-mlflow", action="store_true", help="ne pas enregistrer dans MLflow"
     )
     args = parser.parse_args(argv)
+    # Sans adresse, MLflow écrirait dans un dossier mlruns local, sans prévenir
+    if not args.sans_mlflow and not os.environ.get("MLFLOW_TRACKING_URI"):
+        parser.error("MLFLOW_TRACKING_URI manquant (serveur MLflow), ou --sans-mlflow")
 
     files = build(args.raw_dir, args.out_dir)
     if not args.sans_mlflow:

@@ -37,7 +37,7 @@ Depuis la racine du dépôt, avec le venv activé (`pip install -r model/require
 python -m model.dataset --sans-mlflow
 ```
 
-Avec enregistrement dans le MLflow local (http://localhost/mlflow) :
+Avec enregistrement dans le MLflow local (http://localhost/mlflow). Sans `MLFLOW_TRACKING_URI` ni `--sans-mlflow`, la commande s'arrête : MLflow écrirait sinon dans un dossier `mlruns` local.
 
 ```bash
 MLFLOW_TRACKING_URI=http://localhost/mlflow python -m model.dataset
@@ -57,11 +57,12 @@ Dossiers : `--raw-dir` / `DATASET_RAW_DIR` (`data/raw` par défaut) et `--out-di
 
 ### Règles
 
-- Horodatages sans fuseau lus comme de l'UTC, comme ceux de l'API Mock.
+- Horodatages sans fuseau lus comme de l'UTC, comme ceux de l'API Mock ; un fuseau explicite (`Z`, `+01:00`) est converti en UTC.
 - Première version sans météo : seule la consommation est gardée.
-- Mêmes échelles que gold, qui agrège des minutes : une heure du CSV compte pour 60 mesures (`nb_mesures`, `nb_imputees` à 0 ou 60, `taux_couverture` à 0 ou 1) et `moyenne_kw` vaut la consommation de l'heure. `pic_kw` reste vide : le pic des minutes est inconnu avec une mesure par heure.
+- Mêmes valeurs que gold, qui agrège des minutes : une heure mesurée du CSV compte pour 60 mesures (`nb_mesures` à 0 ou 60, `taux_couverture` à 0 ou 1) et `moyenne_kw` vaut la consommation de l'heure. `pic_kw` reste vide : le pic des minutes est inconnu avec une mesure par heure. `heure_complete` est vrai partout : en gold, il indique que l'heure est terminée (60 minutes en silver), avec ou sans consommation.
+- Une heure interpolée garde sa valeur pour l'entraînement (`methode_imputation`), mais compte 0 mesure et `nb_imputees` vaut toujours 0 : l'ETL n'impute que des trous de quelques minutes, jamais une heure entière.
 - Aucune ligne supprimée. Une consommation négative devient manquante ; un trou de 2 heures au plus est comblé par interpolation linéaire (`linear_interpolation`) ; un trou plus long reste vide, avec `taux_couverture = 0`. Les consommations à 0 (coupures étiquetées) sont gardées.
-- Découpage chronologique 70 / 15 / 15 sur des heures communes à tous les sites :
+- Découpage chronologique 70 / 15 / 15 sur des heures communes à tous les sites. L'imputation se fait dans chaque jeu : un trou à la frontière n'est pas comblé avec une valeur du jeu suivant.
 
 | Jeu | Période | Heures × sites |
 |---|---|---|

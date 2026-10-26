@@ -71,9 +71,10 @@ class TestFormatGold:
         ]
         assert data["consommation_kwh"].tolist() == [5.0, 6.0, 7.0]
         assert data["consommation_kwh_brute"].isna().tolist() == [False, True, False]
-        assert data["nb_mesures"].tolist() == [60, 60, 60]
-        assert data["nb_imputees"].tolist() == [0, 60, 0]
-        assert data["taux_couverture"].tolist() == [1.0, 1.0, 1.0]
+        # Heure interpolée : aucune mesure, comme en gold (l'ETL n'impute pas une heure)
+        assert data["nb_mesures"].tolist() == [60, 0, 60]
+        assert data["nb_imputees"].tolist() == [0, 0, 0]
+        assert data["taux_couverture"].tolist() == [1.0, 0.0, 1.0]
         assert (data["moyenne_kw"] == data["consommation_kwh"]).all()
         assert data["pic_kw"].isna().all()
 
@@ -104,6 +105,20 @@ class TestFormatGold:
         data = dataset.to_gold_format(_raw({"SITE001": [1.0]}))
         assert str(data["heure"].dt.tz) == "UTC"
 
+    def test_horodatages_avec_ou_sans_fuseau(self, tmp_path: Path) -> None:
+        csv = tmp_path / dataset.CSV_NAME
+        csv.write_text(
+            "timestamp,site_id,consumption_kwh\n"
+            "2023-01-01 00:00:00,SITE001,1\n"
+            "2023-01-01T01:00:00Z,SITE001,2\n"
+            "2023-01-01T03:00:00+01:00,SITE001,3\n",
+            encoding="utf-8",
+        )
+        hours = dataset.load_raw(csv)["heure"]
+        assert hours.tolist() == list(
+            pd.date_range("2023-01-01", periods=3, freq="h", tz="UTC")
+        )
+
 
 class TestDecoupage:
     def test_proportions_chronologiques_sans_recouvrement(self) -> None:
@@ -128,6 +143,18 @@ class TestDecoupage:
         )
         split = dataset.assign_split(data)
         assert (split.groupby("heure")["jeu"].nunique() == 1).all()
+
+    def test_un_trou_a_la_frontiere_n_est_pas_comble_avec_le_jeu_suivant(
+        self,
+    ) -> None:
+        raw = _raw({"SITE001": [*[1.0] * 69, NAN, *[5.0] * 30]})
+        bounds = dataset.split_bounds(raw["heure"])
+        data = dataset.assign_split(dataset.to_gold_format(raw, bounds=bounds), bounds)
+
+        # Dernière heure de l'entraînement : l'interpoler utiliserait la validation
+        last_train = data[data["jeu"] == "entrainement"].iloc[-1]
+        assert pd.isna(last_train["consommation_kwh"])
+        assert last_train["methode_imputation"] == "none"
 
     def test_refuse_un_jeu_trop_petit(self) -> None:
         data = dataset.to_gold_format(_raw({"SITE001": [1.0, 2.0]}))
@@ -207,7 +234,17 @@ class TestConstruction:
         )
         assert files.dataset.exists()
 
+    def test_main_exige_l_adresse_de_mlflow(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+        with pytest.raises(SystemExit):
+            dataset.main(["--raw-dir", str(tmp_path), "--out-dir", str(tmp_path)])
+        assert not (tmp_path / "dataset.parquet").exists()
 
+
+# Stockage en fichiers de MLflow (test seulement) : codecs.open, déprécié en Python 3.14
+@pytest.mark.filterwarnings("ignore:codecs.open:DeprecationWarning")
 class TestMlflow:
     def test_enregistre_les_trois_jeux_les_parametres_et_les_fichiers(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -49,7 +49,7 @@ jobs:
       # data/raw du commit, depuis le stockage DVC de la VM ; monté par compose-prod.yml
       - name: Récupérer les données brutes
         run: |
-          infra/dataset/pull.sh
+          python3 infra/dataset/pull.py
           echo "DATASET_RAW_DIR=$GITHUB_WORKSPACE/data/raw" >> "$GITHUB_ENV"
 
       # Image du modèle déjà sur la VM : récupérée et gardée par deploy.yml

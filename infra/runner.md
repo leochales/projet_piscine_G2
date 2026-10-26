@@ -15,7 +15,7 @@ Keycloak est servi à la même adresse, sous `/auth` (`https://<VM_IP>/auth`, `h
 
 ## Installation du runner
 
-Une seule fois, depuis un compte administrateur de la VM. Prérequis : Docker avec le plugin `docker compose`, `curl`, `openssl`, `python3`, `python3-venv` et `acl` (données du jeu d'entraînement, via DVC).
+Une seule fois, depuis un compte administrateur de la VM. Prérequis : Docker avec le plugin `docker compose`, `curl`, `openssl`, `python3` et `acl` (données du jeu d'entraînement).
 
 ```bash
 # 1. Utilisateur dédié, sans sudo, membre du groupe docker
@@ -123,7 +123,7 @@ dvc push
 
 Pour une nouvelle version : modifier `data/raw/`, `dvc add data/raw`, commiter `data/raw.dvc` dans une PR, puis `dvc push`. Sans `dvc push`, le commit pointe vers des données que la VM n'a pas.
 
-**Sur la VM**, chaque déploiement lance `infra/dataset/pull.sh` : il installe DVC dans `~/.venvs/dvc` du compte `github-runner` au premier passage, lit le stockage directement sur le disque (adresse remplacée dans `.dvc/config.local`, sans SSH) et vérifie que les données de `data/raw.dvc` y sont. Le cache DVC est gardé dans `~/.cache/enervision-dvc` : seule une nouvelle version des données est copiée. Si elles manquent, le déploiement continue avec un avertissement. Le workflow **Dataset** relance le script pour récupérer `data/raw` puis le monte en lecture seule dans le conteneur du jeu.
+**Sur la VM**, DVC n'est pas installé : `infra/dataset/pull.py` (bibliothèque standard de `python3`) lit le stockage directement sur le disque, dans le format de DVC. Chaque déploiement lance `pull.py --check`, qui vérifie sans rien copier que le stockage a la version de `data/raw.dvc` ; si elle manque, le déploiement continue avec un avertissement. Le workflow **Dataset** lance `pull.py`, qui copie cette version dans `data/raw` en vérifiant l'empreinte MD5 de chaque fichier, puis la monte en lecture seule dans le conteneur du jeu.
 
 **Construire le jeu** : Actions → **Dataset** → Run workflow, sur `develop` (dev) ou `main` (prod). Le workflow lance l'image `enervision-model` de la version déployée (même commit que l'API en service), avec le code et `data/raw.dvc` de ce commit. Le déploiement télécharge cette image et crée le conteneur du job sans le démarrer, pour que le nettoyage des images la garde : lancer d'abord **Deploy** si l'environnement n'est pas déployé. Le jeu et son rapport sont enregistrés dans le MLflow de l'environnement (expérience `jeu-entrainement`) et gardés dans le volume `dataset_data`.
 
