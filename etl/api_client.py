@@ -51,7 +51,11 @@ def get_sites() -> list[SiteInfo]:
 
 
 def get_current_reading(site_id: str) -> dict[str, Any]:
-    """GET /api/v1/sites/{site_id}/current — dernière mesure d'un site."""
+    """GET /api/v1/sites/{site_id}/current — mesure instantanée d'un site.
+
+    Source de la collecte minute (``etl.collect``). L'horodatage renvoyé est
+    sans fuseau (UTC dans les faits) et à la microseconde.
+    """
     return _get(f"/api/v1/sites/{site_id}/current")
 
 
@@ -70,12 +74,14 @@ def get_readings_history(
     end_time: datetime,
     limit: int,
 ) -> list[dict[str, Any]]:
-    """GET /api/v1/readings — mesures d'un site sur [start_time, end_time[.
+    """GET /api/v1/readings — historique simulé d'un site sur [start_time, end_time[.
+
+    Réservé au batch : l'API tire de nouvelles valeurs à chaque appel, sans
+    lien avec /current. Ne pas l'utiliser pour la collecte temps réel.
 
     L'API renvoie toujours ``limit`` points répartis uniformément sur la
     fenêtre : le pas vaut (end_time − start_time) / limit. C'est à l'appelant
-    de choisir des bornes et un ``limit`` qui donnent le pas voulu (voir
-    ``etl.collect.plan_windows``).
+    de choisir des bornes et un ``limit`` qui donnent le pas voulu.
     """
     if not 1 <= limit <= READINGS_MAX_LIMIT:
         raise ValueError(f"limit doit être entre 1 et {READINGS_MAX_LIMIT}")

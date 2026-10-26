@@ -35,7 +35,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from pydantic import ValidationError
@@ -44,7 +44,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from common.db import get_engine
 from common.logs import configure_logging
-from etl.collect import STEP, load_declared_sites
+from etl.collect import STEP, floor_to_step, load_declared_sites
 from etl.schemas import EnergyReading
 
 logger = logging.getLogger(__name__)
@@ -54,6 +54,11 @@ MAX_IMPUTED_GAP = 5
 
 # Minutes déjà en silver retraitées à chaque exécution
 REPROCESS_MARGIN = timedelta(minutes=10)
+
+# Dernière minute matérialisée : now − SETTLE_DELAY. La mesure /current
+# d'une minute arrive pendant la minute suivante (horloge de l'API Mock en
+# retard) ; on attend donc avant de déclarer la minute manquante.
+SETTLE_DELAY = timedelta(minutes=2)
 
 # Consommation au-delà de ce multiple de la capacité : capteur aberrant
 MAX_LOAD_RATIO = 2.0
@@ -220,9 +225,14 @@ def build_silver_rows(
 
 
 def _processing_range(
-    conn: Connection, id_site: str
+    conn: Connection, id_site: str, now: datetime
 ) -> tuple[datetime, datetime] | None:
-    """Période à (re)traiter pour un site, ou None s'il n'y a rien en bronze."""
+    """Période à (re)traiter pour un site, ou None s'il n'y a rien en bronze.
+
+    La période va jusqu'à ``now − SETTLE_DELAY`` même si bronze s'arrête
+    avant : une collecte en panne apparaît en silver (``no_reading``) au
+    lieu de rester invisible jusqu'à la reprise.
+    """
     sql = text("""
         SELECT
             (SELECT MAX(horodatage) FROM silver.silver_readings
@@ -238,9 +248,10 @@ def _processing_range(
         return None
     start = r.silver_last - REPROCESS_MARGIN if r.silver_last else r.bronze_first
     start = max(start, r.bronze_first)
-    if start > r.bronze_last:
+    end = max(r.bronze_last, floor_to_step(now - SETTLE_DELAY))
+    if start > end:
         return None
-    return start, r.bronze_last
+    return start, end
 
 
 def _load_bronze(
@@ -301,9 +312,11 @@ UPSERT_REJECTION = text("""
 """)
 
 
-def transform_site(conn: Connection, id_site: str, capacite_kw: float) -> int:
+def transform_site(
+    conn: Connection, id_site: str, capacite_kw: float, now: datetime
+) -> int:
     """Met à jour silver pour un site. Retourne le nombre de lignes écrites."""
-    period = _processing_range(conn, id_site)
+    period = _processing_range(conn, id_site, now)
     if period is None:
         return 0
     start, end = period
@@ -333,8 +346,9 @@ def transform_site(conn: Connection, id_site: str, capacite_kw: float) -> int:
     return len(rows)
 
 
-def transform() -> dict[str, int]:
+def transform(now: datetime | None = None) -> dict[str, int]:
     """Transforme bronze → silver pour tous les sites actifs déclarés."""
+    now = now or datetime.now(tz=UTC)
     with get_engine().connect() as conn:
         declared = load_declared_sites(conn)
 
@@ -343,7 +357,7 @@ def transform() -> dict[str, int]:
         # Une transaction par site : un site en erreur n'annule pas les autres
         try:
             with get_engine().begin() as conn:
-                n = transform_site(conn, id_site, capacite_kw)
+                n = transform_site(conn, id_site, capacite_kw, now)
         except SQLAlchemyError as exc:
             logger.error("site %s : échec de la transformation — %s", id_site, exc)
             sites_in_error += 1

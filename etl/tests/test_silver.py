@@ -1,12 +1,15 @@
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
-from etl.collect import STEP
+from etl.collect import STEP, floor_to_step
 from etl.silver import (
     MAX_IMPUTED_GAP,
     NO_READING,
     REJECTED_READING,
+    SETTLE_DELAY,
     BronzeRow,
+    _processing_range,
     build_silver_rows,
     clean_reading,
     impute_consumption,
@@ -178,3 +181,42 @@ def test_periode_vide() -> None:
         "SITE001", CAPACITE, T0, T0 - timedelta(minutes=1), {}, output_from=T0
     )
     assert rows == []
+
+
+# --- Période à traiter (base remplacée) ---------------------------------------
+
+
+class _FakeConn:
+    """Connexion dont execute(...).one() renvoie les bornes silver/bronze."""
+
+    def __init__(self, **bornes: datetime | None) -> None:
+        self._row = SimpleNamespace(**bornes)
+
+    def execute(self, *_: Any) -> SimpleNamespace:
+        return SimpleNamespace(one=lambda: self._row)
+
+
+def _periode(now: datetime, **bornes: datetime | None) -> Any:
+    return _processing_range(_FakeConn(**bornes), "SITE001", now)  # type: ignore[arg-type]
+
+
+def test_periode_prolongee_jusqu_a_now_moins_le_delai_si_bronze_en_retard() -> None:
+    now = T0 + timedelta(minutes=30, seconds=45)
+    periode = _periode(
+        now, silver_last=None, bronze_first=T0, bronze_last=T0 + 10 * STEP
+    )
+    assert periode == (T0, floor_to_step(now - SETTLE_DELAY))
+    assert periode[1] == T0 + 28 * STEP
+
+
+def test_periode_finit_a_bronze_last_quand_bronze_est_a_jour() -> None:
+    now = T0 + timedelta(minutes=11)
+    bronze_last = T0 + 10 * STEP
+    periode = _periode(
+        now, silver_last=T0 + 5 * STEP, bronze_first=T0, bronze_last=bronze_last
+    )
+    assert periode == (T0, bronze_last)  # marge de retraitement bornée à bronze_first
+
+
+def test_aucune_periode_sans_bronze() -> None:
+    assert _periode(T0, silver_last=None, bronze_first=None, bronze_last=None) is None

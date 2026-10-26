@@ -1,10 +1,10 @@
 # Planning de l'ETL (format cron : minute heure jour mois jour-de-semaine commande)
 # Le script s'exécute depuis /app ; l'heure est celle du conteneur (UTC par défaut).
 #
-# Toutes les minutes : collecte bronze depuis l'API Mock (SMARTOPS-21), puis
-# transformation bronze → silver (SMARTOPS-24), puis consommation horaire
-# dans gold, heure en cours comprise (SMARTOPS-25).
-# Au premier passage, collect.py remonte 24 h (amorçage, SMARTOPS-22).
+# Toutes les minutes : collecte bronze de la mesure instantanée de chaque site
+# (GET /api/v1/sites/{id}/current), puis transformation bronze → silver
+# (SMARTOPS-24), puis consommation horaire dans gold, heure en cours comprise
+# (SMARTOPS-25). Pas d'amorçage : une minute non collectée reste un trou.
 # « ; » et non « && » : chaque étape traite ce qui est déjà disponible même si
 # la précédente a échoué (API Mock injoignable…).
 * * * * * python -m etl.collect; python -m etl.silver; python -m etl.gold_hourly
