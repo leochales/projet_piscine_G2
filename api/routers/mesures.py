@@ -4,11 +4,12 @@ from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import AwareDatetime, BaseModel, BeforeValidator
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from api.routers.parametres import IdSite
 from common.config import Settings, get_settings
 from common.db import get_session
 
@@ -97,7 +98,7 @@ def calculer_periode(
     responses={400: {"description": "Période invalide"}},
 )
 def lister_consommation_horaire(
-    id_site: Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{1,20}$")],
+    id_site: IdSite,
     session: Annotated[Session, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
     debut: DateIso | None = None,
