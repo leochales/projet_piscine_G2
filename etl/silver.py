@@ -44,8 +44,8 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from common.db import get_engine
 from common.logs import configure_logging
-from etl.bootstrap import STEP
-from etl.collect import floor_to_step, load_declared_sites
+from etl.collect import load_declared_sites
+from etl.grid import STEP, floor_to_step
 from etl.schemas import EnergyReading
 
 logger = logging.getLogger(__name__)

@@ -2,8 +2,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
-from etl.bootstrap import STEP
-from etl.collect import floor_to_step
+from etl.grid import STEP, floor_to_step
 from etl.silver import (
     MAX_IMPUTED_GAP,
     NO_READING,

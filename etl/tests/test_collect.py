@@ -5,17 +5,15 @@ from typing import Any
 
 import pytest
 import requests
-from sqlalchemy.exc import OperationalError
 
 from etl import collect
-from etl.bootstrap import STEP
 from etl.collect import (
     MAX_CLOCK_SKEW,
     ReadingRejected,
     check_sites_consistency,
-    floor_to_step,
     reading_slot,
 )
+from etl.grid import floor_to_step
 from etl.schemas import SiteInfo
 
 # Horloge locale ; l'horloge de l'API Mock retarde d'une trentaine de secondes
@@ -126,18 +124,7 @@ def fake_db(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "declared": {"SITE001": 200.0, "SITE002": 1000.0, "SITE003": 800.0},
         "calls": [],
         "inserted": [],
-        "to_bootstrap": set(),
-        "history_calls": [],
-        "history_inserted": [],
     }
-
-    def fetch_history(id_site: str, slot: datetime) -> list[Any]:
-        state["history_calls"].append((id_site, slot))
-        return [(slot - STEP, _mesure(id_site))]
-
-    def insert_history(_: Any, id_site: str, rows: list[Any]) -> int:
-        state["history_inserted"].append((id_site, rows))
-        return len(rows)
 
     def get_current_reading(site_id: str) -> dict[str, Any]:
         state["calls"].append(site_id)
@@ -153,11 +140,6 @@ def fake_db(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr(collect, "get_sites", list)
     monkeypatch.setattr(collect, "get_current_reading", get_current_reading)
     monkeypatch.setattr(collect, "insert_bronze", insert_bronze)
-    monkeypatch.setattr(
-        collect, "sites_to_bootstrap", lambda *_: set(state["to_bootstrap"])
-    )
-    monkeypatch.setattr(collect, "fetch_history", fetch_history)
-    monkeypatch.setattr(collect, "insert_history", insert_history)
     return state
 
 
@@ -176,45 +158,22 @@ def test_collect_additionne_les_insertions(fake_db: dict[str, Any]) -> None:
     }
 
 
-def test_sans_site_a_amorcer_l_historique_n_est_pas_appele(
-    fake_db: dict[str, Any],
-) -> None:
-    collect.collect(NOW)
-    assert fake_db["history_calls"] == []
+def test_la_collecte_n_amorce_jamais(fake_db: dict[str, Any]) -> None:
+    # L'amorçage /readings est une commande à part (etl.bootstrap) : la
+    # collecte minute ne l'attend ni ne le déclenche
+    assert not hasattr(collect, "fetch_history")
+    assert collect.collect(NOW)["readings_inserted"] == 3
 
 
-def test_seuls_les_sites_vides_sont_amorces(fake_db: dict[str, Any]) -> None:
-    fake_db["to_bootstrap"] = {"SITE002"}
-
-    assert collect.collect(NOW)["readings_inserted"] == 3 + 1
-    assert fake_db["history_calls"] == [("SITE002", SLOT)]
-    assert [site for site, _ in fake_db["history_inserted"]] == ["SITE002"]
-
-
-def test_amorcage_en_echec_rien_n_est_insere_pour_le_site(
+def test_une_erreur_inattendue_sur_un_site_n_arrete_pas_les_autres(
     fake_db: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def fetch_history(id_site: str, slot: datetime) -> list[Any]:
-        raise requests.Timeout("/readings trop lent")
+    def get_current_reading(site_id: str) -> dict[str, Any]:
+        if site_id == "SITE001":
+            raise KeyError("réponse imprévue")
+        return _mesure(site_id)
 
-    fake_db["to_bootstrap"] = {"SITE002"}
-    monkeypatch.setattr(collect, "fetch_history", fetch_history)
-
-    assert collect.collect(NOW)["sites_in_error"] == 1
-    # Ni historique ni /current pour SITE002 : amorçage retenté au passage suivant
-    assert sorted(i[0] for i in fake_db["inserted"]) == ["SITE001", "SITE003"]
-
-
-def test_un_echec_base_sur_un_site_n_arrete_pas_les_autres(
-    fake_db: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def insert_bronze(_: Any, id_site: str, ts: datetime, payload: Any) -> bool:
-        if id_site == "SITE002":
-            raise OperationalError("INSERT", {}, Exception("connexion perdue"))
-        fake_db["inserted"].append((id_site, ts, payload))
-        return True
-
-    monkeypatch.setattr(collect, "insert_bronze", insert_bronze)
+    monkeypatch.setattr(collect, "get_current_reading", get_current_reading)
 
     assert collect.collect(NOW) == {
         "sites": 3,
@@ -223,19 +182,18 @@ def test_un_echec_base_sur_un_site_n_arrete_pas_les_autres(
     }
 
 
-def test_collect_accepte_une_heure_sans_fuseau(fake_db: dict[str, Any]) -> None:
-    collect.collect(NOW.replace(tzinfo=None))
-    assert len(fake_db["inserted"]) == 3
-
-
-def test_le_controle_des_sites_ne_bloque_pas_la_collecte(
-    fake_db: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+def test_une_erreur_inattendue_du_controle_des_sites_est_loguee(
+    fake_db: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     def get_sites() -> list[SiteInfo]:
-        raise requests.Timeout("GET /sites trop lent")
+        raise KeyError("réponse imprévue")
 
     monkeypatch.setattr(collect, "get_sites", get_sites)
+
     assert collect.collect(NOW)["readings_inserted"] == 3
+    assert "contrôle des sites : erreur inattendue" in caplog.text
 
 
 def test_un_site_en_echec_api_ou_rejete_n_arrete_pas_les_autres(
