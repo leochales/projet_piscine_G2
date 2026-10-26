@@ -48,9 +48,14 @@ ALGORITHMES = ["RS256"]
 # On renvoie nous-mêmes un 401 (selon les versions, FastAPI renverrait un 403).
 schema_bearer = HTTPBearer(auto_error=False, description="Jeton d'accès Keycloak")
 
-# Détail du 403 d'un compte absent de app.utilisateur. Le front le reconnaît pour
-# afficher la page « compte non rattaché » (front/src/lib/api.ts) : à changer des deux côtés
+# 403 d'un compte absent de app.utilisateur. Le front le reconnaît par l'en-tête et le
+# code, stables (front/src/lib/api.ts), pas par le message, qui peut changer
 DETAIL_COMPTE_NON_RATTACHE = "Compte non rattaché à un client"
+ENTETE_ERREUR = "X-Erreur"
+CODE_COMPTE_NON_RATTACHE = "compte-non-rattache"
+
+# Rôles de l'application ; les autres rôles du jeton sont techniques (Keycloak)
+ROLES_APPLICATION = (*ROLES_METIER, "MONITORING")
 
 # Réponses ajoutées au Swagger des routes protégées (contrat vérifié par Schemathesis)
 REPONSES_AUTH: dict[int | str, dict[str, Any]] = {
@@ -145,7 +150,11 @@ def retrouver_id_client(session: Session, id_utilisateur: UUID) -> int | None:
     ligne = session.execute(requete, {"id": id_utilisateur}).mappings().first()
     if ligne is None:
         signaler_compte_absent(id_utilisateur)
-        raise HTTPException(status.HTTP_403_FORBIDDEN, DETAIL_COMPTE_NON_RATTACHE)
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            DETAIL_COMPTE_NON_RATTACHE,
+            headers={ENTETE_ERREUR: CODE_COMPTE_NON_RATTACHE},
+        )
     return ligne["id_client"]
 
 

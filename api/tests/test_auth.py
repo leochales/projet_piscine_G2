@@ -19,8 +19,10 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 
 from api.auth import (
+    CODE_COMPTE_NON_RATTACHE,
     DELAI_RECHARGEMENT_CLES,
     DETAIL_COMPTE_NON_RATTACHE,
+    ENTETE_ERREUR,
     _derniers_signalements,
     exiger_role,
     get_client_cles,
@@ -438,9 +440,24 @@ def test_moi_compte_non_rattache_403(client: TestClient, base: FausseBase) -> No
 
     response = client.get("/api/moi", headers=entete(creer_jeton()))
 
-    # Détail reconnu par le front (front/src/lib/api.ts) : page « compte non rattaché »
+    # Le front reconnaît le code de l'en-tête (front/src/lib/api.ts), pas le message
     assert response.status_code == 403
+    assert response.headers[ENTETE_ERREUR] == CODE_COMPTE_NON_RATTACHE
     assert response.json() == {"detail": DETAIL_COMPTE_NON_RATTACHE}
+
+
+def test_moi_ne_renvoie_que_les_roles_de_l_application(client: TestClient) -> None:
+    # Rôles réels d'un jeton Keycloak : les rôles techniques du realm sont écartés
+    roles = [
+        "CONSULT-SITE",
+        "default-roles-enervision",
+        "offline_access",
+        "uma_authorization",
+    ]
+
+    response = client.get("/api/moi", headers=entete(creer_jeton(roles=roles)))
+
+    assert response.json()["roles"] == ["CONSULT-SITE"]
 
 
 def test_moi_sans_jeton_401_meme_avec_un_parametre_inconnu(client: TestClient) -> None:

@@ -54,8 +54,12 @@ export const useUserStore = defineStore('user', () => {
   }
 
   /**
-   * Un utilisateur voit tous les sites de son client : seuls les rôles de gestion agissent
-   * sur les alertes et les recommandations, les rôles de consultation sont en lecture seule.
+   * Seuls les rôles de gestion agissent sur les alertes et les recommandations, les rôles de
+   * consultation sont en lecture seule.
+   *
+   * Limite connue, jusqu'à l'US6 (SMARTOPS-60) : le site n'est pas encore pris en compte.
+   * GESTION-SITE devrait agir seulement sur les sites qui lui sont attribués ; pour l'instant
+   * il agit sur tous les sites de son client, comme GESTION-CLIENT.
    */
   function canActOn(_siteId: string) {
     return hasAnyRole(ACTION_ROLES)

@@ -75,4 +75,36 @@ describe('App', () => {
     expect(app.text()).toContain('m@b.fr')
     expect(app.find('nav[aria-label="Navigation principale"] a').exists()).toBe(false)
   })
+
+  it('montre la page du compte non rattaché, sans navigation ni données', async () => {
+    const user = useUserStore(pinia)
+    user.unlinked = true
+    await router.push('/')
+
+    const app = mountApp()
+    await flushPromises()
+
+    expect(router.currentRoute.value.name).toBe('unlinked-account')
+    expect(app.text()).toContain('Compte non rattaché')
+    expect(app.text()).toContain('camille.martin@client.fr')
+    // Rôle de gestion, mais aucune entreprise : pas de liens vers les écrans de données
+    expect(app.find('nav[aria-label="Navigation principale"] a').exists()).toBe(false)
+  })
+
+  it('affiche les liens dès que le compte obtient un rôle du dashboard', async () => {
+    const user = useUserStore(pinia)
+    user.setFromToken({ realm_access: { roles: ['MONITORING'] }, email: 'm@b.fr' })
+    await router.push('/acces-refuse')
+
+    const app = mountApp()
+    await flushPromises()
+    const nav = () => app.find('nav[aria-label="Navigation principale"]')
+    expect(nav().find('a').exists()).toBe(false)
+
+    // Rôle ajouté dans Keycloak, reçu au renouvellement du jeton (onTokenRefresh)
+    user.setFromToken({ realm_access: { roles: ['CONSULT-SITE'] }, email: 'm@b.fr' })
+    await flushPromises()
+
+    expect(nav().text()).toContain('Alertes et recommandations')
+  })
 })

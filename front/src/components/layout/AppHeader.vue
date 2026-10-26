@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { onKeyStroke } from '@vueuse/core'
 import { Menu, X } from '@lucide/vue'
@@ -11,22 +11,30 @@ import ThemeToggle from '@/components/layout/ThemeToggle.vue'
 import { useOperationsStore } from '@/stores/operations'
 import { DASHBOARD_ROLES, useUserStore } from '@/stores/user'
 
-const hasDashboard = useUserStore().hasAnyRole(DASHBOARD_ROLES)
+const user = useUserStore()
 
-const links = hasDashboard
-  ? [
-      { to: { name: 'overview' }, label: "Vue d'ensemble" },
-      { to: { name: 'sites' }, label: 'Sites' },
-      { to: { name: 'alerts' }, label: 'Alertes et recommandations', alertCount: true },
-    ]
-  : []
+// Réactif : les rôles changent au renouvellement du jeton, et un compte peut être déclaré
+// non rattaché par l'API à tout moment (onUnlinkedAccount)
+const hasDashboard = computed(() => !user.unlinked && user.hasAnyRole(DASHBOARD_ROLES))
 
-// Le nombre d'alertes à traiter est visible depuis toutes les pages : le store est chargé ici.
-// Sans réponse du service, le badge reste simplement caché (l'écran 3 affiche l'erreur).
+const DASHBOARD_LINKS = [
+  { to: { name: 'overview' }, label: "Vue d'ensemble" },
+  { to: { name: 'sites' }, label: 'Sites' },
+  { to: { name: 'alerts' }, label: 'Alertes et recommandations', alertCount: true },
+]
+const links = computed(() => (hasDashboard.value ? DASHBOARD_LINKS : []))
+
+// Le nombre d'alertes à traiter est visible depuis toutes les pages : le store est chargé ici,
+// dès que l'utilisateur a accès au dashboard. Sans réponse du service, le badge reste
+// simplement caché (l'écran 3 affiche l'erreur).
 const operations = useOperationsStore()
-onMounted(() => {
-  if (hasDashboard) operations.load().catch(() => {})
-})
+watch(
+  hasDashboard,
+  (access) => {
+    if (access) operations.load().catch(() => {})
+  },
+  { immediate: true },
+)
 
 // Menu mobile (sous 768 px) : fermé dès qu'on change de page, ou avec Échap
 const menuOpen = ref(false)

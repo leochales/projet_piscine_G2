@@ -6,7 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from api.auth import Utilisateur, utilisateur_courant
+from api.auth import ROLES_APPLICATION, Utilisateur, utilisateur_courant
 
 router = APIRouter(prefix="/moi", tags=["utilisateurs"])
 
@@ -14,7 +14,7 @@ router = APIRouter(prefix="/moi", tags=["utilisateurs"])
 class Moi(BaseModel):
     id: UUID  # identifiant Keycloak (sub du jeton)
     id_client: int | None  # null : administrateur EnerVision, sans client
-    roles: list[str]
+    roles: list[str]  # rôles de l'application seulement (pas ceux propres à Keycloak)
 
 
 @router.get("", summary="Utilisateur connecté : identifiant, client et rôles")
@@ -30,5 +30,5 @@ def lire_moi(
     return Moi(
         id=utilisateur.id,
         id_client=utilisateur.id_client,
-        roles=sorted(utilisateur.roles),
+        roles=sorted(utilisateur.roles & set(ROLES_APPLICATION)),
     )
