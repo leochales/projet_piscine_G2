@@ -33,6 +33,16 @@ describe('protection des routes', () => {
     expect(router.currentRoute.value.name).toBe('access-denied')
   })
 
+  it('cantonne un compte non rattaché à sa page, même avec un rôle de gestion', async () => {
+    signIn(['GESTION-CLIENT'])
+    useUserStore().unlinked = true
+
+    for (const path of ['/', '/alertes', '/acces-refuse']) {
+      await router.push(path)
+      expect(router.currentRoute.value.name).toBe('unlinked-account')
+    }
+  })
+
   it('affiche la page introuvable sans exiger de rôle', async () => {
     await router.push('/nimporte/quoi')
     expect(router.currentRoute.value.name).toBe('not-found')

@@ -32,6 +32,9 @@ export const useUserStore = defineStore('user', () => {
   const roles = ref<Role[]>([])
   const nom = ref('')
   const email = ref('')
+  // Compte connu de Keycloak mais pas de l'API (absent de app.utilisateur) : aucune
+  // entreprise, donc aucune donnée. Seule la page « compte non rattaché » s'affiche.
+  const unlinked = ref(false)
 
   /** Libellé du rôle le plus large de l'utilisateur */
   const roleLabel = computed(() => {
@@ -58,5 +61,5 @@ export const useUserStore = defineStore('user', () => {
     return hasAnyRole(ACTION_ROLES)
   }
 
-  return { roles, nom, email, roleLabel, setFromToken, hasAnyRole, canActOn }
+  return { roles, nom, email, unlinked, roleLabel, setFromToken, hasAnyRole, canActOn }
 })

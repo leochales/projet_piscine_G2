@@ -60,6 +60,20 @@ Le test `test_toutes_les_routes_api_exigent_un_jeton` échoue si une route `/api
 | `KEYCLOAK_EMETTEUR` | `http://localhost/auth/realms/enervision` | Émetteur attendu dans les jetons |
 | `KEYCLOAK_AUDIENCE` | `enervision-api` | Audience attendue |
 
+### `GET /api/moi`
+
+Utilisateur connecté, appelé par le front juste après la connexion. Ouvert à tout compte rattaché, quel que soit son rôle.
+
+```json
+{ "id": "8f2c6c1e-4b7a-4d55-9a57-1f0e3b2f6a10", "id_client": 1, "roles": ["CONSULT-SITE"] }
+```
+
+| Code | Cas |
+|---|---|
+| 200 | Jeton accepté, compte enregistré dans `app.utilisateur` (`id_client` null : administrateur EnerVision) |
+| 401 | Jeton absent ou invalide |
+| 403 | Compte absent de `app.utilisateur` : `{"detail": "Compte non rattaché à un client"}`, reconnu par le front |
+
 ### `GET /api/health`
 
 | Code | Réponse | Cas |

@@ -23,6 +23,8 @@ Les appels à `/api` et à `/auth` (Keycloak) sont transmis à Traefik (http://l
 
 Le dashboard exige une connexion : un visiteur non connecté est redirigé vers la page de Keycloak (realm `enervision`, client `enervision-front`), puis revient sur la page demandée. Les comptes se créent dans la console d'administration (http://localhost/auth/admin), avec au moins un rôle `GESTION-*` ou `CONSULT-*` pour accéder aux écrans. Le jeton reste en mémoire et se renouvelle tout seul.
 
+Juste après la connexion, le front appelle `GET /api/moi` (`checkAccount`, `src/lib/api.ts`) : l'API vérifie le jeton et cherche le compte dans `app.utilisateur`. Un compte créé dans Keycloak sans cette ligne n'est rattaché à aucune entreprise : l'API répond 403 et le front affiche la page « Compte non rattaché » à la place des écrans (enregistrement du compte : `infra/runner.md`, « Créer un compte »). Si l'API est injoignable, l'application démarre quand même.
+
 | Rôle | Accès |
 |---|---|
 | `GESTION-CLIENT`, `GESTION-SITE` | Tous les écrans, actions sur les alertes et recommandations |

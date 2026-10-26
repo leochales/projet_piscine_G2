@@ -25,6 +25,12 @@ const router = createRouter({
       meta: { title: 'Alertes et recommandations', roles: DASHBOARD_ROLES },
     },
     {
+      path: '/compte-non-rattache',
+      name: 'unlinked-account',
+      component: () => import('@/views/UnlinkedAccountView.vue'),
+      meta: { title: 'Compte non rattaché' },
+    },
+    {
       path: '/acces-refuse',
       name: 'access-denied',
       component: () => import('@/views/AccessDeniedView.vue'),
@@ -42,7 +48,12 @@ const router = createRouter({
 })
 
 router.beforeEach((to) => {
-  if (!to.meta.roles || useUserStore().hasAnyRole(to.meta.roles)) return true
+  const user = useUserStore()
+  // Compte refusé par l'API : aucune page de données, quel que soit le rôle
+  if (user.unlinked) {
+    return to.name === 'unlinked-account' ? true : { name: 'unlinked-account', replace: true }
+  }
+  if (!to.meta.roles || user.hasAnyRole(to.meta.roles)) return true
   return { name: 'access-denied', replace: true }
 })
 

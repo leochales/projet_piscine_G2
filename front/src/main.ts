@@ -4,6 +4,7 @@ import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 
 import App from './App.vue'
+import { checkAccount, onUnlinkedAccount } from './lib/api'
 import { initAuth, onTokenRefresh } from './lib/auth'
 import { useUserStore } from './stores/user'
 
@@ -20,6 +21,15 @@ async function start() {
   const user = useUserStore(pinia)
   user.setFromToken(claims)
   onTokenRefresh((refreshed) => user.setFromToken(refreshed))
+
+  // Compte refusé par l'API (absent de app.utilisateur), au démarrage ou plus tard :
+  // la page « compte non rattaché » remplace les écrans de données (garde du routeur)
+  onUnlinkedAccount(() => {
+    user.unlinked = true
+    void router.replace({ name: 'unlinked-account' })
+  })
+  // Avant le premier affichage : l'API accepte-t-elle le jeton et connaît-elle le compte ?
+  await checkAccount()
 
   app.use(router)
   app.mount('#app')
