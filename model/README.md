@@ -53,12 +53,13 @@ Dossiers : `--raw-dir` / `DATASET_RAW_DIR` (`data/raw` par défaut) et `--out-di
 |---|---|
 | `dataset.parquet` | Colonnes de `gold.consommation_horaire`, plus `consommation_kwh_brute`, `methode_imputation` et `jeu` |
 | `anomalies.parquet` | Anomalies étiquetées (`id_site`, `debut`, `type`, `gravite`, `description`) |
-| `rapport_qualite.json` | Valeurs manquantes, imputées et nulles, au total, par site et par jeu, et empreinte du jeu |
+| `rapport_qualite.json` | Valeurs manquantes, imputées et nulles, au total, par site et par jeu, et empreinte du jeu et des anomalies |
 
 ### Règles
 
 - Horodatages sans fuseau lus comme de l'UTC, comme ceux de l'API Mock.
 - Première version sans météo : seule la consommation est gardée.
+- Mêmes échelles que gold, qui agrège des minutes : une heure du CSV compte pour 60 mesures (`nb_mesures`, `nb_imputees` à 0 ou 60, `taux_couverture` à 0 ou 1) et `moyenne_kw` vaut la consommation de l'heure. `pic_kw` reste vide : le pic des minutes est inconnu avec une mesure par heure.
 - Aucune ligne supprimée. Une consommation négative devient manquante ; un trou de 2 heures au plus est comblé par interpolation linéaire (`linear_interpolation`) ; un trou plus long reste vide, avec `taux_couverture = 0`. Les consommations à 0 (coupures étiquetées) sont gardées.
 - Découpage chronologique 70 / 15 / 15 sur des heures communes à tous les sites :
 
@@ -70,7 +71,7 @@ Dossiers : `--raw-dir` / `DATASET_RAW_DIR` (`data/raw` par défaut) et `--out-di
 
 ### MLflow
 
-Chaque construction crée un run dans l'expérience `jeu-entrainement` : les trois jeux en entrée (contextes `entrainement`, `validation`, `test`), les paramètres (source, imputation, dates de découpage, empreinte), les comptages du rapport et les trois fichiers en artefacts. L'empreinte ne change que si le contenu du jeu change.
+Chaque construction crée un run dans l'expérience `jeu-entrainement` : les trois jeux en entrée (contextes `entrainement`, `validation`, `test`), les paramètres (source, imputation, dates de découpage, empreinte), les comptages du rapport et les trois fichiers en artefacts. L'empreinte ne change que si le contenu du jeu ou des anomalies change.
 
 ### Tests
 

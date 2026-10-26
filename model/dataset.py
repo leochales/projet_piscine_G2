@@ -53,6 +53,9 @@ SPLITS = ("entrainement", "validation", "test")
 
 MLFLOW_EXPERIMENT = "jeu-entrainement"
 
+# Gold compte en minutes (nb_mesures, nb_imputees) : une heure du CSV en vaut 60
+MINUTES_PER_HOUR = 60
+
 GOLD_COLUMNS = [
     "id_site",
     "heure",
@@ -132,11 +135,13 @@ def to_gold_format(raw: pd.DataFrame, max_gap: int = MAX_IMPUTED_GAP) -> pd.Data
     # Mêmes précisions que gold : NUMERIC(12, 3) pour les kWh, NUMERIC(10, 2) pour les kW
     data["consommation_kwh"] = data["consommation_kwh"].round(3)
     has_value = data["consommation_kwh"].notna()
-    data["pic_kw"] = data["consommation_kwh"].round(2)
+    imputed = data["methode_imputation"] != "none"
+    # Pic des minutes de l'heure : inconnu avec une mesure horaire, laissé vide
+    data["pic_kw"] = float("nan")
     data["moyenne_kw"] = data["consommation_kwh"].round(2)
-    data["nb_mesures"] = has_value.astype("int64")
-    data["nb_imputees"] = (data["methode_imputation"] != "none").astype("int64")
-    data["taux_couverture"] = data["nb_mesures"].astype("float64")
+    data["nb_mesures"] = has_value.astype("int64") * MINUTES_PER_HOUR
+    data["nb_imputees"] = imputed.astype("int64") * MINUTES_PER_HOUR
+    data["taux_couverture"] = data["nb_mesures"] / MINUTES_PER_HOUR
     data["heure_complete"] = True
     return data[[*GOLD_COLUMNS, "consommation_kwh_brute", "methode_imputation"]]
 
@@ -192,7 +197,7 @@ def _counts(group: pd.DataFrame) -> dict[str, int]:
     return {
         "heures": len(group),
         "brutes_manquantes": int(group["consommation_kwh_brute"].isna().sum()),
-        "imputees": int(group["nb_imputees"].sum()),
+        "imputees": int((group["methode_imputation"] != "none").sum()),
         "restant_manquantes": int(group["consommation_kwh"].isna().sum()),
         "nulles": int((group["consommation_kwh"] == 0).sum()),
     }
@@ -217,10 +222,14 @@ def quality_report(data: pd.DataFrame) -> dict[str, Any]:
     }
 
 
-def fingerprint(data: pd.DataFrame) -> str:
-    """Empreinte du contenu, indépendante du format d'écriture du Parquet."""
-    hashed = pd.util.hash_pandas_object(data, index=False).to_numpy().tobytes()
-    return hashlib.sha256(hashed).hexdigest()
+def fingerprint(data: pd.DataFrame, anomalies: pd.DataFrame) -> str:
+    """Empreinte du jeu et des anomalies, indépendante du format d'écriture du Parquet."""
+    digest = hashlib.sha256()
+    for frame in (data, anomalies):
+        digest.update(
+            pd.util.hash_pandas_object(frame, index=False).to_numpy().tobytes()
+        )
+    return digest.hexdigest()
 
 
 def build(raw_dir: Path, out_dir: Path) -> DatasetFiles:
@@ -234,7 +243,7 @@ def build(raw_dir: Path, out_dir: Path) -> DatasetFiles:
         dataset=out_dir / "dataset.parquet",
         anomalies=out_dir / "anomalies.parquet",
         report=out_dir / "rapport_qualite.json",
-        fingerprint=fingerprint(data),
+        fingerprint=fingerprint(data, anomalies),
     )
     data.to_parquet(files.dataset, index=False)
     anomalies.to_parquet(files.anomalies, index=False)

@@ -71,14 +71,16 @@ class TestFormatGold:
         ]
         assert data["consommation_kwh"].tolist() == [5.0, 6.0, 7.0]
         assert data["consommation_kwh_brute"].isna().tolist() == [False, True, False]
-        assert data["nb_imputees"].tolist() == [0, 1, 0]
+        assert data["nb_mesures"].tolist() == [60, 60, 60]
+        assert data["nb_imputees"].tolist() == [0, 60, 0]
         assert data["taux_couverture"].tolist() == [1.0, 1.0, 1.0]
-        assert (data["pic_kw"] == data["consommation_kwh"]).all()
+        assert (data["moyenne_kw"] == data["consommation_kwh"]).all()
+        assert data["pic_kw"].isna().all()
 
     def test_heure_sans_consommation_a_une_couverture_nulle(self) -> None:
         data = dataset.to_gold_format(_raw({"SITE001": [5.0, NAN, NAN, NAN, 9.0]}))
         assert data["taux_couverture"].tolist() == [1.0, 0.0, 0.0, 0.0, 1.0]
-        assert data["nb_mesures"].tolist() == [1, 0, 0, 0, 1]
+        assert data["nb_mesures"].tolist() == [60, 0, 0, 0, 60]
 
     def test_consommation_negative_traitee_comme_manquante(self) -> None:
         data = dataset.to_gold_format(_raw({"SITE001": [5.0, -3.0, 7.0]}))
@@ -172,10 +174,16 @@ class TestConstruction:
 
     def test_empreinte_stable_et_sensible_au_contenu(self) -> None:
         data = dataset.to_gold_format(_raw({"SITE001": [1.0, 2.0, 3.0]}))
+        anomalies = pd.DataFrame(
+            {"id_site": ["SITE001"], "type": ["spike"], "gravite": ["high"]}
+        )
         changed = data.copy()
         changed.loc[1, "consommation_kwh"] = 9.0
-        assert dataset.fingerprint(data) == dataset.fingerprint(data.copy())
-        assert dataset.fingerprint(data) != dataset.fingerprint(changed)
+        relabeled = anomalies.assign(gravite=["low"])
+        reference = dataset.fingerprint(data, anomalies)
+        assert reference == dataset.fingerprint(data.copy(), anomalies.copy())
+        assert reference != dataset.fingerprint(changed, anomalies)
+        assert reference != dataset.fingerprint(data, relabeled)
 
     def test_main_sans_mlflow(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

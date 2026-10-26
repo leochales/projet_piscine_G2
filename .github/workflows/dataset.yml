@@ -15,7 +15,6 @@ concurrency:
 
 permissions:
   contents: read
-  packages: read
 
 jobs:
   dataset:
@@ -27,10 +26,6 @@ jobs:
       DEPLOY_ENV: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
       DVC_STORE: ${{ vars.DVC_STORE }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
       # Image du modèle publiée avec la version déployée : même commit que l'API en service
       - name: Image déployée
         run: |
@@ -44,21 +39,19 @@ jobs:
           echo "IMAGE_TAG=$tag" >> "$GITHUB_ENV"
           echo "Version déployée : $tag"
 
+      # Code et data/raw.dvc de ce même commit, pas du dernier de la branche (pas encore
+      # déployé si un déploiement a échoué)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.IMAGE_TAG }}
+          persist-credentials: false
+
       # data/raw du commit, depuis le stockage DVC de la VM ; monté par compose-prod.yml
       - name: Récupérer les données brutes
         run: |
           infra/dataset/pull.sh
           echo "DATASET_RAW_DIR=$GITHUB_WORKSPACE/data/raw" >> "$GITHUB_ENV"
 
-      # Le nettoyage de deploy.yml supprime nos images sans conteneur : celle du modèle,
-      # utilisée seulement par ce job, est donc récupérée ici
-      - name: Récupérer l'image du modèle
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          trap 'docker logout ghcr.io >/dev/null' EXIT
-          docker compose -f compose-prod.yml pull --quiet dataset
-
+      # Image du modèle déjà sur la VM : récupérée et gardée par deploy.yml
       - name: Construire le jeu
         run: docker compose -f compose-prod.yml run --rm --pull never dataset

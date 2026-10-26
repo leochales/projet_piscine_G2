@@ -5,6 +5,9 @@
 # Le remote « vm » du dépôt passe par SSH (postes des développeurs). Sur la VM, le stockage
 # est sur le même disque : son adresse est remplacée par le dossier, dans .dvc/config.local
 # (jamais commité).
+#
+# Le checkout efface .dvc/cache et data/raw à chaque run : le cache est donc gardé hors du
+# dépôt, et data/raw n'en est qu'un lien. Seule une nouvelle version des données est copiée.
 set -euo pipefail
 
 store="${DVC_STORE:-/srv/enervision-dvc}"
@@ -17,5 +20,7 @@ if [ ! -x "$venv/bin/dvc" ] || [ "$("$venv/bin/dvc" --version)" != "$version" ];
 fi
 
 "$venv/bin/dvc" config --local core.analytics false
+"$venv/bin/dvc" config --local cache.dir "$HOME/.cache/enervision-dvc"
+"$venv/bin/dvc" config --local cache.type "hardlink,copy"
 "$venv/bin/dvc" remote modify --local vm url "$store"
 "$venv/bin/dvc" pull data/raw.dvc
