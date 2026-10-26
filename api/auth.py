@@ -135,6 +135,20 @@ def retrouver_id_client(session: Session, id_utilisateur: UUID) -> int | None:
     return ligne["id_client"]
 
 
+def lire_roles(contenu: dict[str, Any]) -> frozenset[str]:
+    """Rôles du realm (realm_access.roles), ou aucun si le champ est mal formé.
+
+    Seule une liste de textes est acceptée : un texte seul ("GESTION-CLIENT")
+    serait sinon découpé en caractères, et null ou un objet donnerait une erreur 500.
+    Sans rôle, les routes protégées répondent 403.
+    """
+    realm_access = contenu.get("realm_access")
+    roles = realm_access.get("roles") if isinstance(realm_access, dict) else None
+    if not isinstance(roles, list):
+        return frozenset()
+    return frozenset(role for role in roles if isinstance(role, str))
+
+
 def utilisateur_courant(
     contenu: Annotated[dict[str, Any], Depends(lire_jeton)],
     session: Annotated[Session, Depends(get_session)],
@@ -145,8 +159,7 @@ def utilisateur_courant(
     except ValueError:
         raise refuser_jeton("Jeton invalide") from None
 
-    # « or » : un champ présent mais null est traité comme absent (sinon erreur 500)
-    roles = frozenset((contenu.get("realm_access") or {}).get("roles") or [])
+    roles = lire_roles(contenu)
     id_client = retrouver_id_client(session, id_utilisateur)
     return Utilisateur(id=id_utilisateur, id_client=id_client, roles=roles)
 

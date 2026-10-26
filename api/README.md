@@ -46,13 +46,7 @@ Le test `test_toutes_les_routes_api_exigent_un_jeton` échoue si une route `/api
 
 **Entreprise de l'utilisateur** : le jeton ne dit pas à quelle entreprise (client) appartient l'utilisateur. L'API la lit dans `app.utilisateur`, grâce au `sub` du jeton. Cette ligne est écrite à la création du compte par l'API (`POST /api/utilisateurs`, SMARTOPS-84), qui rattache le nouveau compte à l'entreprise du gestionnaire qui le crée. L'API n'écrit jamais cette ligne à la connexion : un compte créé hors de l'API (par exemple dans la console Keycloak) reçoit un 403, car son entreprise est inconnue.
 
-**Comptes de test en local** : un compte créé à la main dans la console Keycloak est refusé (403), car il n'a pas de ligne dans `app.utilisateur`. Utiliser le script, qui fait les deux :
-
-```bash
-infra/keycloak/creer_utilisateur.sh marie@test.fr Marie Martin CONSULT-CLIENT "Démo EnerVision"
-```
-
-Sous Windows, le lancer depuis Git Bash. Le mot de passe provisoire affiché est à changer à la première connexion.
+**Comptes de test** : se créent dans la console Keycloak (`http://localhost/auth/admin`), puis s'enregistrent dans `app.utilisateur` avec le même identifiant. Sans cette ligne, l'API refuse le compte (403). Marche à suivre : `infra/runner.md`, section « Créer un compte ».
 
 **Tester dans Swagger** : récupérer un jeton depuis le front connecté (outils de développement du navigateur, en-tête `Authorization` d'un appel `/api`), puis le coller avec le bouton « Authorize ».
 

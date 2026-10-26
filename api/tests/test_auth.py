@@ -229,6 +229,26 @@ def test_roles_null_403_et_pas_500(client: TestClient) -> None:
     assert client.get(ROUTE_PROTEGEE, headers=entete(jeton)).status_code == 403
 
 
+@pytest.mark.parametrize(
+    "realm_access",
+    [
+        {"roles": "GESTION-CLIENT"},  # texte seul : pas découpé en caractères
+        {"roles": {"GESTION-CLIENT": True}},
+        {"roles": [["GESTION-CLIENT"], {"role": "GESTION-CLIENT"}]},
+        "GESTION-CLIENT",
+        ["GESTION-CLIENT"],
+    ],
+)
+def test_roles_mal_formes_403_et_pas_500(client: TestClient, realm_access: Any) -> None:
+    jeton = creer_jeton(realm_access=realm_access)
+    assert client.get(ROUTE_PROTEGEE, headers=entete(jeton)).status_code == 403
+
+
+def test_elements_non_textes_ignores(client: TestClient) -> None:
+    jeton = creer_jeton(realm_access={"roles": ["CONSULT-SITE", 3, None]})
+    assert client.get(ROUTE_PROTEGEE, headers=entete(jeton)).status_code == 200
+
+
 # --- Accès autorisé -----------------------------------------------------------
 
 

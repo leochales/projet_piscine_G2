@@ -134,16 +134,40 @@ kcadm get clients -r enervision -q clientId=enervision-front --fields id
 kcadm update clients/<id> -r enervision -s 'redirectUris=["https://<VM_IP>/*"]'
 ```
 
-### Créer le premier administrateur EnerVision
+### Créer un compte (premier administrateur, comptes de test)
 
-L'API n'accepte que les utilisateurs enregistrés dans `app.utilisateur` : c'est là qu'elle trouve leur entreprise. Les comptes sont normalement créés depuis le dashboard (`POST /api/utilisateurs`), mais il faut un premier compte pour s'y connecter. Une seule fois par environnement, sur la VM, depuis le dépôt du runner :
+Les comptes se créent dans Keycloak. En temps normal, ce sont les gestionnaires qui les créent depuis le dashboard (`POST /api/utilisateurs`, SMARTOPS-84). À la main, on passe par l'administration de Keycloak : la console en local (`http://localhost/auth/admin`), `kcadm.sh` sur la VM, où la console n'est pas exposée.
 
-```bash
-COMPOSE="docker compose -p enervision-<env>" \
-  infra/keycloak/creer_utilisateur.sh <email> <prénom> <nom> GESTION-CLIENT --enervision
-```
+**Attention** : l'API n'accepte que les utilisateurs enregistrés dans `app.utilisateur`, car c'est là qu'elle trouve leur entreprise. Un compte créé dans Keycloak sans cette ligne reçoit un 403.
 
-Le script demande le compte et le mot de passe `KEYCLOAK_ADMIN` de l'environnement, crée le compte dans Keycloak et sa ligne dans `app.utilisateur` (sans client : administrateur EnerVision), puis affiche un mot de passe provisoire à changer à la première connexion. Il sert aussi à créer des comptes de test en dev (avec un nom de client à la place de `--enervision`).
+1. Créer le compte dans Keycloak et noter son identifiant (`sub` des jetons). Avec le raccourci `kcadm` ci-dessus :
+
+    ```bash
+    kcadm create users -r enervision -i -s username=<email> -s email=<email> \
+      -s firstName=<prénom> -s lastName=<nom> -s enabled=true
+    # Mot de passe provisoire : demandé sans être affiché, à changer à la première connexion
+    kcadm set-password -r enervision --username <email> --temporary
+    kcadm add-roles -r enervision --uusername <email> --rolename <CONSULT-SITE|CONSULT-CLIENT|GESTION-SITE|GESTION-CLIENT>
+    ```
+
+    Dans la console (local) : *Users* → *Create user*, onglet *Credentials* (mot de passe, *Temporary* sur On), onglet *Role mapping*. L'identifiant est affiché en haut de la fiche de l'utilisateur.
+
+2. Enregistrer le compte dans `app.utilisateur`, avec le même identifiant :
+
+    ```bash
+    docker compose -p enervision-<env> exec db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+    ```
+
+    ```sql
+    -- Compte rattaché à un client
+    INSERT INTO app.utilisateur (id, id_client)
+    SELECT '<sub>', id_client FROM app.client WHERE nom = 'Démo EnerVision';
+
+    -- Administrateur EnerVision (aucun client)
+    INSERT INTO app.utilisateur (id) VALUES ('<sub>');
+    ```
+
+    En local : `docker compose -f compose-local.yml exec db ...`, ou pgAdmin.
 
 ### Changer le secret de `enervision-admin`
 
