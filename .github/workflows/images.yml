@@ -139,8 +139,9 @@ jobs:
           expected="$base/auth/realms/enervision"
           issuer=$(curl -fsSk "$expected/.well-known/openid-configuration" | jq -r .issuer)
           [ "$issuer" = "$expected" ] || { echo "::error::Émetteur Keycloak inattendu : '$issuer'"; exit 1; }
+          # Même adresse interne que l'API (KEYCLOAK_URL_INTERNE de compose-prod.yml)
           internal=$(docker compose -f compose-prod.yml exec -T api python -c \
-            "import json, urllib.request; print(json.load(urllib.request.urlopen('http://keycloak:8080/auth/realms/enervision/.well-known/openid-configuration'))['issuer'])")
+            "import json, os, urllib.request; print(json.load(urllib.request.urlopen(os.environ['KEYCLOAK_URL_INTERNE'] + '/realms/enervision/.well-known/openid-configuration'))['issuer'])")
           [ "$internal" = "$expected" ] || { echo "::error::Émetteur vu par l'API : '$internal'"; exit 1; }
           # Console d'administration et realm master non exposés : servis par le front
           for path in /auth/admin/ /auth/realms/master/.well-known/openid-configuration; do

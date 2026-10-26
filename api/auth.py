@@ -145,7 +145,8 @@ def utilisateur_courant(
     except ValueError:
         raise refuser_jeton("Jeton invalide") from None
 
-    roles = frozenset(contenu.get("realm_access", {}).get("roles", []))
+    # « or » : un champ présent mais null est traité comme absent (sinon erreur 500)
+    roles = frozenset((contenu.get("realm_access") or {}).get("roles") or [])
     id_client = retrouver_id_client(session, id_utilisateur)
     return Utilisateur(id=id_utilisateur, id_client=id_client, roles=roles)
 

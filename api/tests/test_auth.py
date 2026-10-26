@@ -92,6 +92,9 @@ class FausseBase:
         return Resultat([])  # requêtes des routes métier : aucune donnée
 
 
+NUL = object()  # champ présent dans le jeton, avec la valeur null
+
+
 def creer_jeton(
     cle: Any = CLE_KEYCLOAK,
     algorithme: str = "RS256",
@@ -110,7 +113,12 @@ def creer_jeton(
         "realm_access": {"roles": ["CONSULT-SITE"] if roles is None else roles},
     }
     contenu.update(modifications)
-    contenu = {nom: valeur for nom, valeur in contenu.items() if valeur is not None}
+    # None retire le champ du jeton ; NUL le garde avec la valeur null
+    contenu = {
+        nom: None if valeur is NUL else valeur
+        for nom, valeur in contenu.items()
+        if valeur is not None
+    }
     return jwt.encode(contenu, cle, algorithm=algorithme)
 
 
@@ -208,6 +216,16 @@ def test_role_monitoring_seul_403(client: TestClient) -> None:
 
 def test_jeton_sans_realm_access_403(client: TestClient) -> None:
     jeton = creer_jeton(realm_access=None)
+    assert client.get(ROUTE_PROTEGEE, headers=entete(jeton)).status_code == 403
+
+
+def test_realm_access_null_403_et_pas_500(client: TestClient) -> None:
+    jeton = creer_jeton(realm_access=NUL)
+    assert client.get(ROUTE_PROTEGEE, headers=entete(jeton)).status_code == 403
+
+
+def test_roles_null_403_et_pas_500(client: TestClient) -> None:
+    jeton = creer_jeton(realm_access={"roles": None})
     assert client.get(ROUTE_PROTEGEE, headers=entete(jeton)).status_code == 403
 
 

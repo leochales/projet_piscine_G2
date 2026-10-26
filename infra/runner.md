@@ -134,6 +134,17 @@ kcadm get clients -r enervision -q clientId=enervision-front --fields id
 kcadm update clients/<id> -r enervision -s 'redirectUris=["https://<VM_IP>/*"]'
 ```
 
+### Créer le premier administrateur EnerVision
+
+L'API n'accepte que les utilisateurs enregistrés dans `app.utilisateur` : c'est là qu'elle trouve leur entreprise. Les comptes sont normalement créés depuis le dashboard (`POST /api/utilisateurs`), mais il faut un premier compte pour s'y connecter. Une seule fois par environnement, sur la VM, depuis le dépôt du runner :
+
+```bash
+COMPOSE="docker compose -p enervision-<env>" \
+  infra/keycloak/creer_utilisateur.sh <email> <prénom> <nom> GESTION-CLIENT --enervision
+```
+
+Le script demande le compte et le mot de passe `KEYCLOAK_ADMIN` de l'environnement, crée le compte dans Keycloak et sa ligne dans `app.utilisateur` (sans client : administrateur EnerVision), puis affiche un mot de passe provisoire à changer à la première connexion. Il sert aussi à créer des comptes de test en dev (avec un nom de client à la place de `--enervision`).
+
 ### Changer le secret de `enervision-admin`
 
 Le secret est injecté dans le realm à l'import : modifier `<ENV>_KEYCLOAK_ADMIN_CLIENT_SECRET` dans GitHub ne suffit pas.

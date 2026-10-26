@@ -15,7 +15,7 @@ Toutes les routes `/api` demandent un jeton d'accès Keycloak, sauf `/api/health
 
 L'API vérifie (`api/auth.py`) :
 
-- la signature (RS256), avec les clés publiques lues en interne sur `http://keycloak:8080/auth` et gardées en cache ;
+- la signature (RS256), avec les clés publiques lues en interne (`KEYCLOAK_URL_INTERNE`) et gardées en cache ;
 - l'émetteur (`iss`), qui doit valoir l'adresse publique de Keycloak (`KEYCLOAK_EMETTEUR`, calculée à partir de `FRONT_URL` dans les compose) ;
 - l'audience (`enervision-api`) et l'expiration ;
 - les rôles du realm (`realm_access.roles`).
@@ -46,11 +46,19 @@ Le test `test_toutes_les_routes_api_exigent_un_jeton` échoue si une route `/api
 
 **Entreprise de l'utilisateur** : le jeton ne dit pas à quelle entreprise (client) appartient l'utilisateur. L'API la lit dans `app.utilisateur`, grâce au `sub` du jeton. Cette ligne est écrite à la création du compte par l'API (`POST /api/utilisateurs`, SMARTOPS-84), qui rattache le nouveau compte à l'entreprise du gestionnaire qui le crée. L'API n'écrit jamais cette ligne à la connexion : un compte créé hors de l'API (par exemple dans la console Keycloak) reçoit un 403, car son entreprise est inconnue.
 
+**Comptes de test en local** : un compte créé à la main dans la console Keycloak est refusé (403), car il n'a pas de ligne dans `app.utilisateur`. Utiliser le script, qui fait les deux :
+
+```bash
+infra/keycloak/creer_utilisateur.sh marie@test.fr Marie Martin CONSULT-CLIENT "Démo EnerVision"
+```
+
+Sous Windows, le lancer depuis Git Bash. Le mot de passe provisoire affiché est à changer à la première connexion.
+
 **Tester dans Swagger** : récupérer un jeton depuis le front connecté (outils de développement du navigateur, en-tête `Authorization` d'un appel `/api`), puis le coller avec le bouton « Authorize ».
 
 | Variable | Par défaut | Rôle |
 |---|---|---|
-| `KEYCLOAK_URL_INTERNE` | `http://keycloak:8080/auth` | Adresse de Keycloak sur le réseau Docker (lecture des clés) |
+| `KEYCLOAK_URL_INTERNE` | `http://keycloak:8080/auth` | Adresse de Keycloak sur le réseau Docker (lecture des clés). Sur la VM : `http://keycloak-<env>:8080/auth`, car le nom `keycloak` désigne aussi le Keycloak de l'autre environnement sur `traefik_public` |
 | `KEYCLOAK_EMETTEUR` | `http://localhost/auth/realms/enervision` | Émetteur attendu dans les jetons |
 | `KEYCLOAK_AUDIENCE` | `enervision-api` | Audience attendue |
 
