@@ -134,6 +134,50 @@ kcadm get clients -r enervision -q clientId=enervision-front --fields id
 kcadm update clients/<id> -r enervision -s 'redirectUris=["https://<VM_IP>/*"]'
 ```
 
+### Créer un compte (premier administrateur, comptes de test)
+
+Les comptes se créent dans Keycloak. En temps normal, ce sont les gestionnaires qui les créent depuis le dashboard (`POST /api/utilisateurs`, SMARTOPS-84). À la main, on passe par l'administration de Keycloak : la console en local (`http://localhost/auth/admin`), `kcadm.sh` sur la VM, où la console n'est pas exposée.
+
+**Attention** : l'API n'accepte que les utilisateurs enregistrés dans `app.utilisateur`, car c'est là qu'elle trouve leur entreprise. Un compte créé dans Keycloak sans cette ligne reçoit un 403.
+
+1. Créer le compte dans Keycloak et noter son identifiant (`sub` des jetons). Avec le raccourci `kcadm` ci-dessus :
+
+    ```bash
+    kcadm create users -r enervision -i -s username=<email> -s email=<email> \
+      -s firstName=<prénom> -s lastName=<nom> -s enabled=true
+    # Mot de passe provisoire : demandé sans être affiché, à changer à la première connexion
+    kcadm set-password -r enervision --username <email> --temporary
+    kcadm add-roles -r enervision --uusername <email> --rolename <CONSULT-SITE|CONSULT-CLIENT|GESTION-SITE|GESTION-CLIENT>
+    ```
+
+    Dans la console (local) : *Users* → *Create user*, onglet *Credentials* (mot de passe, *Temporary* sur On), onglet *Role mapping*. L'identifiant est affiché en haut de la fiche de l'utilisateur.
+
+2. Enregistrer le compte dans `app.utilisateur`, avec le même identifiant :
+
+    ```bash
+    docker compose -p enervision-<env> exec db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+    ```
+
+    ```sql
+    -- Compte rattaché à un client. INTO STRICT : erreur si le nom du client est mal
+    -- écrit, au lieu d'un INSERT 0 0 silencieux (le compte recevrait alors un 403)
+    DO $$
+    DECLARE
+        client BIGINT;
+    BEGIN
+        SELECT id_client INTO STRICT client FROM app.client WHERE nom = 'Démo EnerVision';
+        INSERT INTO app.utilisateur (id, id_client) VALUES ('<sub>', client);
+    END
+    $$;
+
+    -- Administrateur EnerVision (aucun client)
+    INSERT INTO app.utilisateur (id) VALUES ('<sub>');
+    ```
+
+    Noms des clients existants : `SELECT nom FROM app.client;`
+
+    En local : `docker compose -f compose-local.yml exec db ...`, ou pgAdmin.
+
 ### Changer le secret de `enervision-admin`
 
 Le secret est injecté dans le realm à l'import : modifier `<ENV>_KEYCLOAK_ADMIN_CLIENT_SECRET` dans GitHub ne suffit pas.

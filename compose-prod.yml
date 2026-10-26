@@ -64,7 +64,7 @@ services:
       FRONT_DEV_URL: ${FRONT_URL}
       # Servi par Traefik sous /auth, à la même adresse que le front : https://<VM_IP>/auth
       # (prod) ou https://<VM_IP>:8443/auth (dev). L'adresse publique fixe l'émetteur (iss)
-      # des jetons ; l'API joint quand même Keycloak en interne (keycloak:8080/auth).
+      # des jetons ; l'API joint quand même Keycloak en interne (keycloak-<env>:8080/auth).
       KC_HTTP_RELATIVE_PATH: /auth
       KC_HOSTNAME: ${FRONT_URL}/auth
       KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
@@ -93,8 +93,12 @@ services:
       db:
         condition: service_healthy
     networks:
-      - postgres_network
-      - traefik_public
+      postgres_network:
+        # Nom propre à l'environnement : dev et prod partagent traefik_public, où le
+        # nom « keycloak » désigne les deux Keycloak. L'API utilise cet alias.
+        aliases:
+          - keycloak-${DEPLOY_ENV}
+      traefik_public:
 
   api:
     image: ${IMAGE_REPO:?IMAGE_REPO manquant}/enervision-api:${IMAGE_TAG:?IMAGE_TAG manquant}
@@ -108,6 +112,11 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: api
       POSTGRES_PASSWORD: ${API_DB_PASSWORD}
+      # Émetteur des jetons = adresse publique de Keycloak (même valeur que KC_HOSTNAME)
+      KEYCLOAK_EMETTEUR: ${FRONT_URL}/auth/realms/enervision
+      # Clés de signature lues en interne, sur le Keycloak de CET environnement : pas
+      # « keycloak », ambigu sur traefik_public (partagé par dev et prod)
+      KEYCLOAK_URL_INTERNE: http://keycloak-${DEPLOY_ENV}:8080/auth
     labels:
       - traefik.enable=true
       - traefik.http.routers.enervision-${DEPLOY_ENV}-api.rule=PathPrefix(`/api`)
@@ -116,6 +125,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      keycloak:
+        condition: service_started
     networks:
       - postgres_network
       - traefik_public

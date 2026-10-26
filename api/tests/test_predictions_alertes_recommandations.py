@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -7,18 +8,23 @@ from uuid import UUID
 import pytest
 from fastapi.testclient import TestClient
 
+from api.auth import utilisateur_courant
 from api.main import app
+from api.routers.health import database_status
 from api.routers.predictions import calculer_fenetre
 from api.tests.fausse_session import FausseSession
+from api.tests.utilisateur_autorise import UTILISATEUR_AUTORISE
 from common.db import get_session
 
 # Les requêtes SQL elles-mêmes (prévision la plus récente par heure, ordre des
 # alertes, sites actifs, 0 € sans recommandation acceptée) ne sont pas
 # exécutées ici : ces tests vérifient les réponses et les paramètres envoyés.
+# Les règles d'accès sont testées dans test_auth.py : ici, un utilisateur autorisé.
 
 
 @pytest.fixture
 def client() -> Iterator[TestClient]:
+    app.dependency_overrides[utilisateur_courant] = lambda: UTILISATEUR_AUTORISE
     yield TestClient(app)
     app.dependency_overrides.clear()
 
@@ -158,7 +164,12 @@ def test_alertes_par_defaut_seulement_en_cours(client: TestClient) -> None:
 
     client.get("/api/alertes")
 
-    assert session.parametres == {"en_cours": True, "id_site": None, "limite": 100}
+    assert session.parametres == {
+        "id_client": 1,
+        "en_cours": True,
+        "id_site": None,
+        "limite": 100,
+    }
 
 
 def test_alertes_filtre_par_site_et_inclut_les_terminees(client: TestClient) -> None:
@@ -167,7 +178,12 @@ def test_alertes_filtre_par_site_et_inclut_les_terminees(client: TestClient) -> 
     response = client.get("/api/alertes?en_cours=false&id_site=SITE002&limite=20")
 
     assert response.status_code == 200
-    assert session.parametres == {"en_cours": False, "id_site": "SITE002", "limite": 20}
+    assert session.parametres == {
+        "id_client": 1,
+        "en_cours": False,
+        "id_site": "SITE002",
+        "limite": 20,
+    }
 
 
 @pytest.mark.parametrize("limite", [0, 501])
@@ -231,6 +247,7 @@ def test_recommandations_filtre_par_site_et_statut(client: TestClient) -> None:
 
     assert response.status_code == 200
     assert session.parametres == {
+        "id_client": 1,
         "id_site": "SITE002",
         "statut": "proposee",
         "limite": 100,
@@ -242,7 +259,12 @@ def test_recommandations_sans_filtre(client: TestClient) -> None:
 
     client.get("/api/recommandations")
 
-    assert session.parametres == {"id_site": None, "statut": None, "limite": 100}
+    assert session.parametres == {
+        "id_client": 1,
+        "id_site": None,
+        "statut": None,
+        "limite": 100,
+    }
 
 
 def test_recommandations_refuse_un_statut_inconnu(client: TestClient) -> None:
@@ -277,3 +299,74 @@ def test_economies_par_site(client: TestClient) -> None:
             "economies_eur": 500.0,
         },
     ]
+
+
+# --- Cloisonnement par client ---------------------------------------------------
+
+ROUTES_DE_DONNEES = [
+    "/api/sites/derniere-mesure",
+    "/api/sites/SITE001/consommation",
+    "/api/sites/SITE001/predictions",
+    "/api/alertes",
+    "/api/recommandations",
+    "/api/recommandations/economies",
+]
+
+
+@pytest.mark.parametrize("url", ROUTES_DE_DONNEES)
+def test_chaque_route_ne_lit_que_le_client_de_l_utilisateur(
+    client: TestClient, url: str
+) -> None:
+    session = brancher([])
+
+    assert client.get(url).status_code == 200
+
+    assert session.parametres["id_client"] == UTILISATEUR_AUTORISE.id_client
+    assert "s.id_client = :id_client" in session.requete
+
+
+@pytest.mark.parametrize("url", ROUTES_DE_DONNEES)
+def test_un_administrateur_enervision_voit_tous_les_clients(
+    client: TestClient, url: str
+) -> None:
+    administrateur = replace(UTILISATEUR_AUTORISE, id_client=None)
+    app.dependency_overrides[utilisateur_courant] = lambda: administrateur
+    session = brancher([])
+
+    assert client.get(url).status_code == 200
+
+    assert session.parametres["id_client"] is None
+
+
+# --- Paramètres inconnus ----------------------------------------------------------
+
+
+@pytest.mark.parametrize("url", ROUTES_DE_DONNEES)
+@pytest.mark.parametrize("parametre", ["inconnu=1", "=null", "id_stie=SITE001"])
+def test_un_parametre_inconnu_est_refuse(
+    client: TestClient, url: str, parametre: str
+) -> None:
+    # Sinon une faute de frappe renverrait les données sans filtre, sans erreur
+    brancher([])
+
+    response = client.get(f"{url}?{parametre}")
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["type"] == "extra_forbidden"
+
+
+def test_les_parametres_declares_restent_acceptes(client: TestClient) -> None:
+    brancher([])
+    url = "/api/recommandations?id_site=SITE001&statut=proposee&limite=10"
+    assert client.get(url).status_code == 200
+
+
+def test_un_parametre_inconnu_est_refuse_sur_health(client: TestClient) -> None:
+    app.dependency_overrides[database_status] = lambda: True
+    assert client.get("/api/health?debug=1").status_code == 422
+
+
+def test_sans_jeton_le_401_passe_avant_le_422() -> None:
+    # Pas d'utilisateur simulé ici : l'authentification est vérifiée pour de bon
+    with TestClient(app) as anonyme:
+        assert anonyme.get("/api/alertes?inconnu=1").status_code == 401
