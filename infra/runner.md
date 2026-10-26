@@ -9,7 +9,7 @@ Un **runner GitHub auto-hébergé**, installé sur la VM, exécute le workflow [
 
 Les deux environnements ont leurs propres conteneurs, volumes et base. Un **Traefik partagé** ([`infra/traefik/compose.yml`](traefik/compose.yml)) les sert en HTTPS, chacun sur son port, car la VM n'a pas de nom de domaine. Un lancement manuel sur une autre branche ne déploie rien (run *skipped*).
 
-Keycloak est servi à la même adresse, sous `/auth` (`https://<VM_IP>/auth`, `https://<VM_IP>:8443/auth`). Seuls le realm `enervision` (`/auth/realms/enervision`) et les fichiers des pages de connexion (`/auth/resources`) sont routés : la console d'administration et le realm `master` ne sont pas exposés. L'administration se fait avec `kcadm.sh` (voir [Faire évoluer le realm Keycloak](#faire-évoluer-le-realm-keycloak)).
+Keycloak est servi à la même adresse, sous `/auth` (`https://<VM_IP>/auth`, `https://<VM_IP>:8443/auth`). La console d'administration est sur `https://<VM_IP>/auth/admin` (prod) et `https://<VM_IP>:8443/auth/admin` (dev), avec l'administrateur du realm `master` (`<ENV>_KEYCLOAK_ADMIN`). Chaque déploiement active la protection contre les essais de mots de passe sur ce realm : 5 échecs bloquent le compte 15 minutes, puis plus longtemps, jusqu'à 1 heure. `kcadm.sh` reste utilisable dans le conteneur (voir [Faire évoluer le realm Keycloak](#faire-évoluer-le-realm-keycloak)).
 
 ---
 
@@ -159,7 +159,7 @@ Keycloak démarre avec `--import-realm` : il importe [`infra/keycloak/realm-ener
 Conséquence : une modification du JSON (rôle, redirect URI, politique de mot de passe, client…) n'atteint **pas** les environnements déjà déployés. Pour faire évoluer le realm :
 
 1. Modifier le JSON et le commiter : il reste la référence pour le local et les futurs environnements.
-2. Reporter le même changement sur dev, vérifier, puis sur prod, avec `kcadm.sh` dans le conteneur (la console d'administration n'est pas exposée sur la VM).
+2. Reporter le même changement sur dev, vérifier, puis sur prod, dans la console d'administration ou avec `kcadm.sh` dans le conteneur.
 
 Ne pas supprimer le realm pour forcer un nouvel import : les comptes des utilisateurs seraient perdus.
 
@@ -183,7 +183,7 @@ kcadm update clients/<id> -r enervision -s 'redirectUris=["https://<VM_IP>/*"]'
 
 ### Créer un compte (premier administrateur, comptes de test)
 
-Les comptes se créent dans Keycloak. En temps normal, ce sont les gestionnaires qui les créent depuis le dashboard (`POST /api/utilisateurs`, SMARTOPS-84). À la main, on passe par l'administration de Keycloak : la console en local (`http://localhost/auth/admin`), `kcadm.sh` sur la VM, où la console n'est pas exposée.
+Les comptes se créent dans Keycloak. En temps normal, ce sont les gestionnaires qui les créent depuis le dashboard (`POST /api/utilisateurs`, SMARTOPS-84). À la main, on passe par l'administration de Keycloak : la console (`http://localhost/auth/admin` en local, `https://<VM_IP>[:8443]/auth/admin` sur la VM) ou `kcadm.sh`.
 
 **Attention** : l'API n'accepte que les utilisateurs enregistrés dans `app.utilisateur`, car c'est là qu'elle trouve leur entreprise. Un compte créé dans Keycloak sans cette ligne reçoit un 403.
 
@@ -197,7 +197,7 @@ Les comptes se créent dans Keycloak. En temps normal, ce sont les gestionnaires
     kcadm add-roles -r enervision --uusername <email> --rolename <CONSULT-SITE|CONSULT-CLIENT|GESTION-SITE|GESTION-CLIENT>
     ```
 
-    Dans la console (local) : *Users* → *Create user*, onglet *Credentials* (mot de passe, *Temporary* sur On), onglet *Role mapping*. L'identifiant est affiché en haut de la fiche de l'utilisateur.
+    Dans la console : realm `enervision`, *Users* → *Create user*, onglet *Credentials* (mot de passe, *Temporary* sur On), onglet *Role mapping*. L'identifiant est affiché en haut de la fiche de l'utilisateur.
 
 2. Enregistrer le compte dans `app.utilisateur`, avec le même identifiant :
 

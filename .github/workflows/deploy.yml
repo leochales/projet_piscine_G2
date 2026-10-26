@@ -217,6 +217,26 @@ jobs:
           docker compose -p "enervision-${DEPLOY_ENV}" logs --tail=50 api
           exit 1
 
+      # Console d'administration exposée : le realm master bloque un compte après 5 mots de
+      # passe faux (15 min, puis plus longtemps). Un échec (mot de passe administrateur changé
+      # dans Keycloak depuis le premier démarrage) n'arrête pas le déploiement.
+      - name: Protéger la connexion à la console Keycloak
+        continue-on-error: true
+        run: |
+          kcadm() {
+            docker compose -f compose-prod.yml exec -T -e KC_CLI_PASSWORD keycloak \
+              /opt/keycloak/bin/kcadm.sh "$@" --config /tmp/kcadm-deploy.config
+          }
+          # Jeton de session kcadm : effacé du conteneur, même en cas d'échec
+          trap 'docker compose -f compose-prod.yml exec -T keycloak rm -f /tmp/kcadm-deploy.config' EXIT
+          if ! KC_CLI_PASSWORD="$KEYCLOAK_ADMIN_PASSWORD" kcadm config credentials \
+               --server http://localhost:8080/auth --realm master --user "$KEYCLOAK_ADMIN"; then
+            echo "::warning::Connexion kcadm refusée ($DEPLOY_ENV) : protection du realm master non vérifiée"
+            exit 1
+          fi
+          kcadm update realms/master -s bruteForceProtected=true -s failureFactor=5 \
+            -s waitIncrementSeconds=900 -s maxFailureWaitSeconds=3600 -s permanentLockout=false
+
       # Images orphelines, et anciennes versions de nos images qu'aucun conteneur
       # (dev ou prod) n'utilise plus. Elles restent récupérables sur GHCR.
       - name: Nettoyer les anciennes images

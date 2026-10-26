@@ -74,10 +74,10 @@ services:
       - ./infra/keycloak/realm-enervision.json:/opt/keycloak/data/import/realm-enervision.json:ro
     labels:
       - traefik.enable=true
-      # Seulement le realm enervision (connexion, jetons, clés) et les fichiers des pages.
-      # La console d'administration et le realm master ne sont pas exposés : ils
-      # tombent sur la route du front. Administration avec kcadm (infra/runner.md).
-      - traefik.http.routers.enervision-${DEPLOY_ENV}-auth.rule=PathPrefix(`/auth/realms/enervision`) || PathPrefix(`/auth/resources`)
+      # Tout Keycloak : realm enervision (connexion, jetons, clés), console d'administration
+      # (/auth/admin) et realm master, où se connectent ses administrateurs. Santé et
+      # métriques restent sur le port de gestion (9000), non routé.
+      - traefik.http.routers.enervision-${DEPLOY_ENV}-auth.rule=PathPrefix(`/auth`)
       - traefik.http.routers.enervision-${DEPLOY_ENV}-auth.entrypoints=https-${DEPLOY_ENV}
       - traefik.http.services.enervision-${DEPLOY_ENV}-auth.loadbalancer.server.port=8080
     healthcheck:

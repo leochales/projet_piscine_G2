@@ -146,11 +146,12 @@ jobs:
           internal=$(docker compose -f compose-prod.yml exec -T api python -c \
             "import json, os, urllib.request; print(json.load(urllib.request.urlopen(os.environ['KEYCLOAK_URL_INTERNE'] + '/realms/enervision/.well-known/openid-configuration'))['issuer'])")
           [ "$internal" = "$expected" ] || { echo "::error::Émetteur vu par l'API : '$internal'"; exit 1; }
-          # Console d'administration et realm master non exposés : servis par le front
-          for path in /auth/admin/ /auth/realms/master/.well-known/openid-configuration; do
-            curl -fsSk "$base$path" | grep -q '<div id="app"' \
-              || { echo "::error::$path ne doit pas être routé vers Keycloak"; exit 1; }
-          done
+          # Console d'administration et realm master servis par Keycloak, pas par le front
+          master=$(curl -fsSk "$base/auth/realms/master/.well-known/openid-configuration" | jq -r .issuer)
+          [ "$master" = "$base/auth/realms/master" ] \
+            || { echo "::error::Realm master non routé vers Keycloak : '$master'"; exit 1; }
+          curl -fsSkL "$base/auth/admin/master/console/" | grep -q '<title>Keycloak Administration Console' \
+            || { echo "::error::/auth/admin n'est pas routé vers la console Keycloak"; exit 1; }
           # Scripts db/ : chaque compte de service se connecte avec son mot de passe.
           # -h db (réseau Docker) et non 127.0.0.1, où l'image postgres ne demande aucun
           # mot de passe (trust dans pg_hba.conf) : le test ne prouverait rien.
