@@ -199,6 +199,9 @@ jobs:
       - name: Compte de test et jeton Keycloak
         env:
           CI_TEST_PASSWORD: ci-schemathesis-mot-de-passe
+          # Le realm prend l'e-mail comme identifiant (registrationEmailAsUsername) :
+          # on se connecte avec l'e-mail, pas avec un nom d'utilisateur
+          CI_TEST_EMAIL: ci-schemathesis@example.test
         run: |
           kcadm() {
             docker compose -f compose-prod.yml exec -T -e KC_CLI_PASSWORD keycloak \
@@ -211,8 +214,8 @@ jobs:
           kcadm update "clients/$id_front" -r enervision -s directAccessGrantsEnabled=true
           # Jeton valable 30 min : le temps de toute la campagne Schemathesis
           kcadm update realms/enervision -s accessTokenLifespan=1800
-          id_user=$(kcadm create users -r enervision -i -s username=ci-schemathesis \
-            -s email=ci-schemathesis@example.test -s firstName=CI -s lastName=Schemathesis \
+          id_user=$(kcadm create users -r enervision -i -s "email=$CI_TEST_EMAIL" \
+            -s firstName=CI -s lastName=Schemathesis \
             -s enabled=true -s emailVerified=true)
           KC_CLI_PASSWORD="$CI_TEST_PASSWORD" kcadm set-password -r enervision --userid "$id_user"
           kcadm add-roles -r enervision --uid "$id_user" --rolename GESTION-CLIENT
@@ -220,10 +223,16 @@ jobs:
             psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
             -c "INSERT INTO app.utilisateur (id) VALUES ('$id_user')"
 
-          token=$(curl -fsSk https://localhost:8443/auth/realms/enervision/protocol/openid-connect/token \
-            -d grant_type=password -d client_id=enervision-front -d username=ci-schemathesis \
-            --data-urlencode "password=$CI_TEST_PASSWORD" | jq -r .access_token)
-          [ -n "$token" ] && [ "$token" != null ] || { echo "::error::Pas de jeton Keycloak"; exit 1; }
+          # Sans -f : en cas de refus, on affiche la raison donnée par Keycloak
+          reponse=$(curl -sSk https://localhost:8443/auth/realms/enervision/protocol/openid-connect/token \
+            -d grant_type=password -d client_id=enervision-front \
+            --data-urlencode "username=$CI_TEST_EMAIL" \
+            --data-urlencode "password=$CI_TEST_PASSWORD")
+          token=$(jq -r '.access_token // empty' <<<"$reponse")
+          [ -n "$token" ] || {
+            echo "::error::Pas de jeton Keycloak : $(jq -r '.error_description // .error // .' <<<"$reponse")"
+            exit 1
+          }
           echo "::add-mask::$token"
           echo "API_TOKEN=$token" >> "$GITHUB_ENV"
 
