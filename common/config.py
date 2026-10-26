@@ -27,6 +27,21 @@ class Settings(BaseSettings):
     # API Mock externe — source de données IoT simulées
     mock_api_url: str = "http://10.43.43.80:8000"
 
+    # Keycloak. L'API lit les clés de signature en interne (réseau Docker), mais
+    # l'émetteur des jetons (iss) est l'adresse publique, vue par le navigateur.
+    keycloak_url_interne: str = "http://keycloak:8080/auth"
+    keycloak_realm: str = "enervision"
+    keycloak_emetteur: str = "http://localhost/auth/realms/enervision"
+    keycloak_audience: str = "enervision-api"
+
+    @property
+    def keycloak_url_cles(self) -> str:
+        """Adresse des clés publiques (JWKS) du realm, jointe en interne."""
+        return (
+            f"{self.keycloak_url_interne}/realms/{self.keycloak_realm}"
+            "/protocol/openid-connect/certs"
+        )
+
     @property
     def database_url(self) -> str:
         password = self.postgres_password.get_secret_value()

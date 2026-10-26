@@ -18,10 +18,10 @@ import { formatEur } from '@/lib/format'
 import { SEVERITY_LABELS } from '@/lib/labels'
 import { useRequest } from '@/lib/request'
 import { useOperationsStore } from '@/stores/operations'
-import { useUserStore } from '@/stores/user'
+import { ACTION_ROLES, useUserStore } from '@/stores/user'
 
 const user = useUserStore()
-const { role } = storeToRefs(user)
+const readOnly = computed(() => !user.hasAnyRole(ACTION_ROLES))
 
 const operations = useOperationsStore()
 const { alerts, recommendations, savings, pending } = storeToRefs(operations)
@@ -62,8 +62,8 @@ async function acknowledge(alertId: string) {
 <template>
   <section class="space-y-4">
     <h1 class="sr-only">Alertes et recommandations</h1>
-    <p v-if="role === 'direction'" class="text-sm text-muted-foreground">
-      Lecture seule : les actions sont réservées aux responsables.
+    <p v-if="readOnly" class="text-sm text-muted-foreground">
+      Lecture seule : les actions sont réservées aux gestionnaires.
     </p>
 
     <RequestError

@@ -21,9 +21,10 @@ export default defineConfig(({ mode }) => {
     server: {
       host: true,
       port: 5173,
-      // En dev, /api passe par Traefik comme en production : pas de CORS
+      // En dev, /api et /auth (Keycloak) passent par Traefik comme en production : pas de CORS
       proxy: {
         '/api': `http://localhost:${env.HTTP_PORT || 80}`,
+        '/auth': `http://localhost:${env.HTTP_PORT || 80}`,
       },
     },
   }

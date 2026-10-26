@@ -62,7 +62,7 @@ class ReadingKey(BaseModel):
 
 
 class EnergyReading(ReadingKey):
-    """GET /api/v1/readings : une mesure complète.
+    """GET /api/v1/sites/{site_id}/current : une mesure complète.
 
     ``consumption_kwh`` est volontairement absent : l'API le renvoie toujours
     égal à ``consumption_kw``, ce n'est pas une énergie. Les kWh sont
@@ -78,3 +78,29 @@ class EnergyReading(ReadingKey):
     humidity_percent: float | None = None
     null_reasons: list[NullReason] = []
     data_quality: DataQuality = "good"
+
+
+SensorName = Literal["consumption", "electrical", "temperature", "humidity", "network"]
+
+
+class SensorState(BaseModel):
+    """État d'un capteur dans GET /api/v1/sensors/status."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    status: Literal["ok", "failing"]
+    # Date de rétablissement prévue (sans fuseau dans l'API : UTC)
+    failing_until: UtcDatetime | None = None
+
+
+class SiteSensors(BaseModel):
+    """GET /api/v1/sensors/status : capteurs d'un site, sous sa clé site_id.
+
+    ``overall`` vaut ``degraded`` dès qu'un capteur est en panne, et
+    ``critical`` en cas de perte réseau (aucune donnée transmise).
+    """
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    sensors: dict[SensorName, SensorState]
+    overall: Literal["ok", "degraded", "critical"]

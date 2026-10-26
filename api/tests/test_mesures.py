@@ -7,14 +7,17 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from api.auth import utilisateur_courant
 from api.main import app
 from api.routers.mesures import calculer_cout, calculer_periode
 from api.tests.fausse_session import FausseSession
+from api.tests.utilisateur_autorise import UTILISATEUR_AUTORISE
 from common.db import get_session
 
 
 @pytest.fixture
 def client() -> Iterator[TestClient]:
+    app.dependency_overrides[utilisateur_courant] = lambda: UTILISATEUR_AUTORISE
     yield TestClient(app)
     app.dependency_overrides.clear()
 
