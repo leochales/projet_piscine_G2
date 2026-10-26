@@ -5,22 +5,31 @@ collect() :
      dans ``app`` : les sites sont déclarés par l'application
      (``db/08_sites_demo.sql`` pour la démo). Les sites de l'API Mock non
      déclarés sont ignorés et signalés dans les logs.
-  2. Pour chaque site, récupère les mesures manquantes via GET
-     /api/v1/readings et les insère dans ``bronze.raw_readings``.
+  2. Pour chaque site, lit la mesure instantanée via
+     GET /api/v1/sites/{site_id}/current et l'insère dans
+     ``bronze.raw_readings``.
 
-Grille fixe de 60 s : l'API renvoie toujours ``limit`` points répartis sur
-la fenêtre demandée (pas = (end − start) / limit, fin exclue). On choisit
-donc des bornes alignées sur la minute et ``limit`` = nombre de minutes, pour
-obtenir des horodatages déterministes (hh:mm:00). La contrainte
-UNIQUE (id_site, horodatage) de bronze rend alors la collecte idempotente.
+Lancé toutes les minutes. /current est la seule source temps réel de l'API
+Mock (pannes capteurs, pics simulés). /api/v1/readings tire au contraire un
+historique aléatoire, différent à chaque appel : il ne sert qu'à l'amorçage
+d'une base neuve (``etl.bootstrap``, lancé à part), jamais à la collecte
+minute ni à combler un trou (sinon bronze contient des valeurs inventées et
+les vraies coupures sont masquées).
 
-Appelable à chaque minute comme au premier démarrage : sans mesure en base,
-on remonte DEFAULT_BACKFILL ; après une coupure, on rattrape au plus
-MAX_BACKFILL.
+Grille de 60 s : la clé de bronze est la minute pleine (UTC) du passage,
+prise sur notre horloge. L'horodatage de /current n'est pas utilisé pour la
+clé : l'horloge de l'API Mock retarde d'environ 31 s, si bien qu'un passage
+lancé à hh:mm:00 par le cron tombe tantôt dans la minute précédente, tantôt
+dans la courante selon le temps de démarrage, ce qui créerait doublons et
+trous. Le payload brut, avec son horodatage exact, est conservé tel quel.
+La contrainte UNIQUE (id_site, horodatage) rend la collecte idempotente : deux passages
+dans la même minute ne gardent que la première mesure. Une minute sans
+passage reste un trou, que silver rend visible (``no_reading``) et impute
+s'il est court.
 
 Codes de sortie :
   0 : au moins un site a répondu
-  1 : tous les sites ont échoué (API Mock inaccessible, 400/500, timeout…)
+  1 : tous les sites ont échoué (API Mock inaccessible, 4xx/5xx, timeout…)
   2 : aucun site actif déclaré dans app.site
 """
 
@@ -29,33 +38,27 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import requests
 from pydantic import ValidationError
 from sqlalchemy import Connection, text
+from sqlalchemy.exc import SQLAlchemyError
 
 from common.db import get_engine
 from common.logs import configure_logging
-from etl.api_client import READINGS_MAX_LIMIT, get_readings_history, get_sites
+from etl.api_client import get_current_reading, get_sites
+from etl.grid import floor_to_step, to_utc
 from etl.schemas import ReadingKey, SiteInfo
 
 logger = logging.getLogger(__name__)
 
-# Pas de la grille de mesures
-STEP = timedelta(seconds=60)
-
-# L'horloge de l'API Mock retarde d'une vingtaine de secondes : demander
-# des données jusqu'à « maintenant » renvoie un 400 (« données dans le futur »).
-SAFETY_LAG = timedelta(minutes=2)
-
-# Profondeur remontée pour un site sans aucune mesure en base
-DEFAULT_BACKFILL = timedelta(hours=24)
-
-# Rattrapage maximal après une coupure, pour borner le nombre d'appels
-MAX_BACKFILL = timedelta(days=7)
+# Écart maximal toléré entre l'horodatage de la mesure et notre horloge.
+# L'horloge de l'API Mock retarde d'environ 31 s ; au-delà de ce seuil, la
+# mesure n'est pas « actuelle » et elle est écartée.
+MAX_CLOCK_SKEW = timedelta(minutes=5)
 
 # Au-delà de ce retard, un site est considéré comme « rassis »
 STALE_THRESHOLD = timedelta(minutes=10)
@@ -67,81 +70,32 @@ EXIT_ALL_SITES_FAILED = 1
 EXIT_NO_DECLARED_SITE = 2
 
 
-@dataclass(frozen=True)
-class Window:
-    """Fenêtre [start, end[ à demander à l'API, avec ``limit`` points."""
-
-    start: datetime
-    end: datetime
-    limit: int
+class ReadingRejected(Exception):
+    """Réponse de /current inutilisable (clé illisible, autre site, horodatage aberrant)."""
 
 
-def floor_to_step(ts: datetime) -> datetime:
-    """Arrondit à la minute inférieure, en UTC."""
-    ts = ts.astimezone(UTC)
-    return ts.replace(second=0, microsecond=0)
+def reading_slot(id_site: str, reading: dict[str, Any], now: datetime) -> datetime:
+    """Minute de la grille (UTC) à laquelle ranger une mesure de /current.
 
+    C'est la minute de ``now`` (début du passage), pas celle de l'horodatage
+    de l'API, décalé (voir l'en-tête du module).
 
-def plan_windows(watermark: datetime | None, now: datetime) -> list[Window]:
-    """Découpe la période à collecter en fenêtres alignées sur la grille.
-
-    ``watermark`` est le dernier horodatage déjà en bronze pour le site (ou
-    None). La période va de la minute qui suit le watermark jusqu'à
-    ``now − SAFETY_LAG``, tronquée à MAX_BACKFILL. Chaque fenêtre couvre au
-    plus READINGS_MAX_LIMIT minutes.
+    Lève ReadingRejected si la clé est illisible, si la mesure concerne un
+    autre site ou si son horodatage est trop loin de ``now``.
     """
-    last = floor_to_step(now - SAFETY_LAG)
-    if watermark is None:
-        first = last - DEFAULT_BACKFILL
-    else:
-        # floor puis + STEP : un watermark hors grille (ancienne collecte)
-        # repart sur la minute pleine suivante
-        first = max(floor_to_step(watermark) + STEP, last - MAX_BACKFILL)
-
-    windows: list[Window] = []
-    while first <= last:
-        remaining = (last - first) // STEP + 1
-        n = min(remaining, READINGS_MAX_LIMIT)
-        windows.append(Window(start=first, end=first + n * STEP, limit=n))
-        first += n * STEP
-    return windows
-
-
-def select_readings(
-    id_site: str, window: Window, readings: list[dict[str, Any]]
-) -> tuple[list[tuple[datetime, dict[str, Any]]], int]:
-    """Garde les mesures du site qui tombent sur la grille de la fenêtre.
-
-    Retourne les couples (horodatage UTC, payload brut) et le nombre de
-    mesures écartées (clé illisible, autre site, hors grille).
-    """
-    kept: list[tuple[datetime, dict[str, Any]]] = []
-    rejected = 0
-    for reading in readings:
-        try:
-            key = ReadingKey.model_validate(reading)
-        except ValidationError as exc:
-            logger.warning(
-                "site %s : mesure sans clé valide écartée (%s)",
-                id_site,
-                exc.errors(include_url=False),
-            )
-            rejected += 1
-            continue
-        on_grid = window.start <= key.timestamp < window.end and (
-            key.timestamp - window.start
-        ) % STEP == timedelta(0)
-        if key.site_id != id_site or not on_grid:
-            logger.warning(
-                "site %s : mesure inattendue écartée (site=%s, horodatage=%s)",
-                id_site,
-                key.site_id,
-                key.timestamp.isoformat(),
-            )
-            rejected += 1
-            continue
-        kept.append((key.timestamp, reading))
-    return kept, rejected
+    try:
+        key = ReadingKey.model_validate(reading)
+    except ValidationError as exc:
+        raise ReadingRejected(
+            f"mesure sans clé valide ({exc.errors(include_url=False)})"
+        ) from exc
+    if key.site_id != id_site:
+        raise ReadingRejected(f"mesure d'un autre site ({key.site_id})")
+    if abs(key.timestamp - now) > MAX_CLOCK_SKEW:
+        raise ReadingRejected(
+            f"horodatage {key.timestamp.isoformat()} trop loin de {now.isoformat()}"
+        )
+    return floor_to_step(now)
 
 
 def check_sites_consistency(
@@ -172,63 +126,49 @@ def load_declared_sites(conn: Connection) -> dict[str, float]:
     return {r.id_site: float(r.capacite_kw) for r in conn.execute(sql)}
 
 
-def get_watermarks(conn: Connection, id_sites: list[str]) -> dict[str, datetime | None]:
-    """Dernier horodatage en bronze pour chaque site (None si aucun)."""
-    sql = text("""
-        SELECT id_site, MAX(horodatage) AS watermark
-        FROM bronze.raw_readings
-        WHERE id_site = ANY(:ids)
-        GROUP BY id_site
-    """)
-    watermarks: dict[str, datetime | None] = dict.fromkeys(id_sites)
-    for r in conn.execute(sql, {"ids": id_sites}):
-        watermarks[r.id_site] = r.watermark
-    return watermarks
-
-
 def insert_bronze(
-    conn: Connection, id_site: str, rows: list[tuple[datetime, dict[str, Any]]]
-) -> int:
-    """Insère un lot de mesures brutes en un seul aller-retour.
+    conn: Connection, id_site: str, horodatage: datetime, payload: dict[str, Any]
+) -> bool:
+    """Insère une mesure brute. Retourne False si la minute était déjà collectée.
 
-    Les doublons (même site, même horodatage) sont ignorés : la première
-    valeur reçue est conservée, l'API Mock tirant de nouvelles valeurs à
-    chaque appel. Retourne le nombre de lignes réellement insérées.
+    En cas de doublon (même site, même minute), la première mesure reçue est
+    conservée.
     """
-    if not rows:
-        return 0
     sql = text("""
         INSERT INTO bronze.raw_readings (id_site, horodatage, payload)
-        SELECT :id_site, t.horodatage, t.payload
-        FROM unnest(
-            CAST(:horodatages AS timestamptz[]),
-            CAST(:payloads AS jsonb[])
-        ) AS t (horodatage, payload)
+        VALUES (:id_site, :horodatage, CAST(:payload AS jsonb))
         ON CONFLICT (id_site, horodatage) DO NOTHING
         RETURNING id
     """)
     result = conn.execute(
         sql,
-        {
-            "id_site": id_site,
-            "horodatages": [ts for ts, _ in rows],
-            "payloads": [json.dumps(payload) for _, payload in rows],
-        },
+        {"id_site": id_site, "horodatage": horodatage, "payload": json.dumps(payload)},
     )
-    return len(result.fetchall())
+    return result.first() is not None
 
 
 def log_stale_sites(conn: Connection, id_sites: list[str]) -> None:
-    """Logge un warning pour chaque site dont la dernière mesure est trop vieille."""
+    """Logge un warning pour chaque site sans mesure récente, ou sans mesure du tout.
+
+    La dernière mesure est lue site par site par l'index (id_site,
+    horodatage), sans parcourir bronze.
+    """
     sql = text("""
-        SELECT id_site, NOW() - MAX(horodatage) AS lag
-        FROM bronze.raw_readings
-        WHERE id_site = ANY(:ids)
-        GROUP BY id_site
-        HAVING NOW() - MAX(horodatage) > :threshold
+        SELECT s.id_site, now() - b.derniere AS lag
+        FROM unnest(CAST(:ids AS varchar[])) AS s (id_site)
+        LEFT JOIN LATERAL (
+            SELECT max(r.horodatage) AS derniere
+            FROM bronze.raw_readings AS r
+            WHERE r.id_site = s.id_site
+        ) AS b ON true
+        WHERE b.derniere IS NULL OR now() - b.derniere > :threshold
+        ORDER BY s.id_site
     """)
     for row in conn.execute(sql, {"ids": id_sites, "threshold": STALE_THRESHOLD}):
-        logger.warning("site %s : dernière mesure il y a %s", row.id_site, row.lag)
+        if row.lag is None:
+            logger.warning("site %s : aucune mesure en bronze", row.id_site)
+        else:
+            logger.warning("site %s : dernière mesure il y a %s", row.id_site, row.lag)
 
 
 def _warn_on_inconsistent_sites(declared: dict[str, float]) -> None:
@@ -242,58 +182,70 @@ def _warn_on_inconsistent_sites(declared: dict[str, float]) -> None:
         logger.warning(issue)
 
 
-def collect_site(id_site: str, watermark: datetime | None, now: datetime) -> int:
-    """Collecte un site, fenêtre par fenêtre. Retourne le nombre d'insertions.
+def collect_site(id_site: str, reading: dict[str, Any], now: datetime) -> int:
+    """Range en bronze la mesure /current d'un site. Retourne 1 si insérée, 0 sinon.
 
-    Lève requests.RequestException si l'API échoue : les fenêtres déjà
-    insérées restent acquises, la suivante repartira du nouveau watermark.
+    Lève ReadingRejected si la mesure est inutilisable.
     """
-    inserted = 0
-    for window in plan_windows(watermark, now):
-        readings = get_readings_history(
-            site_id=id_site,
-            start_time=window.start,
-            end_time=window.end,
-            limit=window.limit,
-        )
-        rows, rejected = select_readings(id_site, window, readings)
-        with get_engine().begin() as conn:
-            n = insert_bronze(conn, id_site, rows)
-        inserted += n
-        logger.info(
-            "site=%s [%s, %s[ : %d reçues, %d insérées, %d écartées",
-            id_site,
-            window.start.isoformat(timespec="minutes"),
-            window.end.isoformat(timespec="minutes"),
-            len(readings),
-            n,
-            rejected,
-        )
-    return inserted
+    slot = reading_slot(id_site, reading, now)
+    with get_engine().begin() as conn:
+        inserted = insert_bronze(conn, id_site, slot, reading)
+    logger.info(
+        "site=%s minute=%s qualité=%s : %s",
+        id_site,
+        slot.isoformat(timespec="minutes"),
+        reading.get("data_quality"),
+        "insérée" if inserted else "déjà collectée",
+    )
+    return int(inserted)
 
 
 def collect(now: datetime | None = None) -> dict[str, int]:
-    """Collecte incrémentale de tous les sites actifs déclarés."""
-    now = now or datetime.now(tz=UTC)
+    """Collecte la mesure instantanée de tous les sites actifs déclarés.
+
+    ``now`` sans fuseau est lu comme de l'UTC, comme les horodatages de
+    l'API Mock.
+    """
+    now = to_utc(now or datetime.now(tz=UTC))
 
     with get_engine().connect() as conn:
         declared = load_declared_sites(conn)
-        if not declared:
-            logger.error(
-                "aucun site actif dans app.site : rien à collecter "
-                "(déclarer les sites, voir db/08_sites_demo.sql)"
-            )
-            sys.exit(EXIT_NO_DECLARED_SITE)
-        watermarks = get_watermarks(conn, list(declared))
+    if not declared:
+        logger.error(
+            "aucun site actif dans app.site : rien à collecter "
+            "(déclarer les sites, voir db/08_sites_demo.sql)"
+        )
+        sys.exit(EXIT_NO_DECLARED_SITE)
 
-    _warn_on_inconsistent_sites(declared)
+    # Appels en parallèle, contrôle /sites compris : un site ou un /sites lent
+    # (timeout et retries) ne doit pas faire durer le passage plus d'une
+    # minute, sinon supercronic saute le suivant. La session HTTP partagée
+    # est sûre ici : seul son pool de connexions (urllib3, thread-safe) sert.
+    with ThreadPoolExecutor(max_workers=len(declared) + 1) as pool:
+        sites_check = pool.submit(_warn_on_inconsistent_sites, declared)
+        futures = {s: pool.submit(get_current_reading, s) for s in declared}
+
+    try:
+        sites_check.result()
+    except Exception:
+        logger.exception("contrôle des sites : erreur inattendue")
 
     total_inserted = sites_in_error = 0
-    for id_site in declared:
+    for id_site, future in futures.items():
         try:
-            total_inserted += collect_site(id_site, watermarks[id_site], now)
+            total_inserted += collect_site(id_site, future.result(), now)
         except requests.RequestException as exc:
             logger.error("site %s : échec API — %s", id_site, exc)
+            sites_in_error += 1
+        except ReadingRejected as exc:
+            logger.error("site %s : %s", id_site, exc)
+            sites_in_error += 1
+        except SQLAlchemyError as exc:
+            logger.error("site %s : échec de l'insertion en bronze — %s", id_site, exc)
+            sites_in_error += 1
+        except Exception:
+            # Une erreur imprévue sur un site n'arrête pas les autres
+            logger.exception("site %s : erreur inattendue", id_site)
             sites_in_error += 1
 
     with get_engine().connect() as conn:

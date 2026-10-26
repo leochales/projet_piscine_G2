@@ -62,7 +62,7 @@ class ReadingKey(BaseModel):
 
 
 class EnergyReading(ReadingKey):
-    """GET /api/v1/readings : une mesure complète.
+    """GET /api/v1/sites/{site_id}/current : une mesure complète.
 
     ``consumption_kwh`` est volontairement absent : l'API le renvoie toujours
     égal à ``consumption_kw``, ce n'est pas une énergie. Les kWh sont
