@@ -1,8 +1,9 @@
 from datetime import datetime, timedelta
 
 import pandas as pd
-from donnees import boucher_trous_courts, decouper
-from recuperer_historique import decouper_periode
+
+from model.donnees import boucher_trous_courts, decouper
+from model.recuperer_historique import decouper_periode
 
 
 def test_periodes_sans_chevauchement():

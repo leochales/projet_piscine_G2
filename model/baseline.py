@@ -1,9 +1,10 @@
 import numpy as np
 import pandas as pd
-from donnees import charger, decouper, nettoyer
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
-df = nettoyer(charger("data/raw/readings.csv"))
+from model.donnees import charger, decouper, nettoyer
+
+df = nettoyer(charger("model/data/raw/readings.csv"))
 
 
 par_site = df.groupby("site_id")["conso"]
