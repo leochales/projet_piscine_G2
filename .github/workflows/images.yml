@@ -81,6 +81,7 @@ jobs:
             etl.cache-to=type=gha,scope=etl,mode=max
             front.cache-from=type=gha,scope=front
             front.cache-to=type=gha,scope=front,mode=max
+            front.args.MAJ_SECURITE=${{ github.run_id }}-${{ github.run_attempt }}
 
       - uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
         with:
