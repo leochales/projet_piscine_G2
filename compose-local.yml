@@ -201,6 +201,23 @@ services:
     networks:
       - proxy_network
 
+  dataset:
+    build:
+      context: .
+      dockerfile: model/Dockerfile
+    profiles: ["jobs"]
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000/mlflow
+      DATASET_RAW_DIR: /data/raw
+      DATASET_OUTPUT_DIR: /data/processed
+    volumes:
+      - ./data/raw:/data/raw:ro
+      - ./data/processed:/data/processed
+    depends_on:
+      - mlflow
+    networks:
+      - proxy_network
+
   front:
     build:
       context: ./front

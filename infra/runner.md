@@ -15,7 +15,7 @@ Keycloak est servi à la même adresse, sous `/auth` (`https://<VM_IP>/auth`, `h
 
 ## Installation du runner
 
-Une seule fois, depuis un compte administrateur de la VM. Prérequis : Docker avec le plugin `docker compose`, `curl` et `openssl`.
+Une seule fois, depuis un compte administrateur de la VM. Prérequis : Docker avec le plugin `docker compose`, `curl`, `openssl`, `python3` et `acl` (données du jeu d'entraînement).
 
 ```bash
 # 1. Utilisateur dédié, sans sudo, membre du groupe docker
@@ -64,6 +64,7 @@ Le dépôt est privé sur un plan Free, sans *GitHub Environments*. Les secrets 
 | `DEV_ETL_ENABLED` / `PROD_ETL_ENABLED`       | non         | `false` pour désactiver l'ETL (défaut `true`) |
 | `DEV_KEYCLOAK_ADMIN` / `PROD_KEYCLOAK_ADMIN` | oui         | Identifiant de l'administrateur initial de Keycloak |
 | `VM_IP`                                      | oui         | IP de la VM, inscrite dans le certificat et dans l'adresse de retour de connexion de Keycloak (`FRONT_URL`) |
+| `DVC_STORE`                                  | non         | Dossier du stockage DVC sur la VM (défaut `/srv/enervision-dvc`) |
 
 Utiliser des mots de passe différents entre dev et prod. Les mots de passe des comptes des services (`ETL_`, `MODEL_`, `API_`, `BACKUP_`, `KEYCLOAK_DB_PASSWORD`) sont **réappliqués à chaque déploiement** par la migration de la base : pour en changer un, modifier le secret puis redéployer. Exceptions :
 - `POSTGRES_PASSWORD` (superutilisateur) n'est appliqué qu'à la **création** de la base (volume vide). Le changer ensuite : `ALTER ROLE` dans la base, puis mettre à jour le secret ;
@@ -74,7 +75,7 @@ Utiliser des mots de passe différents entre dev et prod. Les mots de passe des 
 
 ## Déroulement d'un déploiement
 
-1. **Contrôles**, en parallèle sur des runners GitHub : `pre-commit.yml` (lint, tests), `security.yml` (Trivy sur le code) et `images.yml`. Ce dernier construit api, etl et front **une seule fois**, démarre la stack de prod complète avec ces images (Traefik, scripts `db/`, comptes PostgreSQL, ETL, front), rejoue la migration de la base, lance les tests SQL et Schemathesis sur le conteneur de l'API, scanne les images avec Trivy, puis les publie sur GHCR (`ghcr.io/<owner>/enervision-<service>:<sha du commit>`). Le déploiement ne démarre que si tout réussit.
+1. **Contrôles**, en parallèle sur des runners GitHub : `pre-commit.yml` (lint, tests), `security.yml` (Trivy sur le code) et `images.yml`. Ce dernier construit api, etl, front et model **une seule fois**, démarre la stack de prod complète avec ces images (Traefik, scripts `db/`, comptes PostgreSQL, ETL, front), rejoue la migration de la base, lance le job du jeu d'entraînement sur un petit CSV, les tests SQL et Schemathesis sur le conteneur de l'API, scanne les images avec Trivy, puis les publie sur GHCR (`ghcr.io/<owner>/enervision-<service>:<sha du commit>`). Le déploiement ne démarre que si tout réussit.
 2. **Certificat HTTPS** : auto-signé pour `VM_IP`, stocké dans `~/traefik-certs`, régénéré s'il expire sous 30 jours ou si `VM_IP` change.
 3. **Traefik** : démarré s'il ne tourne pas. Il lit Docker via `docker-socket-proxy` (lecture seule, réseau interne), sans accès direct au socket.
 4. **Vérifier les secrets** : toutes les variables et tous les secrets obligatoires, avant de toucher à la VM. Le job liste ceux qui manquent et s'arrête.
@@ -87,6 +88,52 @@ Utiliser des mots de passe différents entre dev et prod. Les mots de passe des 
 Un seul déploiement à la fois par environnement. Pour **revenir en arrière** : rouvrir le run **Deploy** d'un commit précédent et relancer **uniquement le job Deploy** (icône ↻ du job). Les images de ce commit sont reprises sur GHCR telles quelles. Relancer tout le run reconstruirait les images. Au-delà des 20 dernières versions, faire un `git revert` sur la branche et redéployer.
 
 **Avertissement du navigateur** : le certificat est auto-signé. Pour le supprimer, importer `/home/github-runner/traefik-certs/cert.pem` comme autorité racine de confiance sur le poste (à refaire après chaque régénération).
+
+---
+
+## Jeu d'entraînement du modèle
+
+Le jeu est construit à partir de l'historique CSV du sujet (`model/README.md`). Les fichiers (13 Mo) ne sont pas dans Git : ils sont versionnés par [DVC](https://dvc.org/). Git garde seulement `data/raw.dvc` (empreinte du dossier `data/raw`), les fichiers sont dans un stockage DVC sur la VM, dans `/srv/enervision-dvc`. Le remote `vm` du dépôt y accède en SSH.
+
+**Créer le stockage** (une fois, depuis un compte administrateur de la VM). Le groupe `enervision-dvc` réunit les comptes des développeurs, qui envoient les données en SSH, et `github-runner`, qui les lit :
+
+```bash
+sudo groupadd enervision-dvc
+sudo usermod -aG enervision-dvc github-runner
+sudo usermod -aG enervision-dvc <compte-admin>      # un par développeur
+sudo mkdir -p /srv/enervision-dvc
+sudo chgrp enervision-dvc /srv/enervision-dvc
+sudo chmod 2775 /srv/enervision-dvc                 # les sous-dossiers héritent du groupe
+sudo setfacl -d -m g::rwx /srv/enervision-dvc       # et restent modifiables par le groupe
+```
+
+**Sur un poste de développeur** : `pip install "dvc[ssh]==3.67.1"` dans le venv, puis déclarer l'alias SSH `enervision-vm` utilisé par le remote, dans `~/.ssh/config` :
+
+```
+Host enervision-vm
+    HostName <VM_IP>
+    User <compte-admin>
+```
+
+**Envoyer les données** (une fois, puis à chaque nouvelle version), depuis la racine du dépôt, avec les fichiers du sujet dans `data/raw/` :
+
+```bash
+dvc push
+```
+
+Pour une nouvelle version : modifier `data/raw/`, `dvc add data/raw`, commiter `data/raw.dvc` dans une PR, puis `dvc push`. Sans `dvc push`, le commit pointe vers des données que la VM n'a pas.
+
+**Sur la VM**, DVC n'est pas installé : `infra/dataset/pull.py` (bibliothèque standard de `python3`) lit le stockage directement sur le disque, dans le format de DVC. Chaque déploiement lance `pull.py --check`, qui vérifie sans rien copier que le stockage a la version de `data/raw.dvc` ; si elle manque, le déploiement continue avec un avertissement. Le workflow **Dataset** lance `pull.py`, qui copie cette version dans `data/raw` en vérifiant l'empreinte MD5 de chaque fichier, puis la monte en lecture seule dans le conteneur du jeu.
+
+**Construire le jeu** : Actions → **Dataset** → Run workflow, sur `develop` (dev) ou `main` (prod). Le workflow lance l'image `enervision-model` de la version déployée (même commit que l'API en service), avec le code et `data/raw.dvc` de ce commit. Le déploiement télécharge cette image et crée le conteneur du job sans le démarrer, pour que le nettoyage des images la garde : lancer d'abord **Deploy** si l'environnement n'est pas déployé. Le jeu et son rapport sont enregistrés dans le MLflow de l'environnement (expérience `jeu-entrainement`) et gardés dans le volume `dataset_data`.
+
+**MLflow** tourne dans chaque environnement sur un réseau interne, sans route Traefik : son interface n'a pas d'authentification. Pour la consulter, ouvrir un tunnel SSH vers le conteneur :
+
+```bash
+ssh -L 5000:<ip-du-conteneur-mlflow>:5000 <admin>@<VM_IP>
+```
+
+L'IP du conteneur s'obtient sur la VM avec `docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' enervision-prod-mlflow-1`, puis l'interface est sur http://localhost:5000/mlflow.
 
 ---
 
