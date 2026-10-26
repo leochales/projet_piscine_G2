@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from api.auth import ClientCourant
 from api.routers.parametres import FiltreSite
 from common.db import get_session
 
@@ -43,6 +44,7 @@ class Economies(BaseModel):
 @router.get("", summary="Recommandations des sites actifs, les plus récentes d'abord")
 def lister_recommandations(
     session: Annotated[Session, Depends(get_session)],
+    id_client: ClientCourant,
     id_site: FiltreSite = None,
     statut: Statut | None = None,
     limite: Annotated[int, Query(ge=1, le=500)] = 100,
@@ -56,13 +58,19 @@ def lister_recommandations(
         FROM app.recommandation_etat AS r
         JOIN app.site AS s ON s.id_site = r.id_site
         WHERE s.statut = 'active'
+          AND (CAST(:id_client AS BIGINT) IS NULL OR s.id_client = :id_client)
           AND (CAST(:id_site AS VARCHAR) IS NULL OR r.id_site = :id_site)
           AND (CAST(:statut AS VARCHAR) IS NULL OR r.statut = :statut)
         ORDER BY r.date_creation DESC, r.id_recommandation DESC
         LIMIT :limite
         """
     )
-    parametres = {"id_site": id_site, "statut": statut, "limite": limite}
+    parametres = {
+        "id_client": id_client,
+        "id_site": id_site,
+        "statut": statut,
+        "limite": limite,
+    }
     lignes = session.execute(requete, parametres).mappings().all()
     return [Recommandation(**ligne) for ligne in lignes]
 
@@ -70,6 +78,7 @@ def lister_recommandations(
 @router.get("/economies", summary="Économies réalisées par site")
 def lister_economies(
     session: Annotated[Session, Depends(get_session)],
+    id_client: ClientCourant,
 ) -> list[Economies]:
     """Somme des gains estimés des recommandations acceptées (app.economies_realisees).
 
@@ -84,8 +93,9 @@ def lister_economies(
         FROM app.site AS s
         LEFT JOIN app.economies_realisees AS e ON e.id_site = s.id_site
         WHERE s.statut = 'active'
+          AND (CAST(:id_client AS BIGINT) IS NULL OR s.id_client = :id_client)
         ORDER BY s.id_site
         """
     )
-    lignes = session.execute(requete).mappings().all()
+    lignes = session.execute(requete, {"id_client": id_client}).mappings().all()
     return [Economies(**ligne) for ligne in lignes]

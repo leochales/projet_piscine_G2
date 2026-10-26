@@ -11,9 +11,13 @@ RUN npm run build-only
 # Service statique, routé par Traefik
 # 1.30 : branche stable maintenue (1.27 n'a plus de correctifs de sécurité)
 FROM nginx:1.30-alpine
-# Applique les correctifs de sécurité d'Alpine publiés depuis la dernière image nginx
+# Applique les correctifs de sécurité d'Alpine publiés depuis la dernière image nginx.
+# La CI change MAJ_SECURITE à chaque exécution : sans cela, le cache de build reprendrait
+# l'ancienne couche tant que l'image nginx ne change pas, et les correctifs ne seraient
+# jamais appliqués.
+ARG MAJ_SECURITE
 # hadolint ignore=DL3017
-RUN apk upgrade --no-cache
+RUN echo "Correctifs Alpine : ${MAJ_SECURITE:-sans identifiant}" && apk upgrade --no-cache
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 EXPOSE 80
