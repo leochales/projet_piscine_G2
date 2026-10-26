@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -73,6 +74,8 @@ RANGES: dict[str, tuple[float | None, float | None]] = {
     "temperature_celsius": (-40.0, 60.0),
     "humidity_percent": (0.0, 100.0),
 }
+
+EXIT_ALL_SITES_FAILED = 1
 
 NO_READING = "no_reading"
 REJECTED_READING = "rejected_reading"
@@ -234,9 +237,14 @@ def _processing_range(
     La période va jusqu'à ``now − SETTLE_DELAY`` même si bronze s'arrête
     avant : une collecte en panne apparaît en silver (``no_reading``) au
     lieu de rester invisible jusqu'à la reprise.
+
+    Si bronze a des minutes plus anciennes que silver (amorçage relancé après
+    le début de la collecte, ``etl.bootstrap``), tout bronze est retraité.
     """
     sql = text("""
         SELECT
+            (SELECT MIN(horodatage) FROM silver.silver_readings
+             WHERE id_site = :id_site) AS silver_first,
             (SELECT MAX(horodatage) FROM silver.silver_readings
              WHERE id_site = :id_site) AS silver_last,
             MIN(horodatage) AS bronze_first,
@@ -248,8 +256,10 @@ def _processing_range(
     r = conn.execute(sql, {"id_site": id_site}).one()
     if r.bronze_last is None:
         return None
-    start = r.silver_last - REPROCESS_MARGIN if r.silver_last else r.bronze_first
-    start = max(start, r.bronze_first)
+    if r.silver_last is None or r.bronze_first < r.silver_first:
+        start = r.bronze_first
+    else:
+        start = max(r.silver_last - REPROCESS_MARGIN, r.bronze_first)
     end = max(r.bronze_last, floor_to_step(now - SETTLE_DELAY))
     if start > end:
         return None
@@ -364,8 +374,18 @@ def transform(now: datetime | None = None) -> dict[str, int]:
             logger.error("site %s : échec de la transformation — %s", id_site, exc)
             sites_in_error += 1
             continue
+        except Exception:
+            # Une erreur imprévue sur un site n'arrête pas les autres
+            logger.exception("site %s : erreur inattendue", id_site)
+            sites_in_error += 1
+            continue
         logger.info("site=%s : %d ligne(s) silver écrites", id_site, n)
         total += n
+
+    # Tous les sites en échec : code non nul pour que l'ordonnanceur le voie
+    if declared and sites_in_error == len(declared):
+        logger.error("tous les sites ont échoué — exit %d", EXIT_ALL_SITES_FAILED)
+        sys.exit(EXIT_ALL_SITES_FAILED)
     return {
         "sites": len(declared),
         "rows_written": total,

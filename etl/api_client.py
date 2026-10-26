@@ -73,6 +73,7 @@ def get_readings_history(
     start_time: datetime,
     end_time: datetime,
     limit: int,
+    timeout: int = 30,
 ) -> list[dict[str, Any]]:
     """GET /api/v1/readings — historique simulé d'un site sur [start_time, end_time[.
 
@@ -92,7 +93,7 @@ def get_readings_history(
         "end_time": end_time.isoformat(),
         "limit": limit,
     }
-    return _get("/api/v1/readings", params=params, timeout=30)
+    return _get("/api/v1/readings", params=params, timeout=timeout)
 
 
 def get_sensor_status() -> dict[str, Any]:

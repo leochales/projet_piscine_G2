@@ -36,7 +36,10 @@ GRANT SELECT ON gold.consommation_horaire TO model;
 --
 -- Par site actif, recalcule la dernière heure déjà en gold et la précédente
 -- (une mesure en retard ou une imputation tardive les modifie encore), puis
--- les heures suivantes. Sur un gold vide, agrège tout silver.
+-- les heures suivantes. Sur un gold vide, agrège tout silver. Si silver a des
+-- minutes plus anciennes que la première heure de gold (amorçage relancé
+-- après le début de la collecte, etl/bootstrap.py), repart de la première
+-- heure de silver.
 --   - consommation_kwh = Σ kW × 1/60 h sur les minutes ayant une consommation
 --     (chaque ligne silver est une minute de la grille) ;
 --   - heure_complete : silver contient les 60 minutes de l'heure.
@@ -57,13 +60,26 @@ BEGIN
     WITH depart AS (
         SELECT
             s.id_site,
-            coalesce(
-                max(g.heure) - interval '1 hour', '-infinity'::timestamptz
-            ) AS depuis
+            CASE
+                WHEN g.premiere IS null THEN '-infinity'::timestamptz
+                WHEN sv.premiere < g.premiere THEN sv.premiere
+                ELSE g.derniere - interval '1 hour'
+            END AS depuis
         FROM app.site AS s
-        LEFT JOIN gold.consommation_horaire AS g ON s.id_site = g.id_site
+        -- min et max par site : lus par l'index de la clé primaire
+        LEFT JOIN LATERAL (
+            SELECT
+                min(c.heure) AS premiere,
+                max(c.heure) AS derniere
+            FROM gold.consommation_horaire AS c
+            WHERE c.id_site = s.id_site
+        ) AS g ON true
+        LEFT JOIN LATERAL (
+            SELECT date_trunc('hour', min(r.horodatage), 'UTC') AS premiere
+            FROM silver.silver_readings AS r
+            WHERE r.id_site = s.id_site
+        ) AS sv ON true
         WHERE s.statut = 'active'
-        GROUP BY s.id_site
     ),
 
     ecrites AS (

@@ -39,6 +39,7 @@ RUN if [ -f etl/requirements.txt ]; then pip install --no-cache-dir -r etl/requi
 # ETL_ENABLED=false : le conteneur reste démarré mais n'exécute aucun job
 # -passthrough-logs : les lignes JSON des jobs (common/logs.py) sortent telles
 # quelles, sans être enveloppées par supercronic (qui les classerait toutes en info)
-# Avant le cron : amorçage des sites sans aucune mesure (etl/bootstrap.py),
-# sans effet sur une base déjà alimentée ; son échec n'empêche pas le cron.
-CMD ["sh", "-c", "if [ \"$ETL_ENABLED\" = \"false\" ]; then echo 'ETL_ENABLED=false : ETL désactivé, aucun job lancé'; exec sleep infinity; fi; python -m etl.bootstrap || echo 'amorçage en échec, collecte lancée quand même'; exec supercronic -passthrough-logs etl/crontab"]
+# Amorçage des sites pas encore amorcés (etl/bootstrap.py) lancé en arrière-plan,
+# en même temps que le cron : il ne retarde pas la collecte, sa durée est
+# bornée, et supercronic devient tout de suite le PID 1 (arrêt propre).
+CMD ["sh", "-c", "if [ \"$ETL_ENABLED\" = \"false\" ]; then echo 'ETL_ENABLED=false : ETL désactivé, aucun job lancé'; exec sleep infinity; fi; python -m etl.bootstrap & exec supercronic -passthrough-logs etl/crontab"]

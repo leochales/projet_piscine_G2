@@ -1,12 +1,19 @@
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+from sqlalchemy.exc import OperationalError
+
+from etl import silver
 from etl.grid import STEP, floor_to_step
 from etl.silver import (
     MAX_IMPUTED_GAP,
     NO_READING,
     REJECTED_READING,
+    REPROCESS_MARGIN,
     SETTLE_DELAY,
     BronzeRow,
     _processing_range,
@@ -203,20 +210,117 @@ def _periode(now: datetime, **bornes: datetime | None) -> Any:
 def test_periode_prolongee_jusqu_a_now_moins_le_delai_si_bronze_en_retard() -> None:
     now = T0 + timedelta(minutes=30, seconds=45)
     periode = _periode(
-        now, silver_last=None, bronze_first=T0, bronze_last=T0 + 10 * STEP
+        now,
+        silver_first=None,
+        silver_last=None,
+        bronze_first=T0,
+        bronze_last=T0 + 10 * STEP,
     )
     assert periode == (T0, floor_to_step(now - SETTLE_DELAY))
     assert periode[1] == T0 + 29 * STEP
 
 
 def test_periode_finit_a_bronze_last_quand_bronze_est_a_jour() -> None:
-    now = T0 + timedelta(minutes=11)
-    bronze_last = T0 + 10 * STEP
+    # La minute en cours vient d'être collectée : bronze_last > now − délai
+    now = T0 + timedelta(minutes=11, seconds=5)
+    bronze_last = T0 + 11 * STEP
+    assert floor_to_step(now - SETTLE_DELAY) < bronze_last
     periode = _periode(
-        now, silver_last=T0 + 5 * STEP, bronze_first=T0, bronze_last=bronze_last
+        now,
+        silver_first=T0,
+        silver_last=T0 + 5 * STEP,
+        bronze_first=T0,
+        bronze_last=bronze_last,
     )
     assert periode == (T0, bronze_last)  # marge de retraitement bornée à bronze_first
 
 
+def test_periode_repart_de_la_marge_apres_silver_last() -> None:
+    now = T0 + timedelta(hours=1, seconds=5)
+    periode = _periode(
+        now,
+        silver_first=T0,
+        silver_last=T0 + 59 * STEP,
+        bronze_first=T0,
+        bronze_last=T0 + 60 * STEP,
+    )
+    assert periode == (T0 + 59 * STEP - REPROCESS_MARGIN, T0 + 60 * STEP)
+
+
+def test_historique_insere_apres_coup_est_retraite_depuis_le_debut() -> None:
+    # Amorçage relancé : bronze a 7 jours avant la première minute de silver
+    now = T0 + timedelta(hours=1, seconds=5)
+    debut_amorcage = T0 - timedelta(days=7)
+    periode = _periode(
+        now,
+        silver_first=T0,
+        silver_last=T0 + 59 * STEP,
+        bronze_first=debut_amorcage,
+        bronze_last=T0 + 60 * STEP,
+    )
+    assert periode == (debut_amorcage, T0 + 60 * STEP)
+
+
 def test_aucune_periode_sans_bronze() -> None:
-    assert _periode(T0, silver_last=None, bronze_first=None, bronze_last=None) is None
+    assert (
+        _periode(
+            T0,
+            silver_first=None,
+            silver_last=None,
+            bronze_first=None,
+            bronze_last=None,
+        )
+        is None
+    )
+
+
+# --- Orchestration : isolation des erreurs et code de sortie ------------------
+
+
+class _FakeEngine:
+    @contextmanager
+    def connect(self) -> Iterator[None]:
+        yield None
+
+    begin = connect
+
+
+@pytest.fixture
+def fake_transform(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    state: dict[str, Any] = {"errors": {}}
+
+    def transform_site(_: Any, id_site: str, *__: Any) -> int:
+        if id_site in state["errors"]:
+            raise state["errors"][id_site]
+        return 10
+
+    monkeypatch.setattr(silver, "get_engine", _FakeEngine)
+    monkeypatch.setattr(
+        silver,
+        "load_declared_sites",
+        lambda _: {"SITE001": 100.0, "SITE002": 100.0, "SITE003": 100.0},
+    )
+    monkeypatch.setattr(silver, "transform_site", transform_site)
+    return state
+
+
+def test_une_erreur_inattendue_sur_un_site_n_arrete_pas_les_autres(
+    fake_transform: dict[str, Any],
+) -> None:
+    fake_transform["errors"] = {"SITE001": TypeError("payload exotique")}
+    assert silver.transform(T0) == {
+        "sites": 3,
+        "rows_written": 20,
+        "sites_in_error": 1,
+    }
+
+
+def test_tous_les_sites_en_echec_sort_en_1(fake_transform: dict[str, Any]) -> None:
+    fake_transform["errors"] = {
+        "SITE001": OperationalError("UPDATE", {}, Exception("droit refusé")),
+        "SITE002": TypeError("payload exotique"),
+        "SITE003": OperationalError("UPDATE", {}, Exception("droit refusé")),
+    }
+    with pytest.raises(SystemExit) as exc:
+        silver.transform(T0)
+    assert exc.value.code == silver.EXIT_ALL_SITES_FAILED

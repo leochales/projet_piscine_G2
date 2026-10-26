@@ -4,19 +4,30 @@ Commande à part, hors de la collecte minute :
 
     python -m etl.bootstrap
 
-Lancée au démarrage du conteneur ETL, avant le cron (voir etl/Dockerfile),
-et rejouable à la main. Seuls les sites sans aucune mesure en bronze sont
-amorcés : on charge les 7 derniers jours (BOOTSTRAP_DEPTH) via
-GET /api/v1/readings, à la minute, pour que silver, gold et le dashboard aient
-des données dès le premier démarrage. /current prend ensuite le relais
-(``etl.collect``). Un site qui a déjà des mesures n'est jamais réamorcé :
-une rétention partielle de bronze ne déclenche rien, et la collecte minute
-n'attend jamais l'amorçage.
+Lancée en arrière-plan au démarrage du conteneur ETL, en même temps que le
+cron (voir etl/Dockerfile), et rejouable à la main. On charge via
+GET /api/v1/readings, à la minute, les 7 derniers jours (BOOTSTRAP_DEPTH)
+d'un site qui n'a pas encore été amorcé, pour que silver, gold et le
+dashboard aient des données dès le premier démarrage. /current prend le
+relais (``etl.collect``).
+
+Rejouable sans risque :
+  - un site déjà amorcé (mesures marquées ``"_source": "readings_amorcage"``)
+    ou qui a déjà 7 jours de mesures n'est jamais réamorcé ;
+  - l'amorçage ne remplit que la période qui précède la première mesure du
+    site en bronze : il ne comble jamais un trou de collecte, qui doit rester
+    visible. Un amorçage raté au démarrage (API indisponible…) est donc
+    rejoué au démarrage suivant ou à la main, même si /current a déjà
+    collecté entre-temps ;
+  - silver et gold reprennent l'historique inséré après coup
+    (``etl.silver._processing_range``, ``gold.calculer_consommation_horaire``).
+
+Durée bornée : chaque appel /readings a un timeout court (READINGS_TIMEOUT)
+et l'amorçage abandonne au-delà de BOOTSTRAP_DEADLINE. Chaque site est
+inséré dès que son historique est complet, sans attendre les autres.
 
 /readings tire de nouvelles valeurs à chaque appel : il n'est utilisé ni pour
-la collecte minute ni pour combler un trou après une coupure, qui doit rester
-visible. Les mesures d'amorçage portent ``"_source": "readings_amorcage"``
-dans leur payload (silver ignore cette clé).
+la collecte minute ni pour combler un trou après une coupure.
 
 Grille de 60 s : l'API renvoie toujours ``limit`` points répartis sur la
 fenêtre demandée (pas = (end − start) / limit, fin exclue). On choisit donc
@@ -25,7 +36,7 @@ obtenir des horodatages hh:mm:00.
 
 Codes de sortie :
   0 : rien à amorcer, ou au moins un site amorcé
-  1 : tous les sites à amorcer ont échoué
+  1 : tous les sites à amorcer ont échoué (ou dépassé BOOTSTRAP_DEADLINE)
 """
 
 from __future__ import annotations
@@ -33,7 +44,8 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from concurrent.futures import ThreadPoolExecutor
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -50,7 +62,7 @@ from etl.schemas import ReadingKey
 
 logger = logging.getLogger(__name__)
 
-# Profondeur chargée pour un site sans aucune mesure en base : 7 jours, la
+# Profondeur chargée pour un site pas encore amorcé : 7 jours, la
 # plus longue période affichée par le dashboard (vue site « 7 jours », coût
 # et CO₂ sur 7 jours). Soit 11 appels /readings par site.
 BOOTSTRAP_DEPTH = timedelta(days=7)
@@ -58,6 +70,11 @@ BOOTSTRAP_DEPTH = timedelta(days=7)
 # L'horloge de l'API Mock retarde d'une trentaine de secondes : demander des
 # données jusqu'à « maintenant » renvoie un 400 (« données dans le futur »).
 SAFETY_LAG = timedelta(minutes=2)
+
+# Timeout d'un appel /readings (s), et durée maximale de l'amorçage : au-delà,
+# les sites restants sont abandonnés et seront amorcés au lancement suivant
+READINGS_TIMEOUT = 15
+BOOTSTRAP_DEADLINE = timedelta(minutes=5)
 
 # Marqueur ajouté au payload des mesures d'amorçage
 SOURCE_KEY = "_source"
@@ -75,15 +92,30 @@ class Window:
     limit: int
 
 
-def plan_windows(slot: datetime) -> list[Window]:
-    """Découpe l'amorçage en fenêtres d'au plus READINGS_MAX_LIMIT minutes.
+class BootstrapTimeout(Exception):
+    """L'amorçage a dépassé BOOTSTRAP_DEADLINE."""
 
-    ``slot`` est la minute (UTC) du lancement. La période va de
-    ``slot − BOOTSTRAP_DEPTH`` à ``slot − SAFETY_LAG`` (exclue) ; les minutes
-    restantes sont collectées par /current ou imputées en silver.
+
+def bootstrap_period(
+    slot: datetime, first_reading: datetime | None, already_bootstrapped: bool
+) -> tuple[datetime, datetime] | None:
+    """Période [début, fin[ à amorcer pour un site, ou None.
+
+    ``slot`` est la minute (UTC) du lancement, ``first_reading`` la première
+    mesure du site en bronze (None si aucune). La période s'arrête avant la
+    première mesure : l'amorçage ne recouvre jamais des minutes collectées.
     """
-    first = slot - BOOTSTRAP_DEPTH
+    if already_bootstrapped:
+        return None
+    start = slot - BOOTSTRAP_DEPTH
     end = slot - SAFETY_LAG
+    if first_reading is not None:
+        end = min(end, first_reading)
+    return (start, end) if start < end else None
+
+
+def plan_windows(first: datetime, end: datetime) -> list[Window]:
+    """Découpe [first, end[ en fenêtres d'au plus READINGS_MAX_LIMIT minutes."""
     windows: list[Window] = []
     while first < end:
         n = min((end - first) // STEP, READINGS_MAX_LIMIT)
@@ -119,19 +151,24 @@ def select_readings(
 
 
 def fetch_history(
-    id_site: str, slot: datetime
+    id_site: str, period: tuple[datetime, datetime], deadline: float
 ) -> list[tuple[datetime, dict[str, Any]]]:
     """Récupère l'historique d'amorçage d'un site, marqué ``_source``.
 
-    Lève requests.RequestException si un appel échoue.
+    ``deadline`` est une échéance ``time.monotonic()``. Lève
+    requests.RequestException si un appel échoue, BootstrapTimeout si
+    l'échéance est dépassée.
     """
     rows: list[tuple[datetime, dict[str, Any]]] = []
-    for window in plan_windows(slot):
+    for window in plan_windows(*period):
+        if time.monotonic() > deadline:
+            raise BootstrapTimeout(f"site {id_site} : durée maximale dépassée")
         readings = get_readings_history(
             site_id=id_site,
             start_time=window.start,
             end_time=window.end,
             limit=window.limit,
+            timeout=READINGS_TIMEOUT,
         )
         rows += [
             (ts, {**payload, SOURCE_KEY: SOURCE_BOOTSTRAP})
@@ -140,17 +177,37 @@ def fetch_history(
     return rows
 
 
-def sites_to_bootstrap(conn: Connection, id_sites: list[str]) -> list[str]:
-    """Sites sans aucune mesure en bronze (un EXISTS par site, via l'index)."""
+def sites_to_bootstrap(
+    conn: Connection, id_sites: list[str], slot: datetime
+) -> dict[str, tuple[datetime, datetime]]:
+    """Sites à amorcer → période à charger.
+
+    La première mesure est lue par l'index (id_site, horodatage) ; la
+    recherche du marqueur parcourt les mesures du site, ce qui reste
+    acceptable pour une commande lancée au démarrage.
+    """
     sql = text("""
-        SELECT s.id_site
+        SELECT
+            s.id_site,
+            (
+                SELECT min(b.horodatage) FROM bronze.raw_readings AS b
+                WHERE b.id_site = s.id_site
+            ) AS first_reading,
+            EXISTS (
+                SELECT 1 FROM bronze.raw_readings AS b
+                WHERE b.id_site = s.id_site
+                  AND b.payload ->> :source_key = :source
+            ) AS already_bootstrapped
         FROM unnest(CAST(:ids AS varchar[])) AS s (id_site)
-        WHERE NOT EXISTS (
-            SELECT 1 FROM bronze.raw_readings AS b WHERE b.id_site = s.id_site
-        )
         ORDER BY s.id_site
     """)
-    return [r.id_site for r in conn.execute(sql, {"ids": id_sites})]
+    params = {"ids": id_sites, "source_key": SOURCE_KEY, "source": SOURCE_BOOTSTRAP}
+    todo: dict[str, tuple[datetime, datetime]] = {}
+    for r in conn.execute(sql, params):
+        period = bootstrap_period(slot, r.first_reading, r.already_bootstrapped)
+        if period is not None:
+            todo[r.id_site] = period
+    return todo
 
 
 def insert_history(
@@ -181,33 +238,41 @@ def insert_history(
 
 
 def bootstrap(now: datetime | None = None) -> dict[str, int]:
-    """Amorce les sites actifs qui n'ont encore aucune mesure en bronze."""
+    """Amorce les sites actifs qui ne l'ont pas encore été."""
     slot = floor_to_step(to_utc(now or datetime.now(tz=UTC)))
+    deadline = time.monotonic() + BOOTSTRAP_DEADLINE.total_seconds()
 
     with get_engine().connect() as conn:
         declared = load_declared_sites(conn)
-        todo = sites_to_bootstrap(conn, list(declared)) if declared else []
+        todo = sites_to_bootstrap(conn, list(declared), slot) if declared else {}
     if not todo:
-        logger.info("amorçage : aucun site sans mesure, rien à faire")
+        logger.info("amorçage : aucun site à amorcer, rien à faire")
         return {"sites": 0, "readings_inserted": 0, "sites_in_error": 0}
 
-    with ThreadPoolExecutor(max_workers=len(todo)) as pool:
-        futures = {s: pool.submit(fetch_history, s, slot) for s in todo}
-
     total_inserted = sites_in_error = 0
-    for id_site, future in futures.items():
-        try:
-            rows = future.result()
-            with get_engine().begin() as conn:
-                n = insert_history(conn, id_site, rows)
-        except Exception:
-            # /readings en 4xx/5xx, base indisponible… : le site reste vide et
-            # sera amorcé au prochain lancement s'il n'a toujours aucune mesure
-            logger.exception("site %s : échec de l'amorçage", id_site)
-            sites_in_error += 1
-            continue
-        total_inserted += n
-        logger.info("site=%s : amorçage, %d mesure(s) /readings insérée(s)", id_site, n)
+    with ThreadPoolExecutor(max_workers=len(todo)) as pool:
+        futures = {
+            pool.submit(fetch_history, s, period, deadline): s
+            for s, period in todo.items()
+        }
+        # Chaque site est inséré dès que son historique est complet
+        for future in as_completed(futures):
+            id_site = futures[future]
+            try:
+                rows = future.result()
+                with get_engine().begin() as conn:
+                    n = insert_history(conn, id_site, rows)
+            except Exception:
+                # /readings en erreur, durée dépassée, base indisponible… :
+                # rien n'est inséré pour le site, qui sera amorcé au lancement
+                # suivant (même si /current a collecté entre-temps)
+                logger.exception("site %s : échec de l'amorçage", id_site)
+                sites_in_error += 1
+                continue
+            total_inserted += n
+            logger.info(
+                "site=%s : amorçage, %d mesure(s) /readings insérée(s)", id_site, n
+            )
 
     logger.info(
         "amorçage terminé — %d insérées, %d site(s) en erreur sur %d",
@@ -216,6 +281,9 @@ def bootstrap(now: datetime | None = None) -> dict[str, int]:
         len(todo),
     )
     if sites_in_error == len(todo):
+        logger.error(
+            "amorçage : tous les sites ont échoué — exit %d", EXIT_ALL_SITES_FAILED
+        )
         sys.exit(EXIT_ALL_SITES_FAILED)
     return {
         "sites": len(todo),
