@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from api.auth import utilisateur_courant
 from api.main import app
+from api.routers.health import database_status
 from api.routers.predictions import calculer_fenetre
 from api.tests.fausse_session import FausseSession
 from api.tests.utilisateur_autorise import UTILISATEUR_AUTORISE
@@ -335,3 +336,37 @@ def test_un_administrateur_enervision_voit_tous_les_clients(
     assert client.get(url).status_code == 200
 
     assert session.parametres["id_client"] is None
+
+
+# --- Paramètres inconnus ----------------------------------------------------------
+
+
+@pytest.mark.parametrize("url", ROUTES_DE_DONNEES)
+@pytest.mark.parametrize("parametre", ["inconnu=1", "=null", "id_stie=SITE001"])
+def test_un_parametre_inconnu_est_refuse(
+    client: TestClient, url: str, parametre: str
+) -> None:
+    # Sinon une faute de frappe renverrait les données sans filtre, sans erreur
+    brancher([])
+
+    response = client.get(f"{url}?{parametre}")
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["type"] == "extra_forbidden"
+
+
+def test_les_parametres_declares_restent_acceptes(client: TestClient) -> None:
+    brancher([])
+    url = "/api/recommandations?id_site=SITE001&statut=proposee&limite=10"
+    assert client.get(url).status_code == 200
+
+
+def test_un_parametre_inconnu_est_refuse_sur_health(client: TestClient) -> None:
+    app.dependency_overrides[database_status] = lambda: True
+    assert client.get("/api/health?debug=1").status_code == 422
+
+
+def test_sans_jeton_le_401_passe_avant_le_422() -> None:
+    # Pas d'utilisateur simulé ici : l'authentification est vérifiée pour de bon
+    with TestClient(app) as anonyme:
+        assert anonyme.get("/api/alertes?inconnu=1").status_code == 401

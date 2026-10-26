@@ -9,6 +9,8 @@ Avec Docker Compose, l'API passe par Traefik (http://localhost) ; lancée en loc
 | http://localhost/api/docs | http://localhost:8000/api/docs | Swagger UI (tester les routes) |
 | http://localhost/api/openapi.json | http://localhost:8000/api/openapi.json | Schéma OpenAPI |
 
+Un paramètre de requête que la route ne déclare pas est refusé (422) : une faute de frappe (`?id_stie=…`) ne renvoie pas toutes les données sans filtre.
+
 ### Authentification
 
 Toutes les routes `/api` demandent un jeton d'accès Keycloak, sauf `/api/health` et la documentation (`/api/docs`, `/api/openapi.json`). Le front l'envoie dans l'en-tête `Authorization: Bearer <jeton>`. Le fonctionnement complet est décrit sur la page Confluence « Authentification (Keycloak) ».
