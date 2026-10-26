@@ -11,25 +11,37 @@ import RequestError from '@/components/common/RequestError.vue'
 import TableSkeleton from '@/components/common/TableSkeleton.vue'
 import AlertsTable from '@/components/alerts/AlertsTable.vue'
 import RecommendationList from '@/components/alerts/RecommendationList.vue'
-import { useAcknowledgeAlert, useCanAcknowledge } from '@/lib/actions'
+import DataFreshness from '@/components/common/DataFreshness.vue'
+import { useActionsNotice, useAcknowledgeAlert, useCanAcknowledge } from '@/lib/actions'
 import { alertSites, filterAlerts, NO_FILTER, type AlertFilter } from '@/lib/alerts'
 import { formatEur } from '@/lib/format'
 import { listedRecommendations } from '@/lib/recommendations'
 import { SEVERITY_LABELS } from '@/lib/labels'
+import { useAutoRefresh } from '@/lib/refresh'
 import { useRequest } from '@/lib/request'
 import { useOperationsStore } from '@/stores/operations'
-import { ACTION_ROLES, useUserStore } from '@/stores/user'
 
-const user = useUserStore()
-const readOnly = computed(() => !user.hasAnyRole(ACTION_ROLES))
+// Pourquoi les boutons d'action manquent : rôle de consultation, ou actions pas encore
+// enregistrées avec les vraies données (US7)
+const actionsNotice = useActionsNotice()
 
 const operations = useOperationsStore()
 const { alerts, recommendations, savings, pending } = storeToRefs(operations)
 // Même ordre que la page d'un site, sans les recommandations acceptées depuis longtemps
 const listed = computed(() => listedRecommendations(recommendations.value))
 
-// Le store ne recharge pas ce qu'il a déjà : revenir sur l'écran garde les actions faites
-const request = useRequest(() => operations.load())
+// Premier passage : tout le store (alertes, recommandations, économies). Ensuite, alertes et
+// recommandations sont rechargées chaque minute : un nouveau dépassement de seuil apparaît
+// sans recharger la page (US3). Les actions faites restent affichées (store).
+const request = useRequest(async () => {
+  if (!operations.loaded) return operations.load()
+  await Promise.all([operations.reloadAlerts(), operations.reloadRecommendations()])
+})
+const freshness = useAutoRefresh([request])
+// Squelettes et erreur pleine page au premier chargement seulement : un rafraîchissement
+// garde les listes affichées
+const firstLoading = computed(() => !request.updatedAt.value && request.status.value === 'loading')
+const firstFailed = computed(() => !request.updatedAt.value && request.status.value === 'error')
 
 // Filtres de la liste des alertes : gravité et site
 const filter = ref<AlertFilter>({ ...NO_FILTER })
@@ -55,12 +67,18 @@ const canAcknowledge = useCanAcknowledge()
 <template>
   <section class="space-y-4">
     <h1 class="sr-only">Alertes et recommandations</h1>
-    <p v-if="readOnly" class="text-sm text-muted-foreground">
-      Lecture seule : les actions sont réservées aux gestionnaires.
-    </p>
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <p class="text-sm text-muted-foreground">{{ actionsNotice }}</p>
+      <DataFreshness
+        :updated-at="freshness.updatedAt.value"
+        :refreshing="freshness.refreshing.value"
+        :failed="freshness.failed.value"
+        @refresh="freshness.refresh"
+      />
+    </div>
 
     <RequestError
-      v-if="request.status.value === 'error'"
+      v-if="firstFailed"
       what="les alertes et les recommandations"
       @retry="request.reload"
     />
@@ -100,7 +118,7 @@ const canAcknowledge = useCanAcknowledge()
           </div>
         </CardHeader>
         <CardContent>
-          <TableSkeleton v-if="request.status.value === 'loading'" :rows="4" />
+          <TableSkeleton v-if="firstLoading" :rows="4" />
           <EmptyState
             v-else-if="alerts.length === 0"
             title="Aucune alerte active"
@@ -126,7 +144,7 @@ const canAcknowledge = useCanAcknowledge()
       <div class="space-y-4">
         <Card>
           <CardHeader><CardTitle>Recommandations</CardTitle></CardHeader>
-          <CardContent v-if="request.status.value === 'loading'" class="space-y-4">
+          <CardContent v-if="firstLoading" class="space-y-4">
             <div v-for="n in 3" :key="n" class="space-y-2">
               <Skeleton class="h-4 w-3/4" />
               <Skeleton class="h-4 w-1/2" />
@@ -146,7 +164,7 @@ const canAcknowledge = useCanAcknowledge()
         <Card class="gap-1">
           <CardHeader><CardTitle>Économies réalisées ce mois-ci</CardTitle></CardHeader>
           <CardContent>
-            <Skeleton v-if="request.status.value === 'loading'" class="h-9 w-32" />
+            <Skeleton v-if="firstLoading" class="h-9 w-32" />
             <p v-else class="text-3xl font-semibold tabular-nums">{{ formatEur(savings) }}</p>
             <p class="text-sm text-muted-foreground">
               somme des gains des recommandations acceptées (gains hebdomadaires ramenés au mois)

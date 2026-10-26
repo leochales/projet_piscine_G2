@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { Check, LoaderCircle } from '@lucide/vue'
 
 import {
@@ -23,7 +23,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import SeverityBadge from '@/components/alerts/SeverityBadge.vue'
-import { thresholdText } from '@/lib/alerts'
+import { alertTimeLabel, thresholdText } from '@/lib/alerts'
 import { formatRelativeDateTime } from '@/lib/format'
 import type { Alert } from '@/types/energy'
 
@@ -52,6 +52,15 @@ function confirm() {
 }
 
 const isPending = (alert: Alert) => props.pending?.has(alert.id) ?? false
+
+// Détails calculés une fois par alerte : heure et, pour un dépassement, mesure et seuil (US3)
+const rows = computed(() =>
+  props.alerts.map((alert) => ({
+    alert,
+    time: alertTimeLabel(alert),
+    threshold: thresholdText(alert),
+  })),
+)
 </script>
 
 <template>
@@ -65,7 +74,7 @@ const isPending = (alert: Alert) => props.pending?.has(alert.id) ?? false
       </TableRow>
     </TableHeader>
     <TableBody>
-      <TableRow v-for="alert in alerts" :key="alert.id">
+      <TableRow v-for="{ alert, time, threshold } in rows" :key="alert.id">
         <TableCell><SeverityBadge :gravite="alert.gravite" /></TableCell>
         <TableCell>
           <span class="font-medium">{{ alert.siteId }}</span>
@@ -75,8 +84,8 @@ const isPending = (alert: Alert) => props.pending?.has(alert.id) ?? false
           {{ alert.message }}
           <!-- Heure, et pour un dépassement de seuil la mesure comparée au seuil (US3) -->
           <span class="block text-xs text-muted-foreground">
-            <time :datetime="alert.debut">{{ formatRelativeDateTime(alert.debut) }}</time>
-            <template v-if="thresholdText(alert)"> · {{ thresholdText(alert) }}</template>
+            <time :datetime="alert.debut">{{ time }}</time>
+            <template v-if="threshold"> · {{ threshold }}</template>
           </span>
         </TableCell>
         <TableCell class="text-right">

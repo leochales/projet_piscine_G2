@@ -72,7 +72,12 @@ export const useOperationsStore = defineStore('operations', () => {
   async function fetchLatestAlerts(): Promise<Alert[] | undefined> {
     const request = ++alertsRequest
     const list = await fetchAlerts()
-    return request === alertsRequest ? withAcknowledgments(list) : undefined
+    if (request !== alertsRequest) return undefined
+    // Alerte terminée (absente de la réponse) : sa prise en compte locale est oubliée, pour
+    // qu'une alerte rouverte plus tard sous le même identifiant ne paraisse pas déjà prise
+    const ids = new Set(list.map((a) => a.id))
+    for (const id of acknowledgments.keys()) if (!ids.has(id)) acknowledgments.delete(id)
+    return withAcknowledgments(list)
   }
 
   // Chargement en cours : l'en-tête et l'écran le demandent au même moment, une seule

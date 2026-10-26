@@ -4,7 +4,9 @@ import { createPinia, setActivePinia } from 'pinia'
 
 import AlertsTable from '@/components/alerts/AlertsTable.vue'
 import SiteAlerts from '@/components/site/SiteAlerts.vue'
-import { thresholdText, toAlert } from '@/lib/alerts'
+import { useActionsNotice } from '@/lib/actions'
+import { alertTimeLabel, thresholdText, toAlert } from '@/lib/alerts'
+import AlertsView from '@/views/AlertsView.vue'
 import { useRequest } from '@/lib/request'
 import { alertes } from '@/mocks/alertes'
 import { acknowledgeAlert, canAcknowledgeAlerts, fetchAlerts, SOURCES } from '@/services/dashboard'
@@ -84,6 +86,12 @@ describe('thresholdText', () => {
     expect(thresholdText(toAlert(depassement))).toMatch(
       /^752 kW pour un seuil de 720 kW \(\+4 %\)$/u,
     )
+  })
+
+  it('pas d’écart négatif quand la mesure est retombée sous le seuil', () => {
+    const texte = thresholdText(toAlert({ ...depassement, valeur: 700 }))
+    expect(texte).toMatch(/^700 kW pour un seuil de 720 kW$/u)
+    expect(texte).not.toContain('%')
   })
 
   it('rien sans mesure ou sans seuil', () => {
@@ -186,5 +194,83 @@ describe('SiteAlerts : alertes du site choisi (US3)', () => {
     await flushPromises()
 
     expect(operations.alerts.find((a) => a.id === '5')?.priseEnCompte).toBe(true)
+  })
+})
+
+describe('heure affichée sous l’alerte', () => {
+  const now = new Date('2026-10-26T15:00:00Z')
+
+  it('heure de la mesure pour un dépassement', () => {
+    expect(alertTimeLabel(toAlert(depassement), now)).not.toMatch(/^signalée/u)
+  })
+
+  it('heure du signalement pour un pic prévu : à ne pas confondre avec l’heure du pic', () => {
+    const pic = toAlert({
+      ...depassement,
+      type: 'predicted_peak',
+      message: 'Pic prévu demain 14 h',
+    })
+    expect(alertTimeLabel(pic, now)).toMatch(/^signalée /u)
+  })
+})
+
+describe('message quand les actions manquent', () => {
+  function notice(roles: string[]) {
+    setActivePinia(createPinia())
+    useUserStore().setFromToken({ realm_access: { roles } })
+    return useActionsNotice().value
+  }
+
+  it('rôle de consultation : lecture seule', () => {
+    expect(notice(['CONSULT-SITE'])).toMatch(/Lecture seule/u)
+  })
+
+  it('gestionnaire avec les données simulées : rien à dire', () => {
+    expect(notice(['GESTION-CLIENT'])).toBeNull()
+  })
+
+  it('gestionnaire avec les vraies données : actions pas encore possibles', () => {
+    SOURCES.alertes = 'api'
+    expect(notice(['GESTION-CLIENT'])).toMatch(/pas encore possibles/u)
+  })
+})
+
+describe('écran 3 : rafraîchissement des alertes (US3)', () => {
+  it('recharge les alertes sans repasser par le squelette', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useUserStore().setFromToken({ realm_access: { roles: ['GESTION-CLIENT'] } })
+    const wrapper = mount(AlertsView, { global: { plugins: [pinia], stubs: { RouterLink: true } } })
+    await vi.waitFor(() => expect(wrapper.findAll('tbody tr').length).toBeGreaterThan(0))
+
+    const operations = useOperationsStore()
+    const reload = vi.spyOn(operations, 'reloadAlerts')
+    await wrapper.get('button[aria-label="Actualiser les données"]').trigger('click')
+
+    expect(reload).toHaveBeenCalled()
+    // Pendant le rafraîchissement, la liste reste affichée
+    expect(wrapper.findAll('tbody tr').length).toBeGreaterThan(0)
+  })
+})
+
+describe('prises en compte gardées pendant la session', () => {
+  it('oubliées quand l’alerte a disparu de la réponse (terminée)', async () => {
+    setActivePinia(createPinia())
+    const operations = useOperationsStore()
+    await operations.reloadAlerts()
+    await operations.acknowledge('5')
+
+    // L'alerte 5 se termine : absente de la réponse suivante
+    const service = await import('@/services/dashboard')
+    const spy = vi
+      .spyOn(service, 'fetchAlerts')
+      .mockResolvedValueOnce(alertes.filter((a) => a.id_alerte !== 5).map(toAlert))
+    await operations.reloadAlerts()
+    // Elle rouvre avec le même identifiant : non prise en compte
+    spy.mockResolvedValueOnce(alertes.map(toAlert))
+    await operations.reloadAlerts()
+
+    expect(operations.alerts.find((a) => a.id === '5')?.priseEnCompte).toBe(false)
+    spy.mockRestore()
   })
 })

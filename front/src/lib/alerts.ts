@@ -1,4 +1,4 @@
-import { formatKw } from '@/lib/format'
+import { formatKw, formatRelativeDateTime } from '@/lib/format'
 import type { AlerteApi } from '@/types/api'
 import type { Alert, AlertType, Severity } from '@/types/energy'
 
@@ -40,13 +40,29 @@ export function toAlert(api: AlerteApi): Alert {
 
 /**
  * Mesure comparée au seuil, pour un dépassement (US3) : « 752 kW pour un seuil de 720 kW
- * (+4 %) ». null si l'alerte n'a pas de mesure ou de seuil.
+ * (+4 %) ». L'écart n'est donné que si le seuil est bien dépassé : une valeur sous le seuil
+ * (mesure retombée, ou donnée de l'ETL) n'affiche pas un « −3 % » contradictoire.
+ * null si l'alerte n'a pas de mesure ou de seuil.
  */
 export function thresholdText(alert: Alert): string | null {
   const { valeurKw, seuilKw } = alert
   if (valeurKw === null || seuilKw === null || seuilKw <= 0) return null
-  const ecart = Math.round(((valeurKw - seuilKw) / seuilKw) * 100)
-  return `${formatKw(valeurKw)} pour un seuil de ${formatKw(seuilKw)} (${ecart >= 0 ? '+' : ''}${ecart} %)`
+  const text = `${formatKw(valeurKw)} pour un seuil de ${formatKw(seuilKw)}`
+  if (valeurKw <= seuilKw) return text
+  return `${text} (+${Math.round(((valeurKw - seuilKw) / seuilKw) * 100)} %)`
+}
+
+// Alertes datées par la mesure elle-même : l'heure affichée est celle du dépassement
+const MEASURED_TYPES: readonly AlertType[] = ['threshold', 'spike']
+
+/**
+ * Heure affichée sous l'alerte : celle de la mesure pour un dépassement ou un pic mesuré,
+ * sinon celle du signalement (« signalée … ») : pour un pic prévu, elle ne doit pas être
+ * prise pour l'heure du pic.
+ */
+export function alertTimeLabel(alert: Alert, now: Date = new Date()): string {
+  const when = formatRelativeDateTime(alert.debut, now)
+  return MEASURED_TYPES.includes(alert.type) ? when : `signalée ${when}`
 }
 
 export interface AlertFilter {
