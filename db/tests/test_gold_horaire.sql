@@ -144,6 +144,44 @@ BEGIN
 END
 $$;
 
+-- 2 bis. Historique inséré après coup (amorçage relancé) : silver reçoit
+--    l'heure 09:00, plus ancienne que gold ; elle doit être agrégée
+RESET ROLE;
+INSERT INTO silver.silver_readings (
+    id_site, horodatage, consumption_kw_raw, consumption_kw_imputed,
+    data_quality
+)
+SELECT
+    'SITE-H' AS id_site,
+    '2026-01-01 09:00+00'::timestamptz + n * interval '1 minute' AS horodatage,
+    90 AS consumption_kw_raw,
+    90 AS consumption_kw_imputed,
+    'good' AS data_quality
+FROM generate_series(0, 59) AS n;
+SET ROLE etl;
+
+DO $$
+DECLARE
+    nb BIGINT;
+    h gold.consommation_horaire;
+BEGIN
+    SELECT heures INTO nb FROM gold.calculer_consommation_horaire()
+    WHERE id_site = 'SITE-H';
+    ASSERT nb = 3, format('3 heures recalculées attendues, %s', nb);
+
+    SELECT * INTO h FROM gold.consommation_horaire
+    WHERE id_site = 'SITE-H' AND heure = '2026-01-01 09:00+00';
+    ASSERT h.consommation_kwh = 90.000, format('kWh 09:00 : %s', h.consommation_kwh);
+    ASSERT h.heure_complete, 'l''heure 09:00 est complète';
+
+    -- Le passage suivant revient au recalcul des deux dernières heures
+    SELECT heures INTO nb FROM gold.calculer_consommation_horaire()
+    WHERE id_site = 'SITE-H';
+    ASSERT nb = 2, format('retour à 2 heures attendu, %s', nb);
+    RAISE NOTICE 'OK 2 bis : historique antérieur repris, puis recalcul normal';
+END
+$$;
+
 -- 3. Le modèle lit les agrégats mais ne peut pas les modifier
 RESET ROLE;
 SET ROLE model;
@@ -154,7 +192,7 @@ DECLARE
 BEGIN
     SELECT count(*) INTO total FROM gold.consommation_horaire
     WHERE id_site = 'SITE-H';
-    ASSERT total = 2, format('le modèle doit lire 2 heures, %s', total);
+    ASSERT total = 3, format('le modèle doit lire 3 heures, %s', total);
 
     BEGIN
         UPDATE gold.consommation_horaire SET pic_kw = 0 WHERE id_site = 'SITE-H';

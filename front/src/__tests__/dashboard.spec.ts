@@ -1,12 +1,18 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  acknowledgeAlert,
+  decideRecommendation,
   fetchAlerts,
+  fetchFleetTrend,
   fetchKpis,
   fetchOverview,
   fetchSiteCosts,
   fetchSiteOverview,
+  fetchRecommendations,
   fetchSiteSeries,
+  readSimulation,
+  SLOW_DELAY_MS,
 } from '@/services/dashboard'
 
 describe('services/dashboard', () => {
@@ -28,6 +34,31 @@ describe('services/dashboard', () => {
   it('donne les indicateurs, les sites et des coûts positifs', async () => {
     expect((await fetchKpis()).nbSites).toBe(7)
     expect(await fetchOverview()).toHaveLength(7)
+  })
+
+  it('donne l’évolution du parc : 24 h de consommation, 7 jours de coût', async () => {
+    const { consommationKw24h, coutEurJours7 } = await fetchFleetTrend()
+    expect(consommationKw24h).toHaveLength(24 + 1) // le point « maintenant » est inclus
+    expect(coutEurJours7).toHaveLength(7)
+    expect([...consommationKw24h, ...coutEurJours7].every((v) => v > 0)).toBe(true)
+  })
+
+  it('finit les mini-courbes sur les valeurs des KPI, et respecte la variation « vs hier »', async () => {
+    const [kpis, { consommationKw24h, coutEurJours7 }] = await Promise.all([
+      fetchKpis(),
+      fetchFleetTrend(),
+    ])
+    expect(consommationKw24h[consommationKw24h.length - 1]).toBe(kpis.consommationKw)
+    const [yesterday, today] = coutEurJours7.slice(-2) as [number, number]
+    expect(today).toBe(kpis.coutJourEur)
+    expect(((today - yesterday) / yesterday) * 100).toBeCloseTo(kpis.variationCoutPct, 0)
+  })
+
+  it('exclut du total du parc les sites sans mesure, et le signale', async () => {
+    const [kpis, sites] = await Promise.all([fetchKpis(), fetchOverview()])
+    const measured = sites.filter((s) => s.consommationKw !== null)
+    expect(kpis.nbSitesSansMesure).toBe(sites.length - measured.length)
+    expect(kpis.consommationKw).toBe(measured.reduce((t, s) => t + s.consommationKw!, 0))
     const costs = await fetchSiteCosts('SITE001')
     expect(costs.coutEur).toBeGreaterThan(0)
     expect(costs.co2Tonnes).toBeGreaterThan(0)
@@ -37,5 +68,57 @@ describe('services/dashboard', () => {
     const first = await fetchAlerts()
     first[0]!.priseEnCompte = true
     expect((await fetchAlerts())[0]!.priseEnCompte).toBe(false)
+  })
+})
+
+describe('simulation des cas réels (?simulation=…)', () => {
+  const simulate = (value: string) => window.history.replaceState(null, '', `/?simulation=${value}`)
+
+  afterEach(() => {
+    window.history.replaceState(null, '', '/')
+    vi.useRealTimers()
+  })
+
+  it('lit la simulation demandée, et seulement en développement', () => {
+    expect(readSimulation('?simulation=erreur', true)).toBe('erreur')
+    expect(readSimulation('?simulation=inconnue', true)).toBeNull()
+    expect(readSimulation('', true)).toBeNull()
+    expect(readSimulation('?simulation=erreur', false)).toBeNull()
+  })
+
+  it('« erreur » fait échouer les appels, actions comprises', async () => {
+    simulate('erreur')
+    await expect(fetchOverview()).rejects.toThrow('API simulée en erreur')
+    await expect(acknowledgeAlert('A1')).rejects.toThrow('API simulée en erreur')
+    await expect(decideRecommendation('R1', 'acceptee')).rejects.toThrow('API simulée en erreur')
+  })
+
+  it('confirme les actions simulées', async () => {
+    expect(await acknowledgeAlert('A1')).toBe('A1')
+    expect(await decideRecommendation('R1', 'refusee')).toEqual({ id: 'R1', statut: 'refusee' })
+  })
+
+  it('« vide » renvoie des listes et des courbes vides', async () => {
+    simulate('vide')
+    expect(await fetchOverview()).toEqual([])
+    expect(await fetchAlerts()).toEqual([])
+    expect(await fetchRecommendations()).toEqual([])
+    expect(await fetchSiteSeries('SITE002', '24h')).toEqual({ mesures: [], predictions: [] })
+    expect(await fetchFleetTrend()).toEqual({ consommationKw24h: [], coutEurJours7: [] })
+    // Les indicateurs du parc n'ont pas de version « vide » : ils restent renseignés
+    expect((await fetchKpis()).nbSites).toBe(7)
+  })
+
+  it('« lent » retarde la réponse', async () => {
+    vi.useFakeTimers()
+    simulate('lent')
+    let done = false
+    const call = fetchOverview().then(() => (done = true))
+
+    await vi.advanceTimersByTimeAsync(SLOW_DELAY_MS - 1)
+    expect(done).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    await call
+    expect(done).toBe(true)
   })
 })

@@ -2,42 +2,17 @@ from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
-from uuid import UUID
 
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from api.auth import Utilisateur, utilisateur_courant
+from api.auth import utilisateur_courant
 from api.main import app
 from api.routers.mesures import calculer_cout, calculer_periode
+from api.tests.fausse_session import FausseSession
+from api.tests.utilisateur_autorise import UTILISATEUR_AUTORISE
 from common.db import get_session
-
-
-class FausseSession:
-    """Remplace la vraie session : renvoie des lignes écrites à la main."""
-
-    def __init__(self, lignes: list[dict[str, Any]]) -> None:
-        self.lignes = lignes
-
-    def execute(
-        self, requete: Any, parametres: dict[str, Any] | None = None
-    ) -> "FausseSession":
-        return self
-
-    def mappings(self) -> "FausseSession":
-        return self
-
-    def all(self) -> list[dict[str, Any]]:
-        return self.lignes
-
-
-# Les règles d'accès sont testées dans test_auth.py : ici, un utilisateur autorisé
-UTILISATEUR_AUTORISE = Utilisateur(
-    id=UUID("00000000-0000-0000-0000-000000000001"),
-    id_client=1,
-    roles=frozenset({"CONSULT-CLIENT"}),
-)
 
 
 @pytest.fixture

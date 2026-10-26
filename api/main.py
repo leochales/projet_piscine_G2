@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from api.auth import REPONSES_AUTH, ROLES_METIER, exiger_role
-from api.routers import health, mesures
+from api.routers import alertes, health, mesures, predictions, recommandations
 from common.config import get_settings
 from common.logs import configure_logging
 
@@ -34,12 +34,14 @@ app.add_middleware(
 # Tout autre routeur ajouté ici doit être protégé par exiger_role
 # (test_auth.py vérifie qu'aucune route /api n'est ouverte par erreur).
 app.include_router(health.router, prefix=API_PREFIX)
-app.include_router(
-    mesures.router,
-    prefix=API_PREFIX,
-    dependencies=[Depends(exiger_role(*ROLES_METIER))],
-    responses=REPONSES_AUTH,
-)
+# Données du dashboard, en lecture : ouvertes aux 4 rôles métier (pas à MONITORING seul)
+for routeur in (mesures, predictions, alertes, recommandations):
+    app.include_router(
+        routeur.router,
+        prefix=API_PREFIX,
+        dependencies=[Depends(exiger_role(*ROLES_METIER))],
+        responses=REPONSES_AUTH,
+    )
 
 # Métriques Prometheus sur /metrics, hors de /api : Traefik ne les expose pas,
 # seul Prometheus les lit par le réseau Docker. Absent de Swagger et de Schemathesis.
