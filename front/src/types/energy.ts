@@ -77,12 +77,18 @@ export interface Alert {
 
 export type RecommendationStatus = 'proposee' | 'acceptee' | 'refusee'
 
+// Venue de GET /api/recommandations (types/api.ts), convertie par lib/recommendations.ts
 export interface Recommendation {
   id: string
   siteId: string
-  titre: string
-  alerteLiee: string | null
-  gainEstimeEur: number
-  periodeGain: 'ponctuel' | 'semaine'
+  nomSite: string
+  titre: string // action proposée
+  description: string | null
+  alerteId: string | null // alerte qui a déclenché la recommandation
+  // null : gain pas encore estimé par la règle
+  gainEstimeEur: number | null
+  periodeGain: 'unique' | 'semaine' | null
   statut: RecommendationStatus
+  creeeLe: string // ISO 8601
+  decideeLe: string | null // ISO 8601, null tant que personne n'a décidé
 }

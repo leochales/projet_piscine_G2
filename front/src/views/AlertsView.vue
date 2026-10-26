@@ -11,9 +11,11 @@ import EmptyState from '@/components/common/EmptyState.vue'
 import RequestError from '@/components/common/RequestError.vue'
 import TableSkeleton from '@/components/common/TableSkeleton.vue'
 import AlertsTable from '@/components/alerts/AlertsTable.vue'
-import RecommendationItem from '@/components/alerts/RecommendationItem.vue'
+import RecommendationList from '@/components/alerts/RecommendationList.vue'
+import { notifyActionFailed } from '@/lib/actions'
 import { alertSites, filterAlerts, NO_FILTER, type AlertFilter } from '@/lib/alerts'
 import { formatEur } from '@/lib/format'
+import { listedRecommendations } from '@/lib/recommendations'
 import { SEVERITY_LABELS } from '@/lib/labels'
 import { useRequest } from '@/lib/request'
 import { useOperationsStore } from '@/stores/operations'
@@ -24,6 +26,8 @@ const readOnly = computed(() => !user.hasAnyRole(ACTION_ROLES))
 
 const operations = useOperationsStore()
 const { alerts, recommendations, savings, pending } = storeToRefs(operations)
+// Même ordre que la page d'un site, sans les recommandations acceptées depuis longtemps
+const listed = computed(() => listedRecommendations(recommendations.value))
 
 // Le store ne recharge pas ce qu'il a déjà : revenir sur l'écran garde les actions faites
 const request = useRequest(() => operations.load())
@@ -44,13 +48,7 @@ function setGravite(value: unknown) {
 }
 const resetFilter = () => (filter.value = { ...NO_FILTER })
 
-// Retour après chaque action : confirmation discrète, ou erreur à réessayer.
-// Rien n'est affiché comme fait tant que le service ne l'a pas confirmé (store).
-const actionFailed = () =>
-  toast.error('Action impossible', {
-    description: 'Le service de données ne répond pas. Réessayez dans un instant.',
-  })
-
+// Retour après chaque action : confirmation discrète, ou erreur à réessayer (lib/actions.ts)
 async function acknowledge(alertId: string) {
   const alert = alerts.value.find((a) => a.id === alertId)
   try {
@@ -59,19 +57,7 @@ async function acknowledge(alertId: string) {
       description: alert && `${alert.siteId} · ${alert.message}`,
     })
   } catch {
-    actionFailed()
-  }
-}
-
-async function decide(id: string, statut: 'acceptee' | 'refusee') {
-  const rec = recommendations.value.find((r) => r.id === id)
-  try {
-    await operations.decide(id, statut)
-    toast.success(statut === 'acceptee' ? 'Recommandation acceptée' : 'Recommandation refusée', {
-      description: rec && `${rec.siteId} · ${rec.titre}`,
-    })
-  } catch {
-    actionFailed()
+    notifyActionFailed()
   }
 }
 </script>
@@ -156,22 +142,14 @@ async function decide(id: string, statut: 'acceptee' | 'refusee') {
               <Skeleton class="h-4 w-1/2" />
             </div>
           </CardContent>
-          <CardContent v-else-if="recommendations.length === 0">
+          <CardContent v-else-if="listed.length === 0">
             <EmptyState
               title="Aucune recommandation"
               description="Les recommandations apparaissent quand une alerte ou un pic prévu le justifie."
             />
           </CardContent>
-          <CardContent v-else class="divide-y">
-            <RecommendationItem
-              v-for="rec in recommendations"
-              :key="rec.id"
-              :recommendation="rec"
-              :can-act="user.canActOn(rec.siteId)"
-              :pending="pending.has(rec.id)"
-              @accept="decide($event, 'acceptee')"
-              @refuse="decide($event, 'refusee')"
-            />
+          <CardContent v-else>
+            <RecommendationList :recommendations="listed" />
           </CardContent>
         </Card>
 

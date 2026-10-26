@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { mount, RouterLinkStub } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 
 import AlertsView from '@/views/AlertsView.vue'
 
 async function mountView() {
-  const wrapper = mount(AlertsView, { global: { plugins: [createPinia()] } })
+  const wrapper = mount(AlertsView, {
+    global: { plugins: [createPinia()], stubs: { RouterLink: RouterLinkStub } },
+  })
   // Le service simulé répond après un court délai
   await vi.waitFor(() => expect(wrapper.findAll('tbody tr').length).toBeGreaterThan(0))
   return wrapper
@@ -13,6 +15,17 @@ async function mountView() {
 
 const rows = (wrapper: Awaited<ReturnType<typeof mountView>>) =>
   wrapper.findAll('tbody tr').map((tr) => tr.findAll('td')[1]!.text())
+
+describe('AlertsView : recommandations', () => {
+  it('relie chaque recommandation à la page de son site', async () => {
+    const wrapper = await mountView()
+    await vi.waitFor(() => expect(wrapper.findAll('article').length).toBeGreaterThan(0))
+
+    const lien = wrapper.findAllComponents(RouterLinkStub)[0]!
+    expect(lien.props('to')).toEqual({ name: 'sites', params: { siteId: 'SITE002' } })
+    expect(lien.text()).toBe('SITE002 · Usine de Lyon')
+  })
+})
 
 describe('AlertsView : filtres', () => {
   it('filtre les alertes par gravité, puis par site, et compte les résultats', async () => {
