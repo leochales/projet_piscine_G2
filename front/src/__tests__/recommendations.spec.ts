@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
-import { currentRecommendations, toRecommendation } from '@/lib/recommendations'
+import {
+  ACCEPTEE_EN_COURS_JOURS,
+  currentRecommendations,
+  decidedThisMonth,
+  isStaleAccepted,
+  listedRecommendations,
+  toRecommendation,
+} from '@/lib/recommendations'
 import { recommandations } from '@/mocks/recommandations'
 import type { RecommandationApi } from '@/types/api'
 import type { Recommendation } from '@/types/energy'
@@ -34,6 +41,7 @@ describe('toRecommendation', () => {
       periodeGain: 'unique',
       statut: 'acceptee',
       creeeLe: '2026-10-26T13:15:00Z',
+      decideeLe: '2026-10-26T13:30:00Z',
     })
   })
 
@@ -97,5 +105,51 @@ describe('currentRecommendations', () => {
     const liste = [rec('B', { creeeLe: '2026-10-20T08:00:00Z' }), rec('A', {})]
     currentRecommendations(liste, 'SITE002')
     expect(liste.map((r) => r.id)).toEqual(['B', 'A'])
+  })
+})
+
+describe('acceptées en cours, ordre commun et économies du mois', () => {
+  const now = new Date('2026-10-26T12:00:00Z')
+  const joursAvant = (jours: number) =>
+    new Date(now.getTime() - jours * 24 * 3600 * 1000).toISOString()
+  const rec = (id: string, over: Partial<Recommendation>): Recommendation => ({
+    ...toRecommendation(api),
+    id,
+    statut: 'proposee',
+    decideeLe: null,
+    ...over,
+  })
+
+  it('une acceptée reste en cours ACCEPTEE_EN_COURS_JOURS jours, puis disparaît des listes', () => {
+    const recente = rec('recente', { statut: 'acceptee', decideeLe: joursAvant(2) })
+    const ancienne = rec('ancienne', {
+      statut: 'acceptee',
+      decideeLe: joursAvant(ACCEPTEE_EN_COURS_JOURS + 1),
+    })
+
+    expect(isStaleAccepted(recente, now)).toBe(false)
+    expect(isStaleAccepted(ancienne, now)).toBe(true)
+    expect(currentRecommendations([recente, ancienne], 'SITE002', now).map((r) => r.id)).toEqual([
+      'recente',
+    ])
+    expect(listedRecommendations([recente, ancienne], now).map((r) => r.id)).toEqual(['recente'])
+  })
+
+  it('l’écran 3 et la page du site trient de la même façon', () => {
+    const liste = [
+      rec('acceptee', { statut: 'acceptee', decideeLe: joursAvant(1), creeeLe: joursAvant(1) }),
+      rec('proposee-ancienne', { creeeLe: joursAvant(5) }),
+      rec('proposee-recente', { creeeLe: joursAvant(0) }),
+    ]
+    const ordre = ['proposee-recente', 'proposee-ancienne', 'acceptee']
+
+    expect(listedRecommendations(liste, now).map((r) => r.id)).toEqual(ordre)
+    expect(currentRecommendations(liste, 'SITE002', now).map((r) => r.id)).toEqual(ordre)
+  })
+
+  it('compte une décision dans le mois où elle a été prise', () => {
+    expect(decidedThisMonth(rec('a', { decideeLe: '2026-10-03T10:00:00Z' }), now)).toBe(true)
+    expect(decidedThisMonth(rec('b', { decideeLe: '2026-09-20T10:00:00Z' }), now)).toBe(false)
+    expect(decidedThisMonth(rec('c', { decideeLe: null }), now)).toBe(false)
   })
 })

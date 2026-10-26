@@ -90,4 +90,5 @@ export interface Recommendation {
   periodeGain: 'unique' | 'semaine' | null
   statut: RecommendationStatus
   creeeLe: string // ISO 8601
+  decideeLe: string | null // ISO 8601, null tant que personne n'a décidé
 }

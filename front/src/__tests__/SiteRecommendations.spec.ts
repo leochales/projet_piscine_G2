@@ -9,10 +9,18 @@ import { SOURCES } from '@/services/dashboard'
 import { useOperationsStore } from '@/stores/operations'
 import { useUserStore } from '@/stores/user'
 
-// Comme la page d'un site (SiteDetailView) : le chargement est fourni au composant
+// Jeton simulé : getJson passe par apiFetch, qui demande le jeton à Keycloak
+vi.mock('@/lib/auth', () => ({
+  getToken: vi.fn<() => Promise<string>>(() => Promise.resolve('jeton-de-test')),
+  login: vi.fn<() => Promise<void>>(() => Promise.resolve()),
+}))
+
+// Comme la page d'un site (SiteDetailView) : le chargement est fourni au composant.
+// Utilisateur gestionnaire par défaut : il peut décider (rôles du jeton Keycloak).
 function mountFor(siteId: string) {
   const pinia = createPinia()
   setActivePinia(pinia)
+  useUserStore().setFromToken({ realm_access: { roles: ['GESTION-CLIENT'] } })
   const operations = useOperationsStore()
   const request = useRequest(() => operations.reloadRecommendations())
   return mount(SiteRecommendations, {
@@ -79,9 +87,9 @@ describe('SiteRecommendations (US5)', () => {
     )
   })
 
-  it('en lecture seule (direction), ne propose pas de décider', async () => {
+  it('en lecture seule (rôle de consultation), ne propose pas de décider', async () => {
     const wrapper = mountFor('SITE002')
-    useUserStore().role = 'direction'
+    useUserStore().setFromToken({ realm_access: { roles: ['CONSULT-SITE'] } })
     await vi.waitFor(() => expect(titles(wrapper).length).toBeGreaterThan(0))
 
     expect(wrapper.findAll('button').map((b) => b.text())).not.toContain('Accepter')

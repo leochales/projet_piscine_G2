@@ -15,6 +15,7 @@ import RecommendationList from '@/components/alerts/RecommendationList.vue'
 import { notifyActionFailed } from '@/lib/actions'
 import { alertSites, filterAlerts, NO_FILTER, type AlertFilter } from '@/lib/alerts'
 import { formatEur } from '@/lib/format'
+import { listedRecommendations } from '@/lib/recommendations'
 import { SEVERITY_LABELS } from '@/lib/labels'
 import { useRequest } from '@/lib/request'
 import { useOperationsStore } from '@/stores/operations'
@@ -25,6 +26,8 @@ const readOnly = computed(() => !user.hasAnyRole(ACTION_ROLES))
 
 const operations = useOperationsStore()
 const { alerts, recommendations, savings, pending } = storeToRefs(operations)
+// Même ordre que la page d'un site, sans les recommandations acceptées depuis longtemps
+const listed = computed(() => listedRecommendations(recommendations.value))
 
 // Le store ne recharge pas ce qu'il a déjà : revenir sur l'écran garde les actions faites
 const request = useRequest(() => operations.load())
@@ -139,14 +142,14 @@ async function acknowledge(alertId: string) {
               <Skeleton class="h-4 w-1/2" />
             </div>
           </CardContent>
-          <CardContent v-else-if="recommendations.length === 0">
+          <CardContent v-else-if="listed.length === 0">
             <EmptyState
               title="Aucune recommandation"
               description="Les recommandations apparaissent quand une alerte ou un pic prévu le justifie."
             />
           </CardContent>
           <CardContent v-else>
-            <RecommendationList :recommendations="recommendations" />
+            <RecommendationList :recommendations="listed" />
           </CardContent>
         </Card>
 

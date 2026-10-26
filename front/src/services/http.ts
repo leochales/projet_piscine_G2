@@ -1,15 +1,10 @@
-// Appels à l'API du dashboard. En dev, /api passe par le proxy de Vite (vite.config.ts),
-// en production par Traefik : même adresse que le front, pas de CORS.
-// Le jeton Keycloak sera ajouté ici avec la connexion du front (SMARTOPS-85).
+// Lecture des routes de données de l'API. Chaque appel passe par apiFetch (lib/api.ts) :
+// jeton Keycloak ajouté, session expirée (401) et compte non rattaché (403) gérés.
+// L'API revérifie le jeton à chaque requête : /api/moi, au démarrage, ne suffit pas.
 
-export class ApiError extends Error {
-  constructor(
-    readonly status: number,
-    path: string,
-  ) {
-    super(`API ${path} : erreur ${status}`)
-  }
-}
+import { ApiError, apiFetch } from '@/lib/api'
+
+export { ApiError }
 
 type Params = Record<string, string | number | boolean | null | undefined>
 
@@ -19,8 +14,9 @@ export async function getJson<T>(path: string, params: Params = {}): Promise<T> 
   for (const [key, value] of Object.entries(params)) {
     if (value !== null && value !== undefined) query.set(key, String(value))
   }
-  const url = `/api${path}${query.size ? `?${query}` : ''}`
-  const response = await fetch(url, { headers: { Accept: 'application/json' } })
-  if (!response.ok) throw new ApiError(response.status, path)
+  const response = await apiFetch(`${path}${query.size ? `?${query}` : ''}`, {
+    headers: { Accept: 'application/json' },
+  })
+  if (!response.ok) throw new ApiError(response.status, `API ${path} : erreur ${response.status}`)
   return (await response.json()) as T
 }

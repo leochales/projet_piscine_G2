@@ -6,8 +6,15 @@ import {
   fetchRecommendations,
   SOURCES,
 } from '@/services/dashboard'
+import { login } from '@/lib/auth'
 import { ApiError, getJson } from '@/services/http'
 import { recommandations } from '@/mocks/recommandations'
+
+// Jeton simulé : getJson passe par apiFetch, qui demande le jeton à Keycloak
+vi.mock('@/lib/auth', () => ({
+  getToken: vi.fn<() => Promise<string>>(() => Promise.resolve('jeton-de-test')),
+  login: vi.fn<() => Promise<void>>(() => Promise.resolve()),
+}))
 
 function stubFetch(status: number, body: unknown) {
   // Une réponse neuve à chaque appel : le corps d'une Response ne se lit qu'une fois
@@ -65,6 +72,16 @@ describe('fetchRecommendations : données simulées ou API', () => {
 })
 
 describe('getJson', () => {
+  it('envoie le jeton Keycloak (apiFetch) : l’API le vérifie à chaque requête', async () => {
+    const fetchMock = stubFetch(200, [])
+
+    await getJson('/recommandations', { statut: 'proposee' })
+
+    const [, init] = fetchMock.mock.calls[0]!
+    expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer jeton-de-test')
+    expect(new Headers(init?.headers).get('Accept')).toBe('application/json')
+  })
+
   it('n’envoie pas les paramètres vides', async () => {
     const fetchMock = stubFetch(200, [])
 
@@ -74,9 +91,16 @@ describe('getJson', () => {
   })
 
   it('lève ApiError avec le code HTTP', async () => {
-    stubFetch(401, { detail: 'Jeton manquant' })
+    stubFetch(503, { detail: 'Indisponible' })
 
-    await expect(getJson('/recommandations')).rejects.toMatchObject({ status: 401 })
+    await expect(getJson('/recommandations')).rejects.toMatchObject({ status: 503 })
+  })
+
+  it('session expirée (401) : relance la connexion Keycloak', async () => {
+    stubFetch(401, { detail: 'Jeton invalide' })
+
+    await expect(getJson('/recommandations')).rejects.toBeInstanceOf(ApiError)
+    expect(login).toHaveBeenCalled()
   })
 })
 

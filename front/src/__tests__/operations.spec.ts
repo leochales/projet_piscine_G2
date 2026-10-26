@@ -17,6 +17,7 @@ const rec = (over: Partial<Recommendation>): Recommendation => ({
   periodeGain: 'unique',
   statut: 'proposee',
   creeeLe: '2026-10-26T08:00:00Z',
+  decideeLe: null,
   ...over,
 })
 
@@ -32,13 +33,55 @@ describe('useOperationsStore', () => {
     expect(monthlyGain(rec({ gainEstimeEur: null, periodeGain: null }))).toBe(0)
   })
 
-  it('ne compte que les recommandations acceptées dans les économies', () => {
+  it('ne compte que les recommandations acceptées ce mois-ci dans les économies', () => {
     const store = useOperationsStore()
+    const ceMois = new Date().toISOString()
+    const ilYA40Jours = new Date(Date.now() - 40 * 24 * 3600 * 1000).toISOString()
     store.recommendations = [
-      rec({ id: 'A', gainEstimeEur: 380, statut: 'acceptee' }),
+      rec({ id: 'A', gainEstimeEur: 380, statut: 'acceptee', decideeLe: ceMois }),
       rec({ id: 'B', gainEstimeEur: 45, periodeGain: 'semaine', statut: 'refusee' }),
+      // Acceptée un mois précédent : déjà comptée ce mois-là, pas dans celui-ci
+      rec({ id: 'C', gainEstimeEur: 999, statut: 'acceptee', decideeLe: ilYA40Jours }),
     ]
     expect(store.savings).toBe(380)
+  })
+
+  it('une décision prise maintenant est datée et comptée dans les économies du mois', async () => {
+    const store = useOperationsStore()
+    store.recommendations = [rec({ id: 'A', gainEstimeEur: 200 })]
+
+    await store.decide('A', 'acceptee')
+
+    expect(store.recommendations[0]!.decideeLe).not.toBeNull()
+    expect(store.savings).toBe(200)
+  })
+
+  it('recharge les recommandations même si les alertes sont en panne', async () => {
+    const alertes = vi.spyOn(service, 'fetchAlerts').mockRejectedValue(new Error('panne'))
+    const store = useOperationsStore()
+
+    await store.reloadRecommendations()
+
+    expect(store.recommendations.length).toBeGreaterThan(0)
+    expect(alertes).not.toHaveBeenCalled()
+    alertes.mockRestore()
+  })
+
+  it('une réponse arrivée après une plus récente ne remet pas l’ancienne liste', async () => {
+    const store = useOperationsStore()
+    let repondreLent: (liste: Recommendation[]) => void = () => {}
+    const spy = vi
+      .spyOn(service, 'fetchRecommendations')
+      .mockImplementationOnce(() => new Promise((resolve) => (repondreLent = resolve)))
+      .mockResolvedValueOnce([rec({ id: 'NOUVELLE' })])
+
+    const lent = store.reloadRecommendations()
+    await store.reloadRecommendations() // plus récent, répond tout de suite
+    repondreLent([rec({ id: 'ANCIENNE' })])
+    await lent
+
+    expect(store.recommendations.map((r) => r.id)).toEqual(['NOUVELLE'])
+    spy.mockRestore()
   })
 
   it('enregistre la décision sur une recommandation', async () => {
