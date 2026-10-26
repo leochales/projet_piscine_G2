@@ -99,8 +99,9 @@ def get_readings_history(
 def get_sensor_status() -> dict[str, Any]:
     """GET /api/v1/sensors/status — état de santé des capteurs par site.
 
-    Retourne un dict dont les clés sont les site_id et les valeurs décrivent
-    chaque capteur avec les champs `status` (ok | failing) et
-    `failing_until` (timestamp de rétablissement prévu, ou null).
+    Retourne un dict dont les clés sont les site_id. Chaque valeur contient
+    ``sensors`` (un état ``status`` ok | failing et ``failing_until`` par
+    capteur) et ``overall`` (ok | degraded | critical). Validé par
+    ``etl.schemas.SiteSensors``.
     """
     return _get("/api/v1/sensors/status")
