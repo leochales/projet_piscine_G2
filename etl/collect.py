@@ -85,7 +85,9 @@ def reading_slot(id_site: str, reading: dict[str, Any], now: datetime) -> dateti
     """Minute de la grille (UTC) à laquelle ranger une mesure de /current.
 
     C'est la minute de ``now`` (début du passage), pas celle de l'horodatage
-    de l'API, décalé (voir l'en-tête du module). Lève ReadingRejected si la clé est illisible, si la mesure concerne un
+    de l'API, décalé (voir l'en-tête du module).
+
+    Lève ReadingRejected si la clé est illisible, si la mesure concerne un
     autre site ou si son horodatage est trop loin de ``now``.
     """
     try:
@@ -195,8 +197,13 @@ def collect_site(id_site: str, reading: dict[str, Any], now: datetime) -> int:
 
 
 def collect(now: datetime | None = None) -> dict[str, int]:
-    """Collecte la mesure instantanée de tous les sites actifs déclarés."""
+    """Collecte la mesure instantanée de tous les sites actifs déclarés.
+
+    ``now`` sans fuseau est lu comme de l'UTC, comme les horodatages de
+    l'API Mock.
+    """
     now = now or datetime.now(tz=UTC)
+    now = now.replace(tzinfo=UTC) if now.tzinfo is None else now.astimezone(UTC)
 
     with get_engine().connect() as conn:
         declared = load_declared_sites(conn)
@@ -207,11 +214,12 @@ def collect(now: datetime | None = None) -> dict[str, int]:
         )
         sys.exit(EXIT_NO_DECLARED_SITE)
 
-    _warn_on_inconsistent_sites(declared)
-
-    # Appels en parallèle : toutes les mesures d'un passage tombent dans la
-    # même minute, même si un site répond lentement
-    with ThreadPoolExecutor(max_workers=len(declared)) as pool:
+    # Appels en parallèle, contrôle /sites compris : un site ou un /sites lent
+    # (timeout et retries) ne doit pas faire durer le passage plus d'une
+    # minute, sinon supercronic saute le suivant. La session HTTP partagée
+    # est sûre ici : seul son pool de connexions (urllib3, thread-safe) sert.
+    with ThreadPoolExecutor(max_workers=len(declared) + 1) as pool:
+        pool.submit(_warn_on_inconsistent_sites, declared)
         futures = {s: pool.submit(get_current_reading, s) for s in declared}
 
     total_inserted = sites_in_error = 0

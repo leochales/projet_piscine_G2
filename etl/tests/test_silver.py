@@ -206,7 +206,7 @@ def test_periode_prolongee_jusqu_a_now_moins_le_delai_si_bronze_en_retard() -> N
         now, silver_last=None, bronze_first=T0, bronze_last=T0 + 10 * STEP
     )
     assert periode == (T0, floor_to_step(now - SETTLE_DELAY))
-    assert periode[1] == T0 + 28 * STEP
+    assert periode[1] == T0 + 29 * STEP
 
 
 def test_periode_finit_a_bronze_last_quand_bronze_est_a_jour() -> None:

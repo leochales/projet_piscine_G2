@@ -55,10 +55,11 @@ MAX_IMPUTED_GAP = 5
 # Minutes déjà en silver retraitées à chaque exécution
 REPROCESS_MARGIN = timedelta(minutes=10)
 
-# Dernière minute matérialisée : now − SETTLE_DELAY. La mesure /current
-# d'une minute arrive pendant la minute suivante (horloge de l'API Mock en
-# retard) ; on attend donc avant de déclarer la minute manquante.
-SETTLE_DELAY = timedelta(minutes=2)
+# Dernière minute matérialisée quand bronze est en retard : now − SETTLE_DELAY.
+# La collecte range sa mesure sur la minute du passage (horloge locale) et
+# tourne juste avant silver ; on laisse une minute de marge à un passage lent
+# avant de déclarer la minute manquante.
+SETTLE_DELAY = timedelta(minutes=1)
 
 # Consommation au-delà de ce multiple de la capacité : capteur aberrant
 MAX_LOAD_RATIO = 2.0

@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 import requests
+from sqlalchemy.exc import OperationalError
 
 from etl import api_client, collect
 from etl.collect import (
@@ -118,10 +119,6 @@ class FakeEngine:
     begin = connect
 
 
-def _historique_interdit(*_: Any, **__: Any) -> Any:
-    pytest.fail("la collecte minute ne doit pas appeler /api/v1/readings")
-
-
 @pytest.fixture
 def fake_db(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     state: dict[str, Any] = {
@@ -144,7 +141,6 @@ def fake_db(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr(collect, "get_sites", list)
     monkeypatch.setattr(collect, "get_current_reading", get_current_reading)
     monkeypatch.setattr(collect, "insert_bronze", insert_bronze)
-    monkeypatch.setattr(api_client, "get_readings_history", _historique_interdit)
     return state
 
 
@@ -163,10 +159,42 @@ def test_collect_additionne_les_insertions(fake_db: dict[str, Any]) -> None:
     }
 
 
-def test_collect_n_appelle_jamais_l_historique(fake_db: dict[str, Any]) -> None:
-    # La fixture fait échouer le test si /api/v1/readings est appelé
-    assert not hasattr(collect, "get_readings_history")
-    assert collect.collect(NOW)["sites_in_error"] == 0
+def test_collect_n_appelle_jamais_l_historique() -> None:
+    # /api/v1/readings tire des valeurs aléatoires : plus aucun client
+    assert not hasattr(api_client, "get_readings_history")
+
+
+def test_un_echec_base_sur_un_site_n_arrete_pas_les_autres(
+    fake_db: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def insert_bronze(_: Any, id_site: str, ts: datetime, payload: Any) -> bool:
+        if id_site == "SITE002":
+            raise OperationalError("INSERT", {}, Exception("connexion perdue"))
+        fake_db["inserted"].append((id_site, ts, payload))
+        return True
+
+    monkeypatch.setattr(collect, "insert_bronze", insert_bronze)
+
+    assert collect.collect(NOW) == {
+        "sites": 3,
+        "readings_inserted": 2,
+        "sites_in_error": 1,
+    }
+
+
+def test_collect_accepte_une_heure_sans_fuseau(fake_db: dict[str, Any]) -> None:
+    collect.collect(NOW.replace(tzinfo=None))
+    assert len(fake_db["inserted"]) == 3
+
+
+def test_le_controle_des_sites_ne_bloque_pas_la_collecte(
+    fake_db: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def get_sites() -> list[SiteInfo]:
+        raise requests.Timeout("GET /sites trop lent")
+
+    monkeypatch.setattr(collect, "get_sites", get_sites)
+    assert collect.collect(NOW)["readings_inserted"] == 3
 
 
 def test_un_site_en_echec_api_ou_rejete_n_arrete_pas_les_autres(
@@ -230,8 +258,3 @@ def test_collect_site_renvoie_0_si_la_minute_est_deja_collectee(
 ) -> None:
     monkeypatch.setattr(collect, "insert_bronze", lambda *_: False)
     assert collect.collect_site("SITE001", _mesure("SITE001"), NOW) == 0
-
-
-def test_get_readings_history_refuse_une_limite_invalide() -> None:
-    with pytest.raises(ValueError, match="limit"):
-        api_client.get_readings_history("SITE001", NOW, NOW, 1001)
