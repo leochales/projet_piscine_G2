@@ -56,6 +56,7 @@ Le dépôt est privé sur un plan Free, sans *GitHub Environments*. Les secrets 
 | `DEV_KEYCLOAK_DB_PASSWORD` / `PROD_KEYCLOAK_DB_PASSWORD` | Compte `keycloak` (base `keycloak`) |
 | `DEV_KEYCLOAK_ADMIN_PASSWORD` / `PROD_KEYCLOAK_ADMIN_PASSWORD` | Administrateur initial de Keycloak |
 | `DEV_KEYCLOAK_ADMIN_CLIENT_SECRET` / `PROD_KEYCLOAK_ADMIN_CLIENT_SECRET` | Secret du client `enervision-admin` (création des comptes par l'API) |
+| `DEV_AZURE_ACCOUNT_SAS` / `PROD_AZURE_ACCOUNT_SAS` | SAS du conteneur `restic-dev` / `restic-prod` du stockage des sauvegardes ([`infra/terraform`](terraform/README.md)). Pas encore lu par le déploiement |
 
 | Variables                                    | Obligatoire | Rôle                                          |
 |----------------------------------------------|-------------|-----------------------------------------------|
@@ -64,6 +65,7 @@ Le dépôt est privé sur un plan Free, sans *GitHub Environments*. Les secrets 
 | `DEV_ETL_ENABLED` / `PROD_ETL_ENABLED`       | non         | `false` pour désactiver l'ETL (défaut `true`) |
 | `DEV_KEYCLOAK_ADMIN` / `PROD_KEYCLOAK_ADMIN` | oui         | Identifiant de l'administrateur initial de Keycloak |
 | `VM_IP`                                      | oui         | IP de la VM, inscrite dans le certificat et dans l'adresse de retour de connexion de Keycloak (`FRONT_URL`) |
+| `AZURE_ACCOUNT_NAME`                         | non         | Compte de stockage des sauvegardes (`terraform output storage_account_name`), commun à dev et prod |
 
 Utiliser des mots de passe différents entre dev et prod. Les mots de passe des comptes des services (`ETL_`, `MODEL_`, `API_`, `BACKUP_`, `KEYCLOAK_DB_PASSWORD`) sont **réappliqués à chaque déploiement** par la migration de la base : pour en changer un, modifier le secret puis redéployer. Exceptions :
 - `POSTGRES_PASSWORD` (superutilisateur) n'est appliqué qu'à la **création** de la base (volume vide). Le changer ensuite : `ALTER ROLE` dans la base, puis mettre à jour le secret ;

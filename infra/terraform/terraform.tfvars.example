@@ -1,0 +1,14 @@
+# Copier en terraform.tfvars (ignoré par Git) et remplir
+subscription_id      = "00000000-0000-0000-0000-000000000000"
+resource_group_name  = "rg-enervision-backup"
+storage_account_name = "enervisionbackup"
+
+# IP publique de sortie de la VM, pas son IP privée 10.43.43.x
+# (curl -s https://ifconfig.me depuis la VM, ou workflow Azure storage check)
+allowed_ips = ["203.0.113.10"]
+
+# Valeurs par défaut, à changer si besoin
+# replication_type        = "LRS"
+# retention_days          = 30
+# version_cleanup_enabled = true
+# tags                    = { user = "prenom.nom" }  # tag exigé par une policy
