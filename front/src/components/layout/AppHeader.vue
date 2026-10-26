@@ -1,25 +1,40 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { onKeyStroke } from '@vueuse/core'
 import { Menu, X } from '@lucide/vue'
 
 import { Button } from '@/components/ui/button'
 import AlertCountBadge from '@/components/layout/AlertCountBadge.vue'
-import RoleSwitcher from '@/components/layout/RoleSwitcher.vue'
+import UserMenu from '@/components/layout/UserMenu.vue'
 import ThemeToggle from '@/components/layout/ThemeToggle.vue'
 import { useOperationsStore } from '@/stores/operations'
+import { DASHBOARD_ROLES, useUserStore } from '@/stores/user'
 
-const links = [
+const user = useUserStore()
+
+// Réactif : les rôles changent au renouvellement du jeton, et un compte peut être déclaré
+// non rattaché par l'API à tout moment (onUnlinkedAccount)
+const hasDashboard = computed(() => !user.unlinked && user.hasAnyRole(DASHBOARD_ROLES))
+
+const DASHBOARD_LINKS = [
   { to: { name: 'overview' }, label: "Vue d'ensemble" },
   { to: { name: 'sites' }, label: 'Sites' },
   { to: { name: 'alerts' }, label: 'Alertes et recommandations', alertCount: true },
 ]
+const links = computed(() => (hasDashboard.value ? DASHBOARD_LINKS : []))
 
-// Le nombre d'alertes à traiter est visible depuis toutes les pages : le store est chargé ici.
-// Sans réponse du service, le badge reste simplement caché (l'écran 3 affiche l'erreur).
+// Le nombre d'alertes à traiter est visible depuis toutes les pages : le store est chargé ici,
+// dès que l'utilisateur a accès au dashboard. Sans réponse du service, le badge reste
+// simplement caché (l'écran 3 affiche l'erreur).
 const operations = useOperationsStore()
-onMounted(() => operations.load().catch(() => {}))
+watch(
+  hasDashboard,
+  (access) => {
+    if (access) operations.load().catch(() => {})
+  },
+  { immediate: true },
+)
 
 // Menu mobile (sous 768 px) : fermé dès qu'on change de page, ou avec Échap
 const menuOpen = ref(false)
@@ -50,7 +65,7 @@ onKeyStroke('Escape', () => (menuOpen.value = false))
       </nav>
 
       <div class="flex items-center gap-1">
-        <div class="hidden md:block"><RoleSwitcher /></div>
+        <div class="hidden md:block"><UserMenu /></div>
         <ThemeToggle />
         <Button
           variant="ghost"
@@ -86,8 +101,8 @@ onKeyStroke('Escape', () => (menuOpen.value = false))
         </RouterLink>
       </nav>
       <div class="mt-2 flex items-center justify-between border-t border-border pt-2">
-        <span class="px-2 text-xs text-muted-foreground">Rôle</span>
-        <RoleSwitcher />
+        <span class="px-2 text-xs text-muted-foreground">Compte</span>
+        <UserMenu />
       </div>
     </div>
   </header>

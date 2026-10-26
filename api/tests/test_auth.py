@@ -19,7 +19,10 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 
 from api.auth import (
+    CODE_COMPTE_NON_RATTACHE,
     DELAI_RECHARGEMENT_CLES,
+    DETAIL_COMPTE_NON_RATTACHE,
+    ENTETE_ERREUR,
     _derniers_signalements,
     exiger_role,
     get_client_cles,
@@ -415,3 +418,47 @@ def test_swagger_declare_le_jeton_bearer(client: TestClient) -> None:
 def test_exiger_role_sans_role_est_une_erreur_de_code() -> None:
     with pytest.raises(ValueError):
         exiger_role()
+
+
+# --- Utilisateur connecté (GET /api/moi) -----------------------------------------
+
+
+@pytest.mark.parametrize("roles", [["CONSULT-SITE"], ["MONITORING"], []])
+def test_moi_renvoie_l_utilisateur_quel_que_soit_son_role(
+    client: TestClient, roles: list[str]
+) -> None:
+    # Le front l'appelle après la connexion : même un rôle sans accès aux données
+    # doit savoir que son jeton et son compte sont reconnus
+    response = client.get("/api/moi", headers=entete(creer_jeton(roles=roles)))
+
+    assert response.status_code == 200
+    assert response.json() == {"id": SUB, "id_client": 1, "roles": sorted(roles)}
+
+
+def test_moi_compte_non_rattache_403(client: TestClient, base: FausseBase) -> None:
+    base.utilisateurs = {}
+
+    response = client.get("/api/moi", headers=entete(creer_jeton()))
+
+    # Le front reconnaît le code de l'en-tête (front/src/lib/api.ts), pas le message
+    assert response.status_code == 403
+    assert response.headers[ENTETE_ERREUR] == CODE_COMPTE_NON_RATTACHE
+    assert response.json() == {"detail": DETAIL_COMPTE_NON_RATTACHE}
+
+
+def test_moi_ne_renvoie_que_les_roles_de_l_application(client: TestClient) -> None:
+    # Rôles réels d'un jeton Keycloak : les rôles techniques du realm sont écartés
+    roles = [
+        "CONSULT-SITE",
+        "default-roles-enervision",
+        "offline_access",
+        "uma_authorization",
+    ]
+
+    response = client.get("/api/moi", headers=entete(creer_jeton(roles=roles)))
+
+    assert response.json()["roles"] == ["CONSULT-SITE"]
+
+
+def test_moi_sans_jeton_401_meme_avec_un_parametre_inconnu(client: TestClient) -> None:
+    assert client.get("/api/moi?inconnu=1").status_code == 401
