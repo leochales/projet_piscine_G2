@@ -1,35 +1,62 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
+import type { KeycloakTokenParsed } from 'keycloak-js'
 
-// Rôles du wireframe. Ils viendront du token Keycloak (ticket dédié),
-// et les sites suivis de la table app.utilisateur_site.
-export type Role = 'energy_manager' | 'site_manager' | 'direction'
+// Rôles du realm Keycloak enervision, du plus large au plus restreint
+export const ROLE_LABELS = {
+  'GESTION-CLIENT': 'Gestion client',
+  'GESTION-SITE': 'Gestion site',
+  'CONSULT-CLIENT': 'Consultation client',
+  'CONSULT-SITE': 'Consultation site',
+  MONITORING: 'Monitoring',
+} as const
 
-export const ROLE_LABELS: Record<Role, string> = {
-  energy_manager: 'Responsable énergie',
-  site_manager: 'Responsable de site',
-  direction: 'Direction',
-}
+export type Role = keyof typeof ROLE_LABELS
+
+const ROLES = Object.keys(ROLE_LABELS) as Role[]
+
+/** Rôles qui donnent accès aux écrans du dashboard */
+export const DASHBOARD_ROLES: readonly Role[] = [
+  'GESTION-CLIENT',
+  'GESTION-SITE',
+  'CONSULT-CLIENT',
+  'CONSULT-SITE',
+]
+
+/** Rôles qui peuvent agir sur les alertes et les recommandations (écran 3) */
+export const ACTION_ROLES: readonly Role[] = ['GESTION-CLIENT', 'GESTION-SITE']
+
+const isRole = (value: string): value is Role => ROLES.includes(value as Role)
 
 export const useUserStore = defineStore('user', () => {
-  const role = ref<Role>('energy_manager')
-  // Nom affiché dans l'historique des actions. Démonstration : viendra du jeton Keycloak
-  // (SMARTOPS-85)
-  const nom = ref('Camille Martin')
-  // Sites dont l'utilisateur est responsable (utilisé pour le rôle site_manager)
-  const siteIds = ref<string[]>(['SITE002'])
+  const roles = ref<Role[]>([])
+  const nom = ref('')
+  const email = ref('')
 
-  const roleLabel = computed(() => ROLE_LABELS[role.value])
+  /** Libellé du rôle le plus large de l'utilisateur */
+  const roleLabel = computed(() => {
+    const main = ROLES.find((role) => roles.value.includes(role))
+    return main ? ROLE_LABELS[main] : 'Aucun rôle'
+  })
 
-  /**
-   * Règle du wireframe (écran 3) : le responsable énergie agit sur tous les sites,
-   * le responsable de site seulement sur les siens, la direction est en lecture seule.
-   */
-  function canActOn(siteId: string) {
-    if (role.value === 'energy_manager') return true
-    if (role.value === 'site_manager') return siteIds.value.includes(siteId)
-    return false
+  function setFromToken(claims: KeycloakTokenParsed) {
+    roles.value = (claims.realm_access?.roles ?? []).filter(isRole)
+    email.value = claims.email ?? ''
+    const fullName = [claims.given_name, claims.family_name].filter(Boolean).join(' ')
+    nom.value = claims.name || fullName || email.value
   }
 
-  return { role, nom, siteIds, roleLabel, canActOn }
+  function hasAnyRole(allowed: readonly Role[]) {
+    return allowed.some((role) => roles.value.includes(role))
+  }
+
+  /**
+   * Un utilisateur voit tous les sites de son client : seuls les rôles de gestion agissent
+   * sur les alertes et les recommandations, les rôles de consultation sont en lecture seule.
+   */
+  function canActOn(_siteId: string) {
+    return hasAnyRole(ACTION_ROLES)
+  }
+
+  return { roles, nom, email, roleLabel, setFromToken, hasAnyRole, canActOn }
 })
