@@ -6,9 +6,10 @@
 # (SMARTOPS-24), puis consommation horaire dans gold, heure en cours comprise
 # (SMARTOPS-25), puis dernière mesure et état des capteurs dans gold
 # (SMARTOPS-23), puis alertes : seuils dépassés et capteurs en panne
-# (SMARTOPS-26). Une minute non collectée reste un trou. L'amorçage d'une base
+# (SMARTOPS-26), puis recommandations des alertes en cours (SMARTOPS-40).
+# Une minute non collectée reste un trou. L'amorçage d'une base
 # neuve (SMARTOPS-22, etl/bootstrap.py) n'est pas ici : il est lancé en
 # arrière-plan au démarrage du conteneur (etl/Dockerfile).
 # « ; » et non « && » : chaque étape traite ce qui est déjà disponible même si
 # la précédente a échoué (API Mock injoignable…).
-* * * * * python -m etl.collect; python -m etl.silver; python -m etl.gold_hourly; python -m etl.gold_latest; python -m etl.gold_alerts
+* * * * * python -m etl.collect; python -m etl.silver; python -m etl.gold_hourly; python -m etl.gold_latest; python -m etl.gold_alerts; python -m etl.recommandations
