@@ -51,6 +51,107 @@ Consommation heure par heure d'un site (lue dans `gold.consommation_horaire`), e
 
 `cout_eur` = `consommation_kwh` × `PRIX_KWH_EUR` (variable du `.env`, tarif fixe provisoire de 0,14 € HT/kWh). Il vaut `null` si la consommation manque.
 
+### `GET /api/sites/{id_site}/predictions`
+
+Prévisions horaires d'un site (lues dans `gold.prediction`) pour les heures à venir : de l'heure pleine qui suit jusqu'à l'horizon demandé (24 ou 168 heures). Le modèle ajoute des lignes à chaque exécution : pour chaque heure, seule la prévision la plus récente est renvoyée.
+
+| Paramètre | Obligatoire | Par défaut | Valeurs |
+|---|---|---|---|
+| `horizon` | non | `24h` | `24h`, `7j` |
+
+```json
+[
+  {
+    "heure": "2026-10-26T15:00:00Z",
+    "consommation_kwh": 1790.0,
+    "consommation_basse_kwh": 1700.0,
+    "consommation_haute_kwh": 1870.0,
+    "pic_prevu": true,
+    "calculee_le": "2026-10-26T14:05:00Z",
+    "version_modele": "rf-3"
+  }
+]
+```
+
+La fourchette (`consommation_basse_kwh`, `consommation_haute_kwh`) vaut `null` si le modèle n'en donne pas.
+
+### `GET /api/alertes`
+
+Alertes des sites actifs (lues dans `app.alerte_etat`), avec leur prise en compte. Les alertes en cours viennent d'abord, triées par gravité (`critical`, `high`, `medium`, `low`) puis de la plus récente à la plus ancienne. Avec `en_cours=false`, les alertes terminées suivent, de la plus récente à la plus ancienne : une vieille alerte critique ne cache pas les alertes récentes.
+
+| Paramètre | Obligatoire | Par défaut | Rôle |
+|---|---|---|---|
+| `en_cours` | non | `true` | `false` inclut les alertes terminées |
+| `id_site` | non | tous les sites | Alertes d'un seul site |
+| `limite` | non | `100` | Nombre maximal d'alertes (1 à 500) |
+
+```json
+[
+  {
+    "id_alerte": 12,
+    "id_site": "SITE002",
+    "nom_site": "Usine Lyon Vénissieux",
+    "source": "etl",
+    "type": "spike",
+    "severite": "critical",
+    "message": "Pic à 1 150 kW",
+    "debut": "2026-10-26T13:12:00Z",
+    "fin": null,
+    "valeur": 1150.0,
+    "seuil": 1000.0,
+    "prise_en_compte": true,
+    "prise_par": "8f2c6c1e-4b7a-4d55-9a57-1f0e3b2f6a10",
+    "prise_le": "2026-10-26T13:20:00Z"
+  }
+]
+```
+
+`fin` vaut `null` tant que l'alerte est en cours. `prise_par` est l'identifiant Keycloak de l'utilisateur qui l'a prise en compte.
+
+### `GET /api/recommandations`
+
+Recommandations des sites actifs (lues dans `app.recommandation_etat`), de la plus récente à la plus ancienne. `statut` est la dernière décision, ou `proposee` tant que personne n'a décidé.
+
+| Paramètre | Obligatoire | Par défaut | Rôle |
+|---|---|---|---|
+| `id_site` | non | tous les sites | Recommandations d'un seul site |
+| `statut` | non | tous | `proposee`, `acceptee` ou `refusee` |
+| `limite` | non | `100` | Nombre maximal de recommandations (1 à 500) |
+
+```json
+[
+  {
+    "id_recommandation": 7,
+    "id_site": "SITE002",
+    "nom_site": "Usine Lyon Vénissieux",
+    "id_alerte": 12,
+    "regle": "decaler_production",
+    "titre": "Décaler la ligne 2 après 20 h",
+    "description": null,
+    "date_creation": "2026-10-26T13:15:00Z",
+    "gain_estime_eur": 380.0,
+    "periode_gain": "unique",
+    "statut": "acceptee",
+    "decide_par": "8f2c6c1e-4b7a-4d55-9a57-1f0e3b2f6a10",
+    "decide_le": "2026-10-26T13:30:00Z"
+  }
+]
+```
+
+`gain_estime_eur` et `periode_gain` (`unique` ou `semaine`) valent tous deux `null` si le gain n'est pas estimé.
+
+### `GET /api/recommandations/economies`
+
+Économies réalisées par site actif (lues dans `app.economies_realisees`) : somme des gains estimés des recommandations acceptées. Un site sans recommandation acceptée figure avec 0 €.
+
+```json
+[
+  { "id_site": "SITE002", "nb_recommandations_acceptees": 2, "economies_eur": 500.0 }
+]
+```
+
+Un gain par semaine n'est compté qu'une fois : `economies_eur` additionne des gains uniques et hebdomadaires.
+
 ## Lancer l'API
 
 ### Avec Docker Compose (depuis la racine du dépôt)
