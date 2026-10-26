@@ -1,6 +1,6 @@
 name: Images
 
-# Construit api, etl et front une seule fois, teste la stack de prod complète avec ces
+# Construit api, etl, front et model une seule fois, teste la stack de prod complète avec ces
 # images (Traefik + compose-prod.yml, scripts db/ compris), les scanne avec Trivy, puis,
 # appelé par deploy.yml avec push: true, les publie sur GHCR taguées par le SHA du commit.
 # La VM déploie ensuite exactement ces images (docker compose pull), sans les reconstruire.
@@ -69,7 +69,7 @@ jobs:
         with:
           source: .
           files: compose-prod.yml
-          targets: api,etl,front
+          targets: api,etl,front,dataset
           load: true
           set: |
             *.pull=true
@@ -81,6 +81,8 @@ jobs:
             etl.cache-to=type=gha,scope=etl,mode=max
             front.cache-from=type=gha,scope=front
             front.cache-to=type=gha,scope=front,mode=max
+            dataset.cache-from=type=gha,scope=model
+            dataset.cache-to=type=gha,scope=model,mode=max
 
       - uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
         with:
@@ -98,7 +100,7 @@ jobs:
           echo "TRIVY_DIR=$dir" >> "$GITHUB_ENV"
           (
             failed=""
-            for service in api etl front; do
+            for service in api etl front model; do
               trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 \
                 --format table --ignorefile .trivyignore --skip-version-check \
                 "$IMAGE_REPO/enervision-$service:$IMAGE_TAG" > "$dir/$service.log" 2>&1 \
@@ -169,6 +171,36 @@ jobs:
           [ -n "$(docker compose -f compose-prod.yml ps etl --status running -q)" ] \
             || { echo "::error::Le conteneur etl n'est pas démarré"; exit 1; }
 
+      # Job du jeu d'entraînement (profil jobs), sur un petit CSV généré : image du modèle,
+      # montage des données brutes et enregistrement dans le MLflow de la stack
+      - name: Tester le job du jeu d'entraînement
+        run: |
+          raw="$RUNNER_TEMP/dataset-raw"
+          mkdir -p "$raw"
+          python3 - "$raw" <<'PY'
+          import csv, json, sys
+          from datetime import datetime, timedelta
+          raw = sys.argv[1]
+          start = datetime(2023, 1, 1)
+          with open(f"{raw}/all_sites_combined.csv", "w", newline="") as f:
+              out = csv.writer(f)
+              out.writerow(["timestamp", "site_id", "consumption_kwh"])
+              for site in ("SITE001", "SITE002"):
+                  for h in range(48):
+                      value = "" if h == 10 else 100 + h
+                      out.writerow([(start + timedelta(hours=h)).isoformat(" "), site, value])
+          meta = {"site_id": "SITE001", "anomalies": [
+              {"timestamp": "2023-01-01T05:00:00", "type": "spike", "severity": "high"}]}
+          with open(f"{raw}/SITE001_metadata.json", "w") as f:
+              json.dump(meta, f)
+          PY
+          DATASET_RAW_DIR="$raw" docker compose -f compose-prod.yml run --rm --pull never \
+            dataset 2>&1 | tee "$RUNNER_TEMP/dataset.log"
+          grep -q "jeu enregistré dans MLflow" "$RUNNER_TEMP/dataset.log" \
+            || { echo "::error::Le jeu n'a pas été enregistré dans MLflow"; exit 1; }
+          docker compose -f compose-prod.yml exec -T mlflow python -c \
+            "import urllib.request; urllib.request.urlopen('http://localhost:5000/mlflow/api/2.0/mlflow/experiments/get-by-name?experiment_name=jeu-entrainement')"
+
       # Même migration que deploy.yml. Les scripts de db/ ont déjà tourné à la création de
       # la base : ce second passage échoue si l'un d'eux ne peut pas être rejoué sur une
       # base existante. Les tests SQL qui suivent portent donc sur une base migrée.
@@ -219,7 +251,7 @@ jobs:
             echo "::error::Les scans Trivy n'ont pas fini en 5 minutes"
             exit 1
           fi
-          for service in api etl front; do
+          for service in api etl front model; do
             echo "::group::Trivy - $service"
             cat "$TRIVY_DIR/$service.log"
             echo "::endgroup::"
@@ -238,7 +270,7 @@ jobs:
         run: |
           echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           trap 'docker logout ghcr.io >/dev/null' EXIT
-          docker compose -f compose-prod.yml push api etl front
+          docker compose -f compose-prod.yml push api etl front dataset
 
       # GHCR est gratuit « pour l'instant » : on ne garde que les 20 dernières versions
       - name: Purger les anciennes versions (api)
@@ -265,5 +297,14 @@ jobs:
         uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
         with:
           package-name: enervision-front
+          package-type: container
+          min-versions-to-keep: 20
+
+      - name: Purger les anciennes versions (model)
+        if: inputs.push
+        continue-on-error: true
+        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
+        with:
+          package-name: enervision-model
           package-type: container
           min-versions-to-keep: 20

@@ -157,6 +157,19 @@ jobs:
           trap 'docker logout ghcr.io >/dev/null' EXIT
           docker compose -f compose-prod.yml pull --quiet
 
+      # Données brutes du jeu d'entraînement (DVC, data/raw.dvc) : vérifie que le stockage
+      # DVC de la VM contient la version du commit. Sans effet sur l'application : un échec
+      # n'arrête pas le déploiement.
+      - name: Vérifier les données du jeu d'entraînement
+        continue-on-error: true
+        env:
+          DVC_STORE: ${{ vars.DVC_STORE }}
+        run: |
+          if ! infra/dataset/pull.sh; then
+            echo "::warning::Données du jeu absentes du stockage DVC de la VM (dvc push depuis un poste, voir infra/runner.md) : le workflow Dataset ne pourra pas construire le jeu"
+            exit 1
+          fi
+
       # Les scripts de db/ ne tournent qu'à la création du volume : migrate.sh les rejoue
       # tous sur la base existante (nouvelles tables, comptes, droits, mots de passe).
       # Avant le démarrage des nouvelles images, qui peuvent dépendre du nouveau schéma.

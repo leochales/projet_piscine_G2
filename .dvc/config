@@ -1,0 +1,5 @@
+[core]
+    analytics = false
+    remote = vm
+['remote "vm"']
+    url = ssh://enervision-vm/srv/enervision-dvc
