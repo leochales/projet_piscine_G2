@@ -148,16 +148,27 @@ def insert_bronze(
 
 
 def log_stale_sites(conn: Connection, id_sites: list[str]) -> None:
-    """Logge un warning pour chaque site dont la dernière mesure est trop vieille."""
+    """Logge un warning pour chaque site sans mesure récente, ou sans mesure du tout.
+
+    La dernière mesure est lue site par site par l'index (id_site,
+    horodatage), sans parcourir bronze.
+    """
     sql = text("""
-        SELECT id_site, NOW() - MAX(horodatage) AS lag
-        FROM bronze.raw_readings
-        WHERE id_site = ANY(:ids)
-        GROUP BY id_site
-        HAVING NOW() - MAX(horodatage) > :threshold
+        SELECT s.id_site, now() - b.derniere AS lag
+        FROM unnest(CAST(:ids AS varchar[])) AS s (id_site)
+        LEFT JOIN LATERAL (
+            SELECT max(r.horodatage) AS derniere
+            FROM bronze.raw_readings AS r
+            WHERE r.id_site = s.id_site
+        ) AS b ON true
+        WHERE b.derniere IS NULL OR now() - b.derniere > :threshold
+        ORDER BY s.id_site
     """)
     for row in conn.execute(sql, {"ids": id_sites, "threshold": STALE_THRESHOLD}):
-        logger.warning("site %s : dernière mesure il y a %s", row.id_site, row.lag)
+        if row.lag is None:
+            logger.warning("site %s : aucune mesure en bronze", row.id_site)
+        else:
+            logger.warning("site %s : dernière mesure il y a %s", row.id_site, row.lag)
 
 
 def _warn_on_inconsistent_sites(declared: dict[str, float]) -> None:

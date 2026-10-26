@@ -28,6 +28,11 @@ de MAX_LOAD_RATIO × capacité sont jugées physiquement aberrantes.
 Rejouable : chaque exécution retraite les REPROCESS_MARGIN dernières
 minutes déjà en silver (upsert), ce qui impute un trou dès que la mesure qui
 le suit arrive.
+
+Un site actif sans aucune mesure en bronze apparaît quand même en silver
+(``no_reading``) à partir du premier passage qui le voit. Le travail d'un
+passage est borné à MAX_MINUTES_PER_RUN minutes par site : un long retard
+(site réactivé, historique ancien) est rattrapé sur plusieurs passages.
 """
 
 from __future__ import annotations
@@ -62,6 +67,15 @@ REPROCESS_MARGIN = timedelta(minutes=10)
 # tourne juste avant silver ; on laisse une minute de marge à un passage lent
 # avant de déclarer la minute manquante.
 SETTLE_DELAY = timedelta(minutes=1)
+
+# Minutes écrites au plus par site et par passage, marge de retraitement
+# comprise (le contexte d'imputation, lu mais pas écrit, s'y ajoute). 8 jours :
+# l'amorçage de 7 jours (etl.bootstrap.BOOTSTRAP_DEPTH) et les minutes
+# collectées pendant qu'il tourne passent en un seul passage, soit ~11 500
+# lignes (quelques secondes), bien en deçà de la minute du cron. Au-delà (site
+# réactivé après des mois), le reste est traité aux passages suivants. Doit
+# rester très supérieur à REPROCESS_MARGIN, sinon le rattrapage n'avance pas.
+MAX_MINUTES_PER_RUN = 8 * 24 * 60
 
 # Consommation au-delà de ce multiple de la capacité : capteur aberrant
 MAX_LOAD_RATIO = 2.0
@@ -196,12 +210,16 @@ def build_silver_rows(
     grid_end: datetime,
     bronze: dict[datetime, BronzeRow],
     output_from: datetime,
+    output_to: datetime | None = None,
 ) -> tuple[list[dict[str, Any]], list[Rejection]]:
-    """Construit les lignes silver de ``output_from`` à ``grid_end`` (inclus).
+    """Construit les lignes silver de ``output_from`` à ``output_to`` (inclus).
 
-    Les minutes entre ``grid_start`` et ``output_from`` servent de contexte
-    à l'imputation et ne sont pas renvoyées.
+    ``output_to`` vaut ``grid_end`` par défaut. Les minutes entre
+    ``grid_start`` et ``output_from``, et entre ``output_to`` et ``grid_end``,
+    servent de contexte à l'imputation et ne sont pas renvoyées.
     """
+    if output_to is None:
+        output_to = grid_end
     rows: list[dict[str, Any]] = []
     rejections: list[Rejection] = []
     ts = grid_start
@@ -224,43 +242,102 @@ def build_silver_rows(
             None if value is None else round(100 * value / capacite_kw, 2)
         )
 
-    rows = [r for r in rows if r["horodatage"] >= output_from]
-    rejections = [r for r in rejections if r.horodatage >= output_from]
+    rows = [r for r in rows if output_from <= r["horodatage"] <= output_to]
+    rejections = [r for r in rejections if output_from <= r.horodatage <= output_to]
     return rows, rejections
 
 
 def _processing_range(
     conn: Connection, id_site: str, now: datetime
 ) -> tuple[datetime, datetime] | None:
-    """Période à (re)traiter pour un site, ou None s'il n'y a rien en bronze.
+    """Période à (re)traiter pour un site, au plus MAX_MINUTES_PER_RUN minutes.
 
     La période va jusqu'à ``now − SETTLE_DELAY`` même si bronze s'arrête
-    avant : une collecte en panne apparaît en silver (``no_reading``) au
-    lieu de rester invisible jusqu'à la reprise.
+    avant, ou n'a encore aucune mesure : une collecte en panne, ou un site
+    jamais collecté, apparaît en silver (``no_reading``) au lieu de rester
+    invisible. Sans bronze ni silver, silver commence à cette minute.
 
-    Si bronze a des minutes plus anciennes que silver (amorçage relancé après
-    le début de la collecte, ``etl.bootstrap``), tout bronze est retraité.
+    Silver reste d'un seul tenant, de sa première à sa dernière minute :
+      - cas courant, il avance depuis sa dernière minute (moins la marge de
+        retraitement) ;
+      - si la première mesure de bronze manque en silver, ou n'y est qu'en
+        ``no_reading`` (amorçage relancé après le début de la collecte,
+        ``etl.bootstrap``), il repart de cette mesure. Si elle précède silver
+        de plus d'un passage, il recule d'un passage à la fois, en recouvrant
+        la marge de retraitement au début de silver.
+    Le reste de la période (rattrapage) est traité aux passages suivants.
+
+    Les requêtes passent par les index (id_site, horodatage) et s'arrêtent à
+    la première ligne trouvée : leur coût ne dépend pas du volume du site.
     """
     sql = text("""
+        WITH b AS (
+            SELECT
+                (
+                    SELECT horodatage FROM bronze.raw_readings
+                    WHERE id_site = :id_site
+                      AND horodatage = date_trunc('minute', horodatage)
+                    ORDER BY horodatage LIMIT 1
+                ) AS bronze_first,
+                (
+                    SELECT horodatage FROM bronze.raw_readings
+                    WHERE id_site = :id_site
+                      AND horodatage = date_trunc('minute', horodatage)
+                    ORDER BY horodatage DESC LIMIT 1
+                ) AS bronze_last
+        )
         SELECT
-            (SELECT MIN(horodatage) FROM silver.silver_readings
+            (SELECT min(horodatage) FROM silver.silver_readings
              WHERE id_site = :id_site) AS silver_first,
-            (SELECT MAX(horodatage) FROM silver.silver_readings
+            (SELECT max(horodatage) FROM silver.silver_readings
              WHERE id_site = :id_site) AS silver_last,
-            MIN(horodatage) AS bronze_first,
-            MAX(horodatage) AS bronze_last
-        FROM bronze.raw_readings
-        WHERE id_site = :id_site
-          AND horodatage = date_trunc('minute', horodatage)
+            b.bronze_first,
+            b.bronze_last,
+            EXISTS (
+                SELECT 1 FROM silver.silver_readings AS s
+                WHERE s.id_site = :id_site
+                  AND s.horodatage = b.bronze_first
+                  AND s.bronze_id IS NOT NULL
+            ) AS bronze_first_in_silver
+        FROM b
     """)
     r = conn.execute(sql, {"id_site": id_site}).one()
-    if r.bronze_last is None:
-        return None
-    if r.silver_last is None or r.bronze_first < r.silver_first:
-        start = r.bronze_first
+    run = (MAX_MINUTES_PER_RUN - 1) * STEP
+    target = floor_to_step(now - SETTLE_DELAY)
+    if r.bronze_last is not None:
+        target = max(target, r.bronze_last)
+
+    if r.silver_last is None:
+        start = r.bronze_first if r.bronze_first is not None else target
+    elif (
+        r.bronze_first is not None
+        and r.bronze_first <= r.silver_last
+        and not r.bronze_first_in_silver
+    ):
+        # Recul d'un passage au plus, en gardant la marge sur le début de
+        # silver : la fin de la période (start + run) recouvre silver_first
+        start = max(r.bronze_first, r.silver_first - run + REPROCESS_MARGIN)
+        if start > r.bronze_first:
+            logger.info(
+                "site %s : rattrapage de l'historique, silver recule à %s "
+                "(bronze commence à %s)",
+                id_site,
+                start.isoformat(timespec="minutes"),
+                r.bronze_first.isoformat(timespec="minutes"),
+            )
     else:
-        start = max(r.silver_last - REPROCESS_MARGIN, r.bronze_first)
-    end = max(r.bronze_last, floor_to_step(now - SETTLE_DELAY))
+        start = max(r.silver_last - REPROCESS_MARGIN, r.silver_first)
+
+    end = min(target, start + run)
+    # Dernière minute de silver après ce passage
+    front = end if r.silver_last is None else max(r.silver_last, end)
+    if front < target:
+        logger.info(
+            "site %s : rattrapage, silver à jour jusqu'à %s (retard %s)",
+            id_site,
+            front.isoformat(timespec="minutes"),
+            target - front,
+        )
     if start > end:
         return None
     return start, end
@@ -332,10 +409,18 @@ def transform_site(
     if period is None:
         return 0
     start, end = period
-    context_start = start - (MAX_IMPUTED_GAP + 1) * STEP
-    bronze = _load_bronze(conn, id_site, context_start, end)
+    # Contexte d'imputation des deux côtés : la fin de la période peut être
+    # suivie de minutes déjà en silver (rattrapage de l'historique)
+    context = (MAX_IMPUTED_GAP + 1) * STEP
+    bronze = _load_bronze(conn, id_site, start - context, end + context)
     rows, rejections = build_silver_rows(
-        id_site, capacite_kw, context_start, end, bronze, output_from=start
+        id_site,
+        capacite_kw,
+        start - context,
+        end + context,
+        bronze,
+        output_from=start,
+        output_to=end,
     )
     if rows:
         conn.execute(UPSERT_SILVER, rows)

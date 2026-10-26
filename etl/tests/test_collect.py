@@ -1,6 +1,8 @@
+import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -257,3 +259,35 @@ def test_collect_site_renvoie_0_si_la_minute_est_deja_collectee(
 ) -> None:
     monkeypatch.setattr(collect, "insert_bronze", lambda *_: False)
     assert collect.collect_site("SITE001", _mesure("SITE001"), NOW) == 0
+
+
+# --- Sites rassis (requête remplacée) ----------------------------------------
+
+
+class _StaleConn:
+    """Connexion dont execute(...) renvoie les sites rassis (site, retard)."""
+
+    def __init__(self, rows: list[tuple[str, timedelta | None]]) -> None:
+        self.rows = rows
+        self.params: dict[str, Any] = {}
+
+    def execute(self, _: Any, params: dict[str, Any]) -> list[Any]:
+        self.params = params
+        return [SimpleNamespace(id_site=s, lag=lag) for s, lag in self.rows]
+
+
+def test_site_rassis_et_site_jamais_collecte_signales(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    conn = _StaleConn([("SITE001", timedelta(minutes=42)), ("SITE-TEST", None)])
+    with caplog.at_level(logging.WARNING, logger=collect.__name__):
+        collect.log_stale_sites(conn, ["SITE001", "SITE002", "SITE-TEST"])  # type: ignore[arg-type]
+
+    assert conn.params == {
+        "ids": ["SITE001", "SITE002", "SITE-TEST"],
+        "threshold": collect.STALE_THRESHOLD,
+    }
+    assert [r.getMessage() for r in caplog.records] == [
+        "site SITE001 : dernière mesure il y a 0:42:00",
+        "site SITE-TEST : aucune mesure en bronze",
+    ]
