@@ -6,7 +6,6 @@ import type {
   FleetKpis,
   FleetTrend,
   PredictionPoint,
-  Recommendation,
   Site,
   SiteOverview,
   SiteSeries,
@@ -104,26 +103,7 @@ export const alerts: Alert[] = [
   },
 ]
 
-export const recommendations: Recommendation[] = [
-  {
-    id: 'REC-1',
-    siteId: 'SITE002',
-    titre: 'Décaler la ligne de production B de 14 h à 20 h',
-    alerteLiee: 'pic prévu',
-    gainEstimeEur: 380,
-    periodeGain: 'ponctuel',
-    statut: 'proposee',
-  },
-  {
-    id: 'REC-2',
-    siteId: 'SITE006',
-    titre: "Programmer l'arrêt de la climatisation à 22 h",
-    alerteLiee: null,
-    gainEstimeEur: 45,
-    periodeGain: 'semaine',
-    statut: 'proposee',
-  },
-]
+// Recommandations : mocks/recommandations.ts, au format de l'API
 
 // Hypothèses de calcul en attendant les vraies valeurs (tarif du contrat, facteurs ADEME)
 const TARIF_EUR_KWH = 0.18

@@ -9,11 +9,14 @@ import type { Recommendation } from '@/types/energy'
 const rec = (over: Partial<Recommendation>): Recommendation => ({
   id: 'R',
   siteId: 'SITE002',
+  nomSite: 'Usine de Lyon',
   titre: 'Test',
-  alerteLiee: null,
+  description: null,
+  alerteId: null,
   gainEstimeEur: 100,
-  periodeGain: 'ponctuel',
+  periodeGain: 'unique',
   statut: 'proposee',
+  creeeLe: '2026-10-26T08:00:00Z',
   ...over,
 })
 
@@ -21,8 +24,12 @@ describe('useOperationsStore', () => {
   beforeEach(() => setActivePinia(createPinia()))
 
   it('ramène un gain hebdomadaire au mois', () => {
-    expect(monthlyGain(rec({ periodeGain: 'ponctuel' }))).toBe(100)
+    expect(monthlyGain(rec({ periodeGain: 'unique' }))).toBe(100)
     expect(monthlyGain(rec({ periodeGain: 'semaine' }))).toBeCloseTo((100 * 52) / 12)
+  })
+
+  it('compte 0 € pour un gain pas encore estimé', () => {
+    expect(monthlyGain(rec({ gainEstimeEur: null, periodeGain: null }))).toBe(0)
   })
 
   it('ne compte que les recommandations acceptées dans les économies', () => {
@@ -51,6 +58,39 @@ describe('useOperationsStore', () => {
     await store.acknowledge(critical.id)
     await store.acknowledge('inconnue') // sans effet
     expect(store.pendingCritical).toBe(0)
+  })
+
+  it('ne lance qu’un chargement quand l’en-tête et l’écran le demandent en même temps', async () => {
+    const spy = vi.spyOn(service, 'fetchRecommendations')
+    const store = useOperationsStore()
+
+    await Promise.all([store.load(), store.load()])
+
+    expect(spy).toHaveBeenCalledTimes(1)
+    spy.mockRestore()
+  })
+
+  it('un rechargement des recommandations garde les décisions prises', async () => {
+    const store = useOperationsStore()
+    await store.load()
+    const id = store.recommendations[0]!.id
+    await store.decide(id, 'refusee')
+
+    await store.reloadRecommendations()
+
+    expect(store.recommendations.find((r) => r.id === id)?.statut).toBe('refusee')
+  })
+
+  it('une décision confirmée pendant un rechargement s’applique à la liste rechargée', async () => {
+    const store = useOperationsStore()
+    await store.load()
+    const id = store.recommendations[0]!.id
+
+    const decision = store.decide(id, 'acceptee')
+    await store.reloadRecommendations() // la liste est remplacée pendant l'envoi
+    await decision
+
+    expect(store.recommendations.find((r) => r.id === id)?.statut).toBe('acceptee')
   })
 
   it('ne recharge pas les données déjà chargées', async () => {

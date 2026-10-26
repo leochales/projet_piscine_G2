@@ -13,9 +13,11 @@ import type { Alert, Recommendation } from '@/types/energy'
 
 const WEEKS_PER_MONTH = 52 / 12
 
-/** Gain ramené au mois : un gain hebdomadaire compte pour ~4,3 semaines */
-export const monthlyGain = (rec: Recommendation) =>
-  rec.periodeGain === 'semaine' ? rec.gainEstimeEur * WEEKS_PER_MONTH : rec.gainEstimeEur
+/** Gain ramené au mois : un gain hebdomadaire compte pour ~4,3 semaines ; non estimé : 0 */
+export function monthlyGain(rec: Recommendation) {
+  const gain = rec.gainEstimeEur ?? 0
+  return rec.periodeGain === 'semaine' ? gain * WEEKS_PER_MONTH : gain
+}
 
 /**
  * Alertes et recommandations, partagées entre la vue d'ensemble et l'écran 3 :
@@ -33,15 +35,38 @@ export const useOperationsStore = defineStore('operations', () => {
   // Alertes et recommandations dont l'action est en cours d'envoi : leurs boutons sont bloqués,
   // un double clic n'envoie pas deux fois la même action
   const pending = ref(new Set<string>())
+  // Décisions confirmées pendant la session : un rechargement des recommandations ne les
+  // annule pas (tant que les décisions ne sont pas enregistrées par l'API, US7)
+  const decisions = new Map<string, 'acceptee' | 'refusee'>()
 
-  async function load() {
-    if (loaded.value) return
-    ;[alerts.value, recommendations.value, previousSavings.value] = await Promise.all([
-      fetchAlerts(),
-      fetchRecommendations(),
-      fetchPreviousSavings(),
-    ])
-    loaded.value = true
+  // Chargement en cours : l'en-tête et l'écran le demandent au même moment, une seule
+  // requête part, et une réponse tardive n'écrase pas une action faite entre-temps
+  let loading: Promise<void> | null = null
+
+  function load(): Promise<void> {
+    if (loaded.value) return Promise.resolve()
+    loading ??= (async () => {
+      try {
+        ;[alerts.value, recommendations.value, previousSavings.value] = await Promise.all([
+          fetchAlerts(),
+          fetchRecommendations().then(withDecisions),
+          fetchPreviousSavings(),
+        ])
+        loaded.value = true
+      } finally {
+        loading = null
+      }
+    })()
+    return loading
+  }
+
+  const withDecisions = (list: Recommendation[]) =>
+    list.map((r) => (decisions.has(r.id) ? { ...r, statut: decisions.get(r.id)! } : r))
+
+  /** Recharge les recommandations (rafraîchissement de la page d'un site) */
+  async function reloadRecommendations() {
+    if (!loaded.value) return load()
+    recommendations.value = withDecisions(await fetchRecommendations())
   }
 
   /** Envoie l'action une seule fois à la fois par élément ; l'erreur est relancée à l'appelant */
@@ -75,12 +100,16 @@ export const useOperationsStore = defineStore('operations', () => {
   }
 
   async function decide(id: string, statut: 'acceptee' | 'refusee') {
-    const rec = recommendations.value.find((r) => r.id === id)
-    if (!rec) return
+    if (!recommendations.value.some((r) => r.id === id)) return
     await send(
       id,
       () => decideRecommendation(id, statut),
-      () => (rec.statut = statut),
+      () => {
+        decisions.set(id, statut)
+        // Cherchée à nouveau : la liste a pu être rechargée pendant l'envoi
+        const rec = recommendations.value.find((r) => r.id === id)
+        if (rec) rec.statut = statut
+      },
     )
   }
 
@@ -105,6 +134,7 @@ export const useOperationsStore = defineStore('operations', () => {
     loaded,
     pending,
     load,
+    reloadRecommendations,
     acknowledge,
     decide,
     pendingAlerts,
