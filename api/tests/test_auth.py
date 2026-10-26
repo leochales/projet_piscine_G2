@@ -4,6 +4,9 @@ Keycloak n'est pas démarré : les jetons sont signés avec une clé RSA génér
 les tests, et le client des clés est remplacé par un faux qui renvoie cette clé.
 """
 
+import io
+import json
+import logging
 import re
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -15,7 +18,13 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 
-from api.auth import exiger_role, get_client_cles, retrouver_id_client
+from api.auth import (
+    DELAI_RECHARGEMENT_CLES,
+    _derniers_signalements,
+    exiger_role,
+    get_client_cles,
+    retrouver_id_client,
+)
 from api.main import app
 from api.routers.health import database_status
 from common.config import get_settings
@@ -26,6 +35,16 @@ AUTRE_CLE = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
 SUB = "8f2c6c1e-4b7a-4d55-9a57-1f0e3b2f6a10"
 ROUTE_PROTEGEE = "/api/sites/derniere-mesure"
+
+# Routes de données du dashboard : mêmes règles d'accès pour toutes (main.py)
+ROUTES_DE_DONNEES = [
+    ROUTE_PROTEGEE,
+    "/api/sites/SITE001/consommation",
+    "/api/sites/SITE001/predictions",
+    "/api/alertes",
+    "/api/recommandations",
+    "/api/recommandations/economies",
+]
 
 # Routes /api volontairement publiques : santé et documentation
 ROUTES_PUBLIQUES = {
@@ -204,14 +223,17 @@ def test_sub_qui_n_est_pas_un_uuid_401(client: TestClient) -> None:
 # --- 403 : rôle insuffisant ---------------------------------------------------
 
 
-def test_sans_role_403(client: TestClient) -> None:
+@pytest.mark.parametrize("url", ROUTES_DE_DONNEES)
+def test_sans_role_403(client: TestClient, url: str) -> None:
     jeton = creer_jeton(roles=[])
-    assert client.get(ROUTE_PROTEGEE, headers=entete(jeton)).status_code == 403
+    assert client.get(url, headers=entete(jeton)).status_code == 403
 
 
-def test_role_monitoring_seul_403(client: TestClient) -> None:
+@pytest.mark.parametrize("url", ROUTES_DE_DONNEES)
+def test_role_monitoring_seul_403(client: TestClient, url: str) -> None:
+    # MONITORING sert à la supervision : il n'ouvre aucune donnée métier
     jeton = creer_jeton(roles=["MONITORING"])
-    assert client.get(ROUTE_PROTEGEE, headers=entete(jeton)).status_code == 403
+    assert client.get(url, headers=entete(jeton)).status_code == 403
 
 
 def test_jeton_sans_realm_access_403(client: TestClient) -> None:
@@ -252,12 +274,13 @@ def test_elements_non_textes_ignores(client: TestClient) -> None:
 # --- Accès autorisé -----------------------------------------------------------
 
 
+@pytest.mark.parametrize("url", ROUTES_DE_DONNEES)
 @pytest.mark.parametrize(
     "role", ["CONSULT-SITE", "CONSULT-CLIENT", "GESTION-SITE", "GESTION-CLIENT"]
 )
-def test_role_metier_autorise(client: TestClient, role: str) -> None:
+def test_role_metier_autorise(client: TestClient, role: str, url: str) -> None:
     jeton = creer_jeton(roles=[role])
-    assert client.get(ROUTE_PROTEGEE, headers=entete(jeton)).status_code == 200
+    assert client.get(url, headers=entete(jeton)).status_code == 200
 
 
 def test_utilisateur_absent_de_la_base_403(
@@ -283,6 +306,22 @@ def test_l_api_ne_cree_jamais_d_utilisateur(
     assert not any("INSERT" in requete for requete in base.requetes)
 
 
+def test_compte_absent_signale_une_seule_fois_par_heure(
+    client: TestClient, base: FausseBase, caplog: pytest.LogCaptureFixture
+) -> None:
+    base.utilisateurs = {}
+    _derniers_signalements.clear()
+
+    with caplog.at_level(logging.WARNING, logger="api.auth"):
+        for _ in range(5):  # le dashboard rappelle l'API régulièrement
+            client.get(ROUTE_PROTEGEE, headers=entete(creer_jeton()))
+
+    avertissements = [
+        r for r in caplog.records if "absent de app.utilisateur" in r.message
+    ]
+    assert len(avertissements) == 1
+
+
 @pytest.mark.parametrize("id_client", [7, None])
 def test_retrouver_id_client_lit_le_client_enregistre(id_client: int | None) -> None:
     # None : administrateur EnerVision, rattaché à aucun client
@@ -299,6 +338,45 @@ def test_keycloak_injoignable_503(client: TestClient) -> None:
     app.dependency_overrides[get_client_cles] = ClientClesInjoignable
     response = client.get(ROUTE_PROTEGEE, headers=entete(creer_jeton()))
     assert response.status_code == 503
+
+
+def test_kid_inconnu_ne_fait_pas_appeler_keycloak_a_chaque_requete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Des jetons au kid inventé ne déclenchent pas un rechargement des clés par requête."""
+    get_client_cles.cache_clear()
+    client_cles = get_client_cles()
+    jwk = jwt.algorithms.RSAAlgorithm.to_jwk(CLE_KEYCLOAK.public_key(), as_dict=True)
+    jwks = json.dumps({"keys": [{**jwk, "kid": "cle-keycloak", "use": "sig"}]}).encode()
+    appels: list[str] = []
+
+    # Faux Keycloak au niveau du réseau : le code de PyJWT (cache, délai entre deux
+    # rechargements) tourne tel quel
+    class FauxOuvreur:
+        def open(self, requete: Any, timeout: float) -> io.BytesIO:
+            appels.append(requete.full_url)
+            return io.BytesIO(jwks)
+
+    monkeypatch.setattr(
+        jwt.jwks_client.urllib.request, "build_opener", lambda *_: FauxOuvreur()
+    )
+    try:
+        for n in range(5):
+            jeton = jwt.encode(
+                {"sub": SUB},
+                CLE_KEYCLOAK,
+                algorithm="RS256",
+                headers={"kid": f"invente-{n}"},
+            )
+            with pytest.raises(jwt.PyJWKClientError):
+                client_cles.get_signing_key_from_jwt(jeton)
+    finally:
+        get_client_cles.cache_clear()
+
+    # Un seul chargement des clés pour les 5 jetons, pas un par requête
+    assert len(appels) == 1
+    assert appels[0].endswith("/protocol/openid-connect/certs")
+    assert client_cles.cooldown_duration == DELAI_RECHARGEMENT_CLES
 
 
 # --- Routes protégées ---------------------------------------------------------

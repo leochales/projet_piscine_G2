@@ -28,6 +28,8 @@ L'API vérifie (`api/auth.py`) :
 
 Les routes de données (mesures, consommation, prédictions, alertes, recommandations et économies) sont ouvertes aux rôles `CONSULT-SITE`, `CONSULT-CLIENT`, `GESTION-SITE` et `GESTION-CLIENT`. Le rôle `MONITORING` seul n'y donne pas accès.
 
+**Cloisonnement par client** : chaque route de données ne renvoie que les sites du client de l'utilisateur (`app.site.id_client`, dépendance `ClientCourant` de `api/auth.py`). Le site d'un autre client se comporte comme un site inconnu (liste vide). Un administrateur EnerVision (`id_client` vide dans `app.utilisateur`) voit tous les clients. Le filtrage par site, pour les rôles `*-SITE`, viendra avec l'US6 (SMARTOPS-60).
+
 **Protéger une nouvelle route** : ajouter la dépendance `exiger_role(...)` au routeur dans `main.py`, ou à la route pour récupérer l'utilisateur connecté :
 
 ```python

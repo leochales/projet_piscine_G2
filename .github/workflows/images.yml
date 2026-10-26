@@ -192,11 +192,55 @@ jobs:
         with:
           python-version: "3.14"
 
-      # Contrat OpenAPI vérifié sur le conteneur de l'API, derrière Traefik
+      # Jeton Keycloak pour tester les routes protégées. Sur cette stack jetable seulement :
+      # connexion par mot de passe ouverte sur enervision-front (fermée dans le realm), et
+      # compte de test administrateur EnerVision (sans client : voit toutes les données).
+      - name: Compte de test et jeton Keycloak
+        env:
+          CI_TEST_PASSWORD: ci-schemathesis-mot-de-passe
+        run: |
+          kcadm() {
+            docker compose -f compose-prod.yml exec -T -e KC_CLI_PASSWORD keycloak \
+              /opt/keycloak/bin/kcadm.sh "$@" --config /tmp/kcadm-ci.config
+          }
+          KC_CLI_PASSWORD="$KEYCLOAK_ADMIN_PASSWORD" kcadm config credentials \
+            --server http://localhost:8080/auth --realm master --user "$KEYCLOAK_ADMIN"
+          id_front=$(kcadm get clients -r enervision -q clientId=enervision-front \
+            --fields id --format csv --noquotes)
+          kcadm update "clients/$id_front" -r enervision -s directAccessGrantsEnabled=true
+          # Jeton valable 30 min : le temps de toute la campagne Schemathesis
+          kcadm update realms/enervision -s accessTokenLifespan=1800
+          id_user=$(kcadm create users -r enervision -i -s username=ci-schemathesis \
+            -s email=ci-schemathesis@example.test -s firstName=CI -s lastName=Schemathesis \
+            -s enabled=true -s emailVerified=true)
+          KC_CLI_PASSWORD="$CI_TEST_PASSWORD" kcadm set-password -r enervision --userid "$id_user"
+          kcadm add-roles -r enervision --uid "$id_user" --rolename GESTION-CLIENT
+          docker compose -f compose-prod.yml exec -T db \
+            psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+            -c "INSERT INTO app.utilisateur (id) VALUES ('$id_user')"
+
+          token=$(curl -fsSk https://localhost:8443/auth/realms/enervision/protocol/openid-connect/token \
+            -d grant_type=password -d client_id=enervision-front -d username=ci-schemathesis \
+            --data-urlencode "password=$CI_TEST_PASSWORD" | jq -r .access_token)
+          [ -n "$token" ] && [ "$token" != null ] || { echo "::error::Pas de jeton Keycloak"; exit 1; }
+          echo "::add-mask::$token"
+          echo "API_TOKEN=$token" >> "$GITHUB_ENV"
+
+          # Chaîne complète : jeton émis par Keycloak (adresse publique), vérifié par l'API
+          # avec les clés lues en interne, compte retrouvé dans app.utilisateur
+          url="https://localhost:8443/api/sites/derniere-mesure"
+          code=$(curl -sk -o /dev/null -w '%{http_code}' "$url")
+          [ "$code" = 401 ] || { echo "::error::Sans jeton : $code au lieu de 401"; exit 1; }
+          code=$(curl -sk -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" "$url")
+          [ "$code" = 200 ] || { echo "::error::Avec jeton : $code au lieu de 200"; exit 1; }
+
+      # Contrat OpenAPI vérifié sur le conteneur de l'API, derrière Traefik, avec le jeton
+      # du compte de test : les routes protégées sont testées au-delà du 401
       - name: Contrat d'API (Schemathesis)
         run: |
           pip install schemathesis==4.29.4
-          schemathesis run https://localhost:8443/api/openapi.json --checks all --tls-verify false
+          schemathesis run https://localhost:8443/api/openapi.json --checks all --tls-verify false \
+            --header "Authorization: Bearer $API_TOKEN"
 
       - name: Logs de la stack
         if: failure()

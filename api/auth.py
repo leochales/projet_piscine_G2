@@ -18,6 +18,7 @@ ou, pour récupérer l'utilisateur connecté dans la route :
 """
 
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
@@ -71,14 +72,25 @@ def refuser_jeton(detail: str) -> HTTPException:
     )
 
 
+# Délai minimal entre deux rechargements forcés des clés (s). Sans lui, des jetons
+# portant un kid inventé feraient appeler Keycloak à chaque requête, sans compte.
+DELAI_RECHARGEMENT_CLES = 60
+
+
 @lru_cache
 def get_client_cles() -> jwt.PyJWKClient:
     """Client des clés publiques de Keycloak, créé une seule fois.
 
     Les clés sont gardées en cache (1 h). Si un jeton est signé par une clé
-    inconnue (rotation des clés dans Keycloak), le client recharge les clés.
+    inconnue (rotation des clés dans Keycloak), le client recharge les clés, au
+    plus une fois par DELAI_RECHARGEMENT_CLES.
     """
-    return jwt.PyJWKClient(get_settings().keycloak_url_cles, lifespan=3600, timeout=5)
+    return jwt.PyJWKClient(
+        get_settings().keycloak_url_cles,
+        lifespan=3600,
+        timeout=5,
+        cooldown_duration=DELAI_RECHARGEMENT_CLES,
+    )
 
 
 def lire_jeton(
@@ -128,11 +140,33 @@ def retrouver_id_client(session: Session, id_utilisateur: UUID) -> int | None:
     requete = text("SELECT id_client FROM app.utilisateur WHERE id = :id")
     ligne = session.execute(requete, {"id": id_utilisateur}).mappings().first()
     if ligne is None:
-        logger.warning("Utilisateur absent de app.utilisateur : %s", id_utilisateur)
+        signaler_compte_absent(id_utilisateur)
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, "Compte non rattaché à un client"
         )
     return ligne["id_client"]
+
+
+# Un compte absent de app.utilisateur est signalé une fois par heure : le dashboard
+# rappelle l'API chaque minute, chaque refus ne doit pas produire un avertissement
+DELAI_SIGNALEMENT = 3600
+_derniers_signalements: dict[UUID, float] = {}
+
+
+def signaler_compte_absent(id_utilisateur: UUID) -> None:
+    maintenant = time.monotonic()
+    dernier = _derniers_signalements.get(id_utilisateur)
+    if dernier is not None and maintenant - dernier < DELAI_SIGNALEMENT:
+        logger.debug("Utilisateur absent de app.utilisateur : %s", id_utilisateur)
+        return
+    # Mémoire bornée : des jetons valides de comptes absents restent rares
+    if len(_derniers_signalements) >= 1000:
+        _derniers_signalements.clear()
+    _derniers_signalements[id_utilisateur] = maintenant
+    logger.warning(
+        "Utilisateur absent de app.utilisateur (403 jusqu'à son enregistrement) : %s",
+        id_utilisateur,
+    )
 
 
 def lire_roles(contenu: dict[str, Any]) -> frozenset[str]:
@@ -162,6 +196,23 @@ def utilisateur_courant(
     roles = lire_roles(contenu)
     id_client = retrouver_id_client(session, id_utilisateur)
     return Utilisateur(id=id_utilisateur, id_client=id_client, roles=roles)
+
+
+def client_courant(
+    utilisateur: Annotated[Utilisateur, Depends(utilisateur_courant)],
+) -> int | None:
+    """Client dont l'utilisateur voit les données ; None : administrateur EnerVision (tous).
+
+    utilisateur_courant n'est évalué qu'une fois par requête (cache des dépendances
+    FastAPI) : pas de deuxième lecture de app.utilisateur.
+    """
+    return utilisateur.id_client
+
+
+# Périmètre des routes de données : chaque requête ne lit que les sites du client de
+# l'utilisateur. Condition écrite dans le SQL de chaque route (app.site en alias s) :
+#   (CAST(:id_client AS BIGINT) IS NULL OR s.id_client = :id_client)
+ClientCourant = Annotated[int | None, Depends(client_courant)]
 
 
 def exiger_role(*roles_autorises: str) -> Callable[..., Utilisateur]:

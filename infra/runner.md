@@ -159,13 +159,22 @@ Les comptes se créent dans Keycloak. En temps normal, ce sont les gestionnaires
     ```
 
     ```sql
-    -- Compte rattaché à un client
-    INSERT INTO app.utilisateur (id, id_client)
-    SELECT '<sub>', id_client FROM app.client WHERE nom = 'Démo EnerVision';
+    -- Compte rattaché à un client. INTO STRICT : erreur si le nom du client est mal
+    -- écrit, au lieu d'un INSERT 0 0 silencieux (le compte recevrait alors un 403)
+    DO $$
+    DECLARE
+        client BIGINT;
+    BEGIN
+        SELECT id_client INTO STRICT client FROM app.client WHERE nom = 'Démo EnerVision';
+        INSERT INTO app.utilisateur (id, id_client) VALUES ('<sub>', client);
+    END
+    $$;
 
     -- Administrateur EnerVision (aucun client)
     INSERT INTO app.utilisateur (id) VALUES ('<sub>');
     ```
+
+    Noms des clients existants : `SELECT nom FROM app.client;`
 
     En local : `docker compose -f compose-local.yml exec db ...`, ou pgAdmin.
 

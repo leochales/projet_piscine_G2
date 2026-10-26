@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -162,7 +163,12 @@ def test_alertes_par_defaut_seulement_en_cours(client: TestClient) -> None:
 
     client.get("/api/alertes")
 
-    assert session.parametres == {"en_cours": True, "id_site": None, "limite": 100}
+    assert session.parametres == {
+        "id_client": 1,
+        "en_cours": True,
+        "id_site": None,
+        "limite": 100,
+    }
 
 
 def test_alertes_filtre_par_site_et_inclut_les_terminees(client: TestClient) -> None:
@@ -171,7 +177,12 @@ def test_alertes_filtre_par_site_et_inclut_les_terminees(client: TestClient) -> 
     response = client.get("/api/alertes?en_cours=false&id_site=SITE002&limite=20")
 
     assert response.status_code == 200
-    assert session.parametres == {"en_cours": False, "id_site": "SITE002", "limite": 20}
+    assert session.parametres == {
+        "id_client": 1,
+        "en_cours": False,
+        "id_site": "SITE002",
+        "limite": 20,
+    }
 
 
 @pytest.mark.parametrize("limite", [0, 501])
@@ -235,6 +246,7 @@ def test_recommandations_filtre_par_site_et_statut(client: TestClient) -> None:
 
     assert response.status_code == 200
     assert session.parametres == {
+        "id_client": 1,
         "id_site": "SITE002",
         "statut": "proposee",
         "limite": 100,
@@ -246,7 +258,12 @@ def test_recommandations_sans_filtre(client: TestClient) -> None:
 
     client.get("/api/recommandations")
 
-    assert session.parametres == {"id_site": None, "statut": None, "limite": 100}
+    assert session.parametres == {
+        "id_client": 1,
+        "id_site": None,
+        "statut": None,
+        "limite": 100,
+    }
 
 
 def test_recommandations_refuse_un_statut_inconnu(client: TestClient) -> None:
@@ -281,3 +298,40 @@ def test_economies_par_site(client: TestClient) -> None:
             "economies_eur": 500.0,
         },
     ]
+
+
+# --- Cloisonnement par client ---------------------------------------------------
+
+ROUTES_DE_DONNEES = [
+    "/api/sites/derniere-mesure",
+    "/api/sites/SITE001/consommation",
+    "/api/sites/SITE001/predictions",
+    "/api/alertes",
+    "/api/recommandations",
+    "/api/recommandations/economies",
+]
+
+
+@pytest.mark.parametrize("url", ROUTES_DE_DONNEES)
+def test_chaque_route_ne_lit_que_le_client_de_l_utilisateur(
+    client: TestClient, url: str
+) -> None:
+    session = brancher([])
+
+    assert client.get(url).status_code == 200
+
+    assert session.parametres["id_client"] == UTILISATEUR_AUTORISE.id_client
+    assert "s.id_client = :id_client" in session.requete
+
+
+@pytest.mark.parametrize("url", ROUTES_DE_DONNEES)
+def test_un_administrateur_enervision_voit_tous_les_clients(
+    client: TestClient, url: str
+) -> None:
+    administrateur = replace(UTILISATEUR_AUTORISE, id_client=None)
+    app.dependency_overrides[utilisateur_courant] = lambda: administrateur
+    session = brancher([])
+
+    assert client.get(url).status_code == 200
+
+    assert session.parametres["id_client"] is None
