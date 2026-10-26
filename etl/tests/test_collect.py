@@ -7,7 +7,8 @@ import pytest
 import requests
 from sqlalchemy.exc import OperationalError
 
-from etl import api_client, collect
+from etl import collect
+from etl.bootstrap import STEP
 from etl.collect import (
     MAX_CLOCK_SKEW,
     ReadingRejected,
@@ -125,7 +126,18 @@ def fake_db(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "declared": {"SITE001": 200.0, "SITE002": 1000.0, "SITE003": 800.0},
         "calls": [],
         "inserted": [],
+        "to_bootstrap": set(),
+        "history_calls": [],
+        "history_inserted": [],
     }
+
+    def fetch_history(id_site: str, slot: datetime) -> list[Any]:
+        state["history_calls"].append((id_site, slot))
+        return [(slot - STEP, _mesure(id_site))]
+
+    def insert_history(_: Any, id_site: str, rows: list[Any]) -> int:
+        state["history_inserted"].append((id_site, rows))
+        return len(rows)
 
     def get_current_reading(site_id: str) -> dict[str, Any]:
         state["calls"].append(site_id)
@@ -141,6 +153,11 @@ def fake_db(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr(collect, "get_sites", list)
     monkeypatch.setattr(collect, "get_current_reading", get_current_reading)
     monkeypatch.setattr(collect, "insert_bronze", insert_bronze)
+    monkeypatch.setattr(
+        collect, "sites_to_bootstrap", lambda *_: set(state["to_bootstrap"])
+    )
+    monkeypatch.setattr(collect, "fetch_history", fetch_history)
+    monkeypatch.setattr(collect, "insert_history", insert_history)
     return state
 
 
@@ -159,9 +176,33 @@ def test_collect_additionne_les_insertions(fake_db: dict[str, Any]) -> None:
     }
 
 
-def test_collect_n_appelle_jamais_l_historique() -> None:
-    # /api/v1/readings tire des valeurs aléatoires : plus aucun client
-    assert not hasattr(api_client, "get_readings_history")
+def test_sans_site_a_amorcer_l_historique_n_est_pas_appele(
+    fake_db: dict[str, Any],
+) -> None:
+    collect.collect(NOW)
+    assert fake_db["history_calls"] == []
+
+
+def test_seuls_les_sites_vides_sont_amorces(fake_db: dict[str, Any]) -> None:
+    fake_db["to_bootstrap"] = {"SITE002"}
+
+    assert collect.collect(NOW)["readings_inserted"] == 3 + 1
+    assert fake_db["history_calls"] == [("SITE002", SLOT)]
+    assert [site for site, _ in fake_db["history_inserted"]] == ["SITE002"]
+
+
+def test_amorcage_en_echec_rien_n_est_insere_pour_le_site(
+    fake_db: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fetch_history(id_site: str, slot: datetime) -> list[Any]:
+        raise requests.Timeout("/readings trop lent")
+
+    fake_db["to_bootstrap"] = {"SITE002"}
+    monkeypatch.setattr(collect, "fetch_history", fetch_history)
+
+    assert collect.collect(NOW)["sites_in_error"] == 1
+    # Ni historique ni /current pour SITE002 : amorçage retenté au passage suivant
+    assert sorted(i[0] for i in fake_db["inserted"]) == ["SITE001", "SITE003"]
 
 
 def test_un_echec_base_sur_un_site_n_arrete_pas_les_autres(

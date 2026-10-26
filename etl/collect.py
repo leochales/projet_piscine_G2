@@ -5,23 +5,25 @@ collect() :
      dans ``app`` : les sites sont déclarés par l'application
      (``db/08_sites_demo.sql`` pour la démo). Les sites de l'API Mock non
      déclarés sont ignorés et signalés dans les logs.
-  2. Pour chaque site, lit la mesure instantanée via
+  2. Amorce une seule fois les sites sans aucune mesure en bronze : 24 h
+     d'historique simulé via GET /api/v1/readings (``etl.bootstrap``).
+  3. Pour chaque site, lit la mesure instantanée via
      GET /api/v1/sites/{site_id}/current et l'insère dans
      ``bronze.raw_readings``.
 
 Lancé toutes les minutes. /current est la seule source temps réel de l'API
 Mock (pannes capteurs, pics simulés). /api/v1/readings tire au contraire un
-historique aléatoire, différent à chaque appel : il ne doit pas alimenter la
-collecte minute, sinon bronze contient des valeurs inventées et les vrais
-trous de collecte sont masqués.
+historique aléatoire, différent à chaque appel : il ne sert qu'à l'amorçage
+d'une base neuve, jamais à la collecte minute ni à combler un trou (sinon
+bronze contient des valeurs inventées et les vraies coupures sont masquées).
 
 Grille de 60 s : la clé de bronze est la minute pleine (UTC) du passage,
 prise sur notre horloge. L'horodatage de /current n'est pas utilisé pour la
 clé : l'horloge de l'API Mock retarde d'environ 31 s, si bien qu'un passage
 lancé à hh:mm:00 par le cron tombe tantôt dans la minute précédente, tantôt
 dans la courante selon le temps de démarrage, ce qui créerait doublons et
-trous. Le payload brut, avec son horodatage exact, est conservé tel quel. La contrainte
-UNIQUE (id_site, horodatage) rend la collecte idempotente : deux passages
+trous. Le payload brut, avec son horodatage exact, est conservé tel quel.
+La contrainte UNIQUE (id_site, horodatage) rend la collecte idempotente : deux passages
 dans la même minute ne gardent que la première mesure. Une minute sans
 passage reste un trou, que silver rend visible (``no_reading``) et impute
 s'il est court.
@@ -49,12 +51,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from common.db import get_engine
 from common.logs import configure_logging
 from etl.api_client import get_current_reading, get_sites
+from etl.bootstrap import fetch_history, insert_history, sites_to_bootstrap
 from etl.schemas import ReadingKey, SiteInfo
 
 logger = logging.getLogger(__name__)
-
-# Pas de la grille de mesures
-STEP = timedelta(seconds=60)
 
 # Écart maximal toléré entre l'horodatage de la mesure et notre horloge.
 # L'horloge de l'API Mock retarde d'environ 31 s ; au-delà de ce seuil, la
@@ -178,6 +178,14 @@ def _warn_on_inconsistent_sites(declared: dict[str, float]) -> None:
         logger.warning(issue)
 
 
+def bootstrap_site(id_site: str, rows: list[tuple[datetime, dict[str, Any]]]) -> int:
+    """Insère l'historique d'amorçage d'un site. Retourne le nombre inséré."""
+    with get_engine().begin() as conn:
+        n = insert_history(conn, id_site, rows)
+    logger.info("site=%s : amorçage, %d mesure(s) /readings insérée(s)", id_site, n)
+    return n
+
+
 def collect_site(id_site: str, reading: dict[str, Any], now: datetime) -> int:
     """Range en bronze la mesure /current d'un site. Retourne 1 si insérée, 0 sinon.
 
@@ -207,6 +215,7 @@ def collect(now: datetime | None = None) -> dict[str, int]:
 
     with get_engine().connect() as conn:
         declared = load_declared_sites(conn)
+        to_bootstrap = sites_to_bootstrap(conn, list(declared)) if declared else set()
     if not declared:
         logger.error(
             "aucun site actif dans app.site : rien à collecter "
@@ -218,13 +227,19 @@ def collect(now: datetime | None = None) -> dict[str, int]:
     # (timeout et retries) ne doit pas faire durer le passage plus d'une
     # minute, sinon supercronic saute le suivant. La session HTTP partagée
     # est sûre ici : seul son pool de connexions (urllib3, thread-safe) sert.
-    with ThreadPoolExecutor(max_workers=len(declared) + 1) as pool:
+    slot = floor_to_step(now)
+    with ThreadPoolExecutor(max_workers=len(declared) + len(to_bootstrap) + 1) as pool:
         pool.submit(_warn_on_inconsistent_sites, declared)
+        histories = {s: pool.submit(fetch_history, s, slot) for s in to_bootstrap}
         futures = {s: pool.submit(get_current_reading, s) for s in declared}
 
     total_inserted = sites_in_error = 0
     for id_site, future in futures.items():
         try:
+            # Amorçage en échec : rien n'est inséré pour le site (pas même
+            # /current), il sera donc retenté au passage suivant
+            if id_site in histories:
+                total_inserted += bootstrap_site(id_site, histories[id_site].result())
             total_inserted += collect_site(id_site, future.result(), now)
         except requests.RequestException as exc:
             logger.error("site %s : échec API — %s", id_site, exc)
