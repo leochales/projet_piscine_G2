@@ -20,6 +20,7 @@ import EmptyState from '@/components/common/EmptyState.vue'
 import RequestError from '@/components/common/RequestError.vue'
 import TableSkeleton from '@/components/common/TableSkeleton.vue'
 import ConsumptionChart from '@/components/site/ConsumptionChart.vue'
+import SiteAlerts from '@/components/site/SiteAlerts.vue'
 import SiteRecommendations from '@/components/site/SiteRecommendations.vue'
 import SitesTable from '@/components/overview/SitesTable.vue'
 import { formatEur, formatKw, formatRelativeHour, formatTonnes } from '@/lib/format'
@@ -71,10 +72,12 @@ const series = useRequest(
 // l'affichage, inutile de les recharger quand on change de site
 const operations = useOperationsStore()
 const recommendations = useRequest(() => operations.reloadRecommendations())
+// Alertes de tous les sites, de même : un dépassement de seuil apparaît au rafraîchissement
+const alerts = useRequest(() => operations.reloadAlerts())
 
 // Rafraîchit tout chaque minute ; un changement de site ou de période recharge déjà de
 // lui-même (useRequest)
-const freshness = useAutoRefresh([siteList, site, costs, series, recommendations])
+const freshness = useAutoRefresh([siteList, site, costs, series, alerts, recommendations])
 
 const current = computed(() => site.data.value)
 const notFound = computed(() => site.status.value === 'success' && !site.data.value)
@@ -286,6 +289,7 @@ const openSite = (siteId: string) => router.push({ name: 'sites', params: { site
       </Card>
     </div>
 
+    <SiteAlerts :site-id="current.site.id" :request="alerts" />
     <SiteRecommendations :site-id="current.site.id" :request="recommendations" />
   </section>
 

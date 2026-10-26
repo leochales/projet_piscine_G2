@@ -23,6 +23,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import SeverityBadge from '@/components/alerts/SeverityBadge.vue'
+import { thresholdText } from '@/lib/alerts'
 import { formatRelativeDateTime } from '@/lib/format'
 import type { Alert } from '@/types/energy'
 
@@ -66,8 +67,18 @@ const isPending = (alert: Alert) => props.pending?.has(alert.id) ?? false
     <TableBody>
       <TableRow v-for="alert in alerts" :key="alert.id">
         <TableCell><SeverityBadge :gravite="alert.gravite" /></TableCell>
-        <TableCell>{{ alert.siteId }}</TableCell>
-        <TableCell class="whitespace-normal">{{ alert.message }}</TableCell>
+        <TableCell>
+          <span class="font-medium">{{ alert.siteId }}</span>
+          <span class="block text-xs text-muted-foreground">{{ alert.nomSite }}</span>
+        </TableCell>
+        <TableCell class="whitespace-normal">
+          {{ alert.message }}
+          <!-- Heure, et pour un dépassement de seuil la mesure comparée au seuil (US3) -->
+          <span class="block text-xs text-muted-foreground">
+            <time :datetime="alert.debut">{{ formatRelativeDateTime(alert.debut) }}</time>
+            <template v-if="thresholdText(alert)"> · {{ thresholdText(alert) }}</template>
+          </span>
+        </TableCell>
         <TableCell class="text-right">
           <!-- Qui l'a prise en compte et quand : tout le monde sait qui traite quoi (US7) -->
           <div
@@ -77,11 +88,12 @@ const isPending = (alert: Alert) => props.pending?.has(alert.id) ?? false
             <span class="inline-flex items-center gap-1">
               <Check class="size-4" aria-hidden="true" /> Prise en compte
             </span>
-            <span v-if="alert.prisePar" class="text-xs">
-              par {{ alert.prisePar
-              }}<template v-if="alert.priseLe"
-                >, {{ formatRelativeDateTime(alert.priseLe) }}</template
-              >
+            <!-- Le nom n'est connu que pour une prise en compte faite ici : l'API ne donne
+                 que l'identifiant de la personne -->
+            <span v-if="alert.prisePar || alert.priseLe" class="text-xs">
+              <template v-if="alert.prisePar">par {{ alert.prisePar }}</template
+              ><template v-if="alert.prisePar && alert.priseLe">, </template
+              ><template v-if="alert.priseLe">{{ formatRelativeDateTime(alert.priseLe) }}</template>
             </span>
           </div>
           <Button

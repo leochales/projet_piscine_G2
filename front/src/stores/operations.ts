@@ -56,6 +56,25 @@ export const useOperationsStore = defineStore('operations', () => {
     return request === recommendationsRequest ? withDecisions(list) : undefined
   }
 
+  // Prises en compte confirmées pendant la session : un rechargement des alertes ne les
+  // annule pas (tant que l'API ne les enregistre pas, US7)
+  const acknowledgments = new Map<string, Pick<Alert, 'priseEnCompte' | 'prisePar' | 'priseLe'>>()
+
+  const withAcknowledgments = (list: Alert[]) =>
+    list.map((a) => {
+      const acknowledgment = acknowledgments.get(a.id)
+      return acknowledgment ? { ...a, ...acknowledgment } : a
+    })
+
+  // Même principe que pour les recommandations : seule la réponse la plus récente compte
+  let alertsRequest = 0
+
+  async function fetchLatestAlerts(): Promise<Alert[] | undefined> {
+    const request = ++alertsRequest
+    const list = await fetchAlerts()
+    return request === alertsRequest ? withAcknowledgments(list) : undefined
+  }
+
   // Chargement en cours : l'en-tête et l'écran le demandent au même moment, une seule
   // requête part, et une réponse tardive n'écrase pas une action faite entre-temps
   let loading: Promise<void> | null = null
@@ -65,11 +84,11 @@ export const useOperationsStore = defineStore('operations', () => {
     loading ??= (async () => {
       try {
         const [alertList, recommendationList, previous] = await Promise.all([
-          fetchAlerts(),
+          fetchLatestAlerts(),
           fetchLatestRecommendations(),
           fetchPreviousSavings(),
         ])
-        alerts.value = alertList
+        if (alertList) alerts.value = alertList
         if (recommendationList) recommendations.value = recommendationList
         previousSavings.value = previous
         loaded.value = true
@@ -87,6 +106,15 @@ export const useOperationsStore = defineStore('operations', () => {
   async function reloadRecommendations() {
     const list = await fetchLatestRecommendations()
     if (list) recommendations.value = list
+  }
+
+  /**
+   * Recharge les alertes seules (page d'un site, et son rafraîchissement) : un nouveau
+   * dépassement de seuil apparaît sans recharger la page (US3).
+   */
+  async function reloadAlerts() {
+    const list = await fetchLatestAlerts()
+    if (list) alerts.value = list
   }
 
   /** Envoie l'action une seule fois à la fois par élément ; l'erreur est relancée à l'appelant */
@@ -110,12 +138,17 @@ export const useOperationsStore = defineStore('operations', () => {
     await send(
       alertId,
       () => acknowledgeAlert(alertId),
-      () =>
-        Object.assign(alert, {
+      () => {
+        const acknowledgment = {
           priseEnCompte: true,
           prisePar: user.nom,
           priseLe: new Date().toISOString(),
-        }),
+        }
+        acknowledgments.set(alertId, acknowledgment)
+        // Cherchée à nouveau : la liste a pu être rechargée pendant l'envoi
+        const current = alerts.value.find((a) => a.id === alertId)
+        if (current) Object.assign(current, acknowledgment)
+      },
     )
   }
 
@@ -157,6 +190,7 @@ export const useOperationsStore = defineStore('operations', () => {
     pending,
     load,
     reloadRecommendations,
+    reloadAlerts,
     acknowledge,
     decide,
     pendingAlerts,

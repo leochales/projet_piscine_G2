@@ -2,7 +2,6 @@
 // À remplacer par les appels à l'API quand les routes existeront.
 
 import type {
-  Alert,
   FleetKpis,
   FleetTrend,
   PredictionPoint,
@@ -61,47 +60,7 @@ export const kpis: FleetKpis = {
   co2JourTonnes: 2.1,
 }
 
-/** Hier à une heure donnée (heure du poste) : date de démonstration d'une action passée */
-function yesterdayAt(hour: number, minute: number) {
-  const d = new Date()
-  d.setDate(d.getDate() - 1)
-  d.setHours(hour, minute, 0, 0)
-  return d.toISOString()
-}
-
-export const alerts: Alert[] = [
-  {
-    id: 'ALR-1',
-    siteId: 'SITE002',
-    gravite: 'critique',
-    message: 'Pic prévu à 94 % de la capacité, demain 14 h',
-    priseEnCompte: false,
-  },
-  {
-    id: 'ALR-2',
-    siteId: 'SITE003',
-    gravite: 'moyenne',
-    message: 'Capteur en panne depuis 2 h',
-    priseEnCompte: false,
-  },
-  {
-    id: 'ALR-3',
-    siteId: 'SITE006',
-    gravite: 'faible',
-    message: 'Consommation inhabituelle la nuit',
-    priseEnCompte: false,
-  },
-  // Déjà prise en compte par une autre personne : montre « par qui, quand » sous l'alerte
-  {
-    id: 'ALR-4',
-    siteId: 'SITE004',
-    gravite: 'moyenne',
-    message: 'Température élevée en salle technique',
-    priseEnCompte: true,
-    prisePar: 'Léa Bernard',
-    priseLe: yesterdayAt(17, 40),
-  },
-]
+// Alertes : mocks/alertes.ts, au format de l'API
 
 // Recommandations : mocks/recommandations.ts, au format de l'API
 

@@ -13,8 +13,9 @@ async function mountView() {
   return wrapper
 }
 
+// Identifiant du site de chaque ligne (la cellule montre aussi le nom du site)
 const rows = (wrapper: Awaited<ReturnType<typeof mountView>>) =>
-  wrapper.findAll('tbody tr').map((tr) => tr.findAll('td')[1]!.text())
+  wrapper.findAll('tbody tr').map((tr) => tr.findAll('td')[1]!.find('span').text())
 
 describe('AlertsView : recommandations', () => {
   it('relie chaque recommandation à la page de son site', async () => {
@@ -30,18 +31,18 @@ describe('AlertsView : recommandations', () => {
 describe('AlertsView : filtres', () => {
   it('filtre les alertes par gravité, puis par site, et compte les résultats', async () => {
     const wrapper = await mountView()
-    expect(rows(wrapper)).toHaveLength(4)
+    expect(rows(wrapper)).toHaveLength(5)
 
     await wrapper
       .findAll('[role="radio"], button')
       .find((b) => b.text() === 'moyenne')!
       .trigger('click')
     expect(rows(wrapper)).toEqual(['SITE003', 'SITE004'])
-    expect(wrapper.text()).toContain('2 alertes sur 4')
+    expect(wrapper.text()).toContain('2 alertes sur 5')
 
     await wrapper.get('select#filtre-site').setValue('SITE004')
     expect(rows(wrapper)).toEqual(['SITE004'])
-    expect(wrapper.text()).toContain('1 alerte sur 4')
+    expect(wrapper.text()).toContain('1 alerte sur 5')
   })
 
   it('propose d’effacer les filtres quand aucune alerte ne correspond', async () => {
@@ -57,6 +58,6 @@ describe('AlertsView : filtres', () => {
       .findAll('button')
       .find((b) => b.text() === 'Effacer les filtres')!
       .trigger('click')
-    expect(rows(wrapper)).toHaveLength(4)
+    expect(rows(wrapper)).toHaveLength(5)
   })
 })

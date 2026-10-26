@@ -6,8 +6,13 @@ import type { Alert } from '@/types/energy'
 const alert = (id: string, siteId: string, gravite: Alert['gravite']): Alert => ({
   id,
   siteId,
+  nomSite: siteId,
+  type: 'anomaly',
   gravite,
   message: id,
+  debut: '2026-10-26T10:00:00Z',
+  valeurKw: null,
+  seuilKw: null,
   priseEnCompte: false,
 })
 

@@ -19,3 +19,22 @@ export interface RecommandationApi {
   decide_par: string | null // identifiant Keycloak
   decide_le: string | null
 }
+
+/** GET /api/alertes (api/routers/alertes.py, modèle Alerte) */
+export interface AlerteApi {
+  id_alerte: number
+  id_site: string
+  nom_site: string
+  source: 'api_mock' | 'etl' | 'modele'
+  // threshold : dépassement du seuil de consommation du site (US3)
+  type: 'spike' | 'threshold' | 'anomaly' | 'outage' | 'sensor' | 'predicted_peak'
+  severite: 'low' | 'medium' | 'high' | 'critical'
+  message: string | null
+  debut: string // ISO 8601 : heure du dépassement
+  fin: string | null // null : alerte en cours
+  valeur: number | null // maximum atteint pendant l'alerte (kW)
+  seuil: number | null // seuil dépassé (kW)
+  prise_en_compte: boolean
+  prise_par: string | null // identifiant Keycloak (pas de nom)
+  prise_le: string | null
+}

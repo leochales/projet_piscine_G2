@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { storeToRefs } from 'pinia'
-import { toast } from 'vue-sonner'
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -12,7 +11,7 @@ import RequestError from '@/components/common/RequestError.vue'
 import TableSkeleton from '@/components/common/TableSkeleton.vue'
 import AlertsTable from '@/components/alerts/AlertsTable.vue'
 import RecommendationList from '@/components/alerts/RecommendationList.vue'
-import { notifyActionFailed } from '@/lib/actions'
+import { useAcknowledgeAlert, useCanAcknowledge } from '@/lib/actions'
 import { alertSites, filterAlerts, NO_FILTER, type AlertFilter } from '@/lib/alerts'
 import { formatEur } from '@/lib/format'
 import { listedRecommendations } from '@/lib/recommendations'
@@ -49,17 +48,8 @@ function setGravite(value: unknown) {
 const resetFilter = () => (filter.value = { ...NO_FILTER })
 
 // Retour après chaque action : confirmation discrète, ou erreur à réessayer (lib/actions.ts)
-async function acknowledge(alertId: string) {
-  const alert = alerts.value.find((a) => a.id === alertId)
-  try {
-    await operations.acknowledge(alertId)
-    toast.success('Alerte prise en compte', {
-      description: alert && `${alert.siteId} · ${alert.message}`,
-    })
-  } catch {
-    notifyActionFailed()
-  }
-}
+const acknowledge = useAcknowledgeAlert()
+const canAcknowledge = useCanAcknowledge()
 </script>
 
 <template>
@@ -126,7 +116,7 @@ async function acknowledge(alertId: string) {
           <AlertsTable
             v-else
             :alerts="filtered"
-            :can-act-on="user.canActOn"
+            :can-act-on="canAcknowledge"
             :pending="pending"
             @acknowledge="acknowledge"
           />

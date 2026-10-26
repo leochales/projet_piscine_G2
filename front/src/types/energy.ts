@@ -63,11 +63,20 @@ export interface SiteSeries {
 
 export type Severity = 'critique' | 'moyenne' | 'faible'
 
+export type AlertType = 'spike' | 'threshold' | 'anomaly' | 'outage' | 'sensor' | 'predicted_peak'
+
+// Venue de GET /api/alertes (types/api.ts), convertie par lib/alerts.ts
 export interface Alert {
   id: string
   siteId: string
+  nomSite: string
+  type: AlertType
   gravite: Severity
   message: string
+  debut: string // ISO 8601 : heure du dépassement ou du début de l'alerte
+  // Mesure et seuil, en kW : affichés pour un dépassement de seuil (US3)
+  valeurKw: number | null
+  seuilKw: number | null
   priseEnCompte: boolean
   // Qui l'a prise en compte et quand (app.alerte_etat : prise_par, prise_le) : que chacun
   // sache qui traite quoi (US7). Absents tant qu'elle n'est pas prise en compte.
