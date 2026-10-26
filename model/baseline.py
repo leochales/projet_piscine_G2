@@ -1,7 +1,3 @@
-import numpy as np
-import pandas as pd
-from sklearn.metrics import mean_absolute_error, mean_squared_error
-
 """Prévision de référence (SMARTOPS-30).
 
 Lit le jeu d'entraînement du ticket 93 et mesure, sur le jeu de test, l'erreur
@@ -12,6 +8,10 @@ précédente, à la même heure.
 """
 
 from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 DATASET = Path("data/processed/dataset.parquet")
 BASELINES = {"baseline_veille": 24, "baseline_semaine": 168}
