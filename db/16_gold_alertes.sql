@@ -131,6 +131,15 @@ ON gold.alerte (id_site, type, capteur, debut) NULLS NOT DISTINCT
 WHERE source = 'etl';
 
 
+-- Moment du maximum atteint : dit si le maximum est avant la fenêtre de
+-- calcul (définitif) ou dedans (une minute réécrite peut encore le baisser)
+ALTER TABLE gold.alerte
+ADD COLUMN IF NOT EXISTS valeur_le TIMESTAMPTZ;
+
+COMMENT ON COLUMN gold.alerte.valeur_le IS
+'Minute du maximum atteint (valeur), alertes threshold de l''ETL';
+
+
 -- -----------------------------------------------------------------------------
 -- Détection, appelée chaque minute par l'ETL (etl/gold_alerts.py)
 --
@@ -161,14 +170,27 @@ WHERE source = 'etl';
 -- Fenêtre : par site, les `fenetre` dernières minutes de silver seulement,
 -- même pendant une alerte de plusieurs jours : le coût d'un passage ne
 -- grandit pas avec la durée des alertes. Une alerte qui a commencé avant la
--- fenêtre et la recouvre est reprise de gold.alerte (début et maximum
--- atteint), puis prolongée ou fermée par les minutes de la fenêtre. Le temps
--- de référence est la dernière minute du site, et non now() : silver en
--- retard ne ferme rien à tort.
--- Une alerte en cours dont le début change (seuil modifié, minute réécrite)
--- garde sa ligne et son identifiant. Une alerte en cours que le calcul ne
--- retrouve plus (défaut disparu, site désactivé) est fermée à la dernière
--- minute de son site.
+-- fenêtre et la recouvre (amorce) est reprise de gold.alerte, puis prolongée
+-- ou fermée par les minutes de la fenêtre. Son maximum est repris s'il est
+-- avant la fenêtre ; s'il est dedans et qu'une minute réécrite l'a baissé,
+-- il est relu dans silver (cas rare). Le temps de référence est la dernière
+-- minute du site, et non now() : silver en retard ne ferme rien à tort.
+--
+-- Les alertes recalculées sont rattachées aux lignes existantes, pour garder
+-- leur identifiant (prise en compte, recommandation), par ordre de priorité :
+--   1. la ligne en cours de même début ;
+--   2. la ligne en cours que l'alerte recalculée recouvre (seuil abaissé :
+--      l'alerte en cours garde sa ligne, même si elle rejoint une alerte plus
+--      ancienne, qui reste dans l'historique telle quelle) ;
+--   3. la ligne terminée de même début ;
+--   4. la ligne, en cours ou terminée, qui la chevauche (minute réécrite).
+-- Le début d'une ligne rattachée prend celui de l'alerte recalculée, sauf
+-- si une autre ligne commence entre les deux : il reste alors le même.
+-- Une ligne en cours que le calcul ne retrouve plus (défaut disparu, site
+-- désactivé) est fermée à la dernière minute de son site.
+--
+-- Seuil écrit : celui du site, sauf si le maximum atteint est en dessous
+-- (seuil relevé pendant l'alerte) : l'alerte garde le seuil qui l'a ouverte.
 --
 -- Exécutée avec les droits de l'appelant (compte etl).
 -- Retourne les alertes créées ou modifiées.
@@ -220,10 +242,11 @@ BEGIN
             u.*,
             u.ref - fenetre AS depuis,
             am.debut AS amorce_debut,
-            am.valeur AS amorce_valeur
+            am.valeur AS amorce_valeur,
+            am.valeur_le AS amorce_valeur_le
         FROM suivis AS u
         LEFT JOIN LATERAL (
-            SELECT a.debut, a.valeur
+            SELECT a.debut, a.valeur, a.valeur_le
             FROM gold.alerte AS a
             WHERE
                 a.source = 'etl'
@@ -243,8 +266,6 @@ BEGIN
             d.id_site,
             d.type,
             d.capteur,
-            d.capacite_kw,
-            d.seuil,
             sr.horodatage,
             sr.consumption_kw_raw AS kw,
             CASE
@@ -283,7 +304,7 @@ BEGIN
 
     series AS (
         -- Suites de minutes consécutives dans le même état (îlots), sans
-        -- trou de plus de 5 minutes, avec leur maximum
+        -- trou de plus de 5 minutes, avec leur maximum et sa minute
         SELECT
             id_site,
             type,
@@ -291,7 +312,9 @@ BEGIN
             en_defaut,
             min(horodatage) AS debut,
             count(*) AS nb,
-            max(kw) AS kw_max
+            max(kw) AS kw_max,
+            (array_agg(horodatage ORDER BY kw DESC NULLS LAST, horodatage))[1]
+                AS kw_max_le
         FROM (
             SELECT
                 *,
@@ -309,7 +332,9 @@ BEGIN
 
         UNION ALL
 
-        -- L'amorce compte comme une suite en défaut, avant la fenêtre
+        -- L'amorce compte comme une suite en défaut, avant la fenêtre. Son
+        -- maximum n'est repris que s'il est avant la fenêtre : dedans, il est
+        -- recalculé avec les minutes de la fenêtre.
         SELECT
             id_site,
             type,
@@ -317,7 +342,14 @@ BEGIN
             true,
             amorce_debut,
             3,
-            amorce_valeur
+            CASE
+                WHEN amorce_valeur_le IS null OR amorce_valeur_le < depuis
+                    THEN amorce_valeur
+            END,
+            CASE
+                WHEN amorce_valeur_le IS null OR amorce_valeur_le < depuis
+                    THEN amorce_valeur_le
+            END
         FROM depart
         WHERE amorce_debut IS NOT null
     ),
@@ -370,75 +402,137 @@ BEGIN
     ),
 
     alertes AS (
-        -- Maximum atteint : sur les suites entre le début et la fin
+        -- Maximum atteint, et sa minute : sur les suites entre le début et
+        -- la fin
         SELECT
             id_site,
             type,
             capteur,
             min(debut) FILTER (WHERE est_debut) AS debut,
             min(fin) AS fin,
-            max(kw_max) FILTER (WHERE fin IS null OR debut < fin) AS valeur
+            max(kw_max) FILTER (WHERE fin IS null OR debut < fin) AS valeur,
+            (
+                array_agg(kw_max_le ORDER BY kw_max DESC, kw_max_le)
+                    FILTER (
+                        WHERE (fin IS null OR debut < fin)
+                        AND kw_max IS NOT null
+                    )
+            )[1] AS valeur_le
         FROM bornes
         GROUP BY id_site, type, capteur, episode
     ),
 
     detail AS (
         SELECT
-            a.*,
+            a.id_site,
+            a.type,
+            a.capteur,
+            a.debut,
+            a.fin,
+            -- Maximum de l'amorce baissé par une minute réécrite dans la
+            -- fenêtre : celui d'avant la fenêtre est relu dans silver
+            CASE
+                WHEN av.kw > a.valeur OR a.valeur IS null THEN av.kw
+                ELSE a.valeur
+            END AS valeur,
+            CASE
+                WHEN av.kw > a.valeur OR a.valeur IS null THEN av.horodatage
+                ELSE a.valeur_le
+            END AS valeur_le,
             u.seuil,
             u.capacite_kw,
-            -- Alerte déjà en base avec le même début
-            (
-                SELECT e.id_alerte
-                FROM gold.alerte AS e
-                WHERE
-                    e.source = 'etl'
-                    AND e.id_site = a.id_site
-                    AND e.type = a.type
-                    AND e.capteur IS NOT DISTINCT FROM a.capteur
-                    AND e.debut = a.debut
-            ) AS id_meme_debut
+            u.depuis
         FROM alertes AS a
-        INNER JOIN suivis AS u
+        INNER JOIN depart AS u
             ON
                 a.id_site = u.id_site
                 AND a.type = u.type
                 AND a.capteur IS NOT DISTINCT FROM u.capteur
+        LEFT JOIN LATERAL (
+            SELECT sr.consumption_kw_raw AS kw, sr.horodatage
+            FROM silver.silver_readings AS sr
+            WHERE
+                a.type = 'threshold'
+                AND a.debut = u.amorce_debut
+                AND u.amorce_valeur_le >= u.depuis
+                AND (a.valeur IS null OR a.valeur < u.amorce_valeur)
+                AND sr.id_site = a.id_site
+                AND sr.horodatage >= a.debut
+                AND sr.horodatage < u.depuis
+                AND sr.consumption_kw_raw IS NOT null
+            ORDER BY sr.consumption_kw_raw DESC, sr.horodatage
+            LIMIT 1
+        ) AS av ON true
     ),
 
-    decalees AS (
-        -- Alerte en cours dont le début a changé (seuil modifié, minute de
-        -- silver réécrite) : elle garde sa ligne, donc son identifiant, sa
-        -- prise en compte et sa recommandation. Rattachée à l'alerte
-        -- recalculée sans ligne qui la recouvre, la plus proche en début ;
-        -- une alerte recalculée ne reprend qu'une ligne.
-        SELECT DISTINCT ON (c.id_site, c.type, c.capteur, c.debut) c.*
+    existantes AS (
+        -- Lignes de la base qu'une alerte recalculée peut reprendre : en
+        -- cours, ou qui touchent la fenêtre
+        SELECT e.id_alerte, e.id_site, e.type, e.capteur, e.debut, e.fin
+        FROM gold.alerte AS e
+        INNER JOIN depart AS u
+            ON
+                e.id_site = u.id_site
+                AND e.type = u.type
+                AND e.capteur IS NOT DISTINCT FROM u.capteur
+        WHERE
+            e.source = 'etl'
+            AND (e.fin IS null OR e.fin > u.depuis OR e.debut >= u.depuis)
+    ),
+
+    paires AS (
+        -- Rattachements possibles, par priorité (voir l'en-tête)
+        SELECT
+            e.id_alerte,
+            d.id_site,
+            d.type,
+            d.capteur,
+            d.debut,
+            CASE
+                WHEN e.fin IS null AND e.debut = d.debut THEN 1
+                WHEN
+                    e.fin IS null
+                    AND d.debut <= e.debut
+                    AND (d.fin IS null OR d.fin > e.debut)
+                    THEN 2
+                WHEN e.debut = d.debut THEN 3
+                WHEN
+                    d.debut < coalesce(e.fin, 'infinity')
+                    AND e.debut < coalesce(d.fin, 'infinity')
+                    THEN 4
+            END AS rang,
+            abs(extract(EPOCH FROM d.debut - e.debut)) AS ecart
+        FROM detail AS d
+        INNER JOIN existantes AS e
+            ON
+                d.id_site = e.id_site
+                AND d.type = e.type
+                AND d.capteur IS NOT DISTINCT FROM e.capteur
+    ),
+
+    retenues AS (
+        -- Chaque alerte recalculée et chaque ligne gardent leur meilleur
+        -- rattachement ; seuls les choix réciproques sont retenus : une ligne
+        -- n'est reprise qu'une fois, une alerte ne reprend qu'une ligne
+        SELECT p.*
         FROM (
-            SELECT DISTINCT ON (x.id_alerte)
-                x.id_alerte,
-                d.id_site,
-                d.type,
-                d.capteur,
-                d.debut,
-                abs(extract(EPOCH FROM d.debut - x.debut)) AS ecart
-            FROM detail AS d
-            INNER JOIN gold.alerte AS x
-                ON
-                    x.source = 'etl'
-                    AND d.id_site = x.id_site
-                    AND d.type = x.type
-                    AND d.capteur IS NOT DISTINCT FROM x.capteur
-                    AND x.fin IS null
-                    AND (d.fin IS null OR d.fin > x.debut)
-            WHERE
-                d.id_meme_debut IS null
-                AND NOT EXISTS (
-                    SELECT 1 FROM detail AS m
-                    WHERE m.id_meme_debut = x.id_alerte
-                )
-            ORDER BY x.id_alerte, ecart
-        ) AS c
-        ORDER BY c.id_site, c.type, c.capteur, c.debut, c.ecart
+            SELECT DISTINCT ON (id_site, type, capteur, debut) *
+            FROM paires
+            WHERE rang IS NOT null
+            ORDER BY id_site, type, capteur, debut, rang, ecart
+        ) AS p
+        INNER JOIN (
+            SELECT DISTINCT ON (id_alerte) *
+            FROM paires
+            WHERE rang IS NOT null
+            ORDER BY id_alerte, rang, ecart
+        ) AS q
+            ON
+                p.id_alerte = q.id_alerte
+                AND p.id_site = q.id_site
+                AND p.type = q.type
+                AND p.capteur IS NOT DISTINCT FROM q.capteur
+                AND p.debut = q.debut
     ),
 
     cibles AS (
@@ -447,9 +541,28 @@ BEGIN
             d.id_site,
             d.type,
             d.capteur,
-            d.debut,
+            r.id_alerte AS id_cible,
+            -- Début de l'alerte recalculée, sauf si une autre ligne commence
+            -- entre les deux : l'index unique interdirait deux lignes de même
+            -- début, et l'historique reste tel quel
+            CASE
+                WHEN
+                    t.id_alerte IS NOT null
+                    AND EXISTS (
+                        SELECT 1 FROM gold.alerte AS o
+                        WHERE
+                            o.source = 'etl'
+                            AND o.id_site = t.id_site
+                            AND o.type = t.type
+                            AND o.capteur IS NOT DISTINCT FROM t.capteur
+                            AND o.id_alerte <> t.id_alerte
+                            AND o.debut >= least(d.debut, t.debut)
+                            AND o.debut <= greatest(d.debut, t.debut)
+                    )
+                    THEN t.debut
+                ELSE d.debut
+            END AS debut,
             d.fin,
-            coalesce(d.id_meme_debut, c.id_alerte) AS id_cible,
             CASE
                 WHEN d.capteur = 'electrical' THEN 'medium'
                 WHEN d.type = 'threshold' AND d.valeur >= d.capacite_kw * 1.1
@@ -466,14 +579,22 @@ BEGIN
             END AS message,
             -- Valeur et seuil n'ont de sens que pour un dépassement
             CASE WHEN d.type = 'threshold' THEN d.valeur END AS valeur,
-            CASE WHEN d.type = 'threshold' THEN d.seuil END AS seuil
+            CASE WHEN d.type = 'threshold' THEN d.valeur_le END AS valeur_le,
+            CASE
+                WHEN d.type <> 'threshold' THEN null
+                -- Seuil relevé pendant l'alerte : elle garde celui qui l'a
+                -- ouverte
+                WHEN d.valeur < d.seuil THEN coalesce(t.seuil, d.seuil)
+                ELSE d.seuil
+            END AS seuil
         FROM detail AS d
-        LEFT JOIN decalees AS c
+        LEFT JOIN retenues AS r
             ON
-                d.id_site = c.id_site
-                AND d.type = c.type
-                AND d.capteur IS NOT DISTINCT FROM c.capteur
-                AND d.debut = c.debut
+                d.id_site = r.id_site
+                AND d.type = r.type
+                AND d.capteur IS NOT DISTINCT FROM r.capteur
+                AND d.debut = r.debut
+        LEFT JOIN gold.alerte AS t ON r.id_alerte = t.id_alerte
     ),
 
     modifiees AS (
@@ -484,21 +605,28 @@ BEGIN
             severite = c.severite,
             message = c.message,
             valeur = c.valeur,
+            valeur_le = c.valeur_le,
             seuil = c.seuil
         FROM cibles AS c
         WHERE
             a.id_alerte = c.id_cible
             -- Une alerte inchangée n'est pas réécrite (ni comptée)
-            AND (a.debut, a.fin, a.severite, a.message, a.valeur, a.seuil)
+            AND (
+                a.debut, a.fin, a.severite, a.message, a.valeur, a.valeur_le,
+                a.seuil
+            )
             IS DISTINCT FROM
-            (c.debut, c.fin, c.severite, c.message, c.valeur, c.seuil)
+            (
+                c.debut, c.fin, c.severite, c.message, c.valeur, c.valeur_le,
+                c.seuil
+            )
         RETURNING a.id_site, a.type, a.capteur, a.debut, a.fin IS null
     ),
 
     nouvelles AS (
         INSERT INTO gold.alerte AS a (
             id_site, source, type, capteur, severite, message,
-            debut, fin, valeur, seuil
+            debut, fin, valeur, valeur_le, seuil
         )
         SELECT
             c.id_site,
@@ -510,21 +638,22 @@ BEGIN
             c.debut,
             c.fin,
             c.valeur,
+            c.valeur_le,
             c.seuil
         FROM cibles AS c
         WHERE c.id_cible IS null
-        -- Deux passages en même temps : le second n'écrit rien
+        -- Deux passages en même temps, ou alerte recouvrant une ligne déjà
+        -- reprise de même début : rien n'est écrit
         ON CONFLICT (id_site, type, capteur, debut) WHERE source = 'etl'
         DO NOTHING
         RETURNING a.id_site, a.type, a.capteur, a.debut, a.fin IS null
     ),
 
     fermees AS (
-        -- Alertes en cours que le calcul ne retrouve plus : défaut disparu
-        -- (seuil relevé), site qui n'est plus actif, ou alerte absorbée par
-        -- une plus ancienne (seuil abaissé). Fermées à la dernière minute du
-        -- site : laissées en cours, elles resteraient affichées. Jamais les
-        -- mêmes lignes que modifiees (NOT EXISTS).
+        -- Lignes en cours que le calcul ne retrouve plus : défaut disparu
+        -- (seuil relevé) ou site qui n'est plus actif. Fermées à la dernière
+        -- minute du site : laissées en cours, elles resteraient affichées.
+        -- Jamais les mêmes lignes que modifiees (NOT EXISTS).
         UPDATE gold.alerte AS a
         SET fin = greatest(
             a.debut,

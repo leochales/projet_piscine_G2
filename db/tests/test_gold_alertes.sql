@@ -272,10 +272,10 @@ BEGIN
 END
 $$;
 
--- 7. Seuil abaissé à 50 % (100 kW) : toute la série de SITE-C est en défaut,
---    l'alerte commence à 10:00. L'alerte en cours de 10:12 n'est plus
---    retrouvée : elle est fermée à la dernière minute (10:14), une seule
---    alerte reste en cours.
+-- 7. Seuil abaissé à 50 % (100 kW) : toute la série de SITE-C est en défaut
+--    depuis 10:00. L'alerte en cours de 10:12 garde sa ligne (et sa prise
+--    en compte), et son début : les alertes de 10:00 et 10:06 restent dans
+--    l'historique telles quelles.
 RESET ROLE;
 UPDATE app.site SET seuil_alerte_pct = 50
 WHERE id_site = 'SITE-C';
@@ -294,17 +294,24 @@ BEGIN
 
     SELECT * INTO a FROM gold.alerte
     WHERE id_site = 'SITE-C' AND type = 'threshold' AND fin IS null;
-    ASSERT a.debut = '2026-01-01 10:00+00', format('début : %s', a.debut);
+    ASSERT a.debut = '2026-01-01 10:12+00', format('début : %s', a.debut);
+    ASSERT a.valeur = 220 AND a.severite = 'critical',
+    format('valeur %s, sévérité %s', a.valeur, a.severite);
 
     SELECT * INTO a FROM gold.alerte
-    WHERE id_site = 'SITE-C' AND debut = '2026-01-01 10:12+00';
-    ASSERT a.fin = '2026-01-01 10:14+00', format('fin : %s', a.fin);
-    RAISE NOTICE 'OK 7 : seuil abaissé, l''ancienne alerte en cours est fermée';
+    WHERE id_site = 'SITE-C' AND debut = '2026-01-01 10:00+00';
+    ASSERT a.fin = '2026-01-01 10:03+00', format('fin 10:00 : %s', a.fin);
+
+    SELECT count(*) INTO nb FROM gold.detecter_alertes()
+    WHERE id_site = 'SITE-C';
+    ASSERT nb = 0, format('rien à réécrire attendu, %s', nb);
+    RAISE NOTICE 'OK 7 : seuil abaissé, l''alerte en cours garde sa ligne';
 END
 $$;
 
 -- 8. Seuil relevé à 100 % (200 kW) : seul le pic de 10:06 reste, déjà
---    terminé. L'alerte de 10:00 n'est plus retrouvée : fermée à 10:14.
+--    terminé. L'alerte en cours de 10:12 n'est plus retrouvée : fermée à
+--    10:14.
 RESET ROLE;
 UPDATE app.site SET seuil_alerte_pct = 100
 WHERE id_site = 'SITE-C';
@@ -322,7 +329,7 @@ BEGIN
     ASSERT nb = 0, format('aucune alerte en cours pour SITE-C, %s', nb);
 
     SELECT * INTO a FROM gold.alerte
-    WHERE id_site = 'SITE-C' AND debut = '2026-01-01 10:00+00';
+    WHERE id_site = 'SITE-C' AND debut = '2026-01-01 10:12+00';
     ASSERT a.fin = '2026-01-01 10:14+00', format('fin : %s', a.fin);
 
     SELECT count(*) INTO nb FROM gold.detecter_alertes()
@@ -725,6 +732,120 @@ BEGIN
     ASSERT a.fin = '2026-01-01 11:31+00', format('fin : %s', a.fin);
     ASSERT a.valeur = 230, format('valeur : %s', a.valeur);
     RAISE NOTICE 'OK 15 : alerte plus longue que la fenêtre, reprise de la base';
+END
+$$;
+
+-- 16. Alerte terminée dont le début se décale : SITE-A, alerte de 10:03 à
+--     10:10 ; la minute 10:03 est réécrite à 100 kW. L'alerte commence à
+--     10:04 (10:04, 10:06, 10:07 : la minute 10:05 manque) : même ligne,
+--     pas de doublon.
+RESET ROLE;
+UPDATE silver.silver_readings
+SET consumption_kw_raw = 100, consumption_kw_imputed = 100
+WHERE id_site = 'SITE-A' AND horodatage = '2026-01-01 10:03+00';
+INSERT INTO id_test
+SELECT id_alerte FROM gold.alerte
+WHERE id_site = 'SITE-A' AND type = 'threshold';
+SET ROLE etl;
+
+DO $$
+DECLARE
+    a RECORD;
+    nb BIGINT;
+BEGIN
+    PERFORM gold.detecter_alertes();
+
+    SELECT count(*) INTO nb FROM gold.alerte
+    WHERE id_site = 'SITE-A' AND type = 'threshold';
+    ASSERT nb = 1, format('une seule alerte pour SITE-A, %s', nb);
+
+    SELECT * INTO a FROM gold.alerte
+    WHERE id_site = 'SITE-A' AND type = 'threshold';
+    ASSERT a.id_alerte IN (SELECT id_alerte FROM id_test), 'même identifiant';
+    ASSERT a.debut = '2026-01-01 10:04+00', format('début : %s', a.debut);
+    ASSERT a.fin = '2026-01-01 10:10+00', format('fin : %s', a.fin);
+    RAISE NOTICE 'OK 16 : alerte terminée décalée, même ligne, pas de doublon';
+END
+$$;
+
+-- 17. Maximum d'une alerte reprise, réécrit plus bas : SITE-E, en cours
+--     depuis 11:00 à 190 kW, 210 kW à 11:10, 230 kW à 11:18, jusqu'à 11:20.
+--     Avec une fenêtre de 5 minutes (11:15), la minute 11:18 réécrite à
+--     195 kW : le maximum redescend à 210 kW (11:10, avant la fenêtre, relu
+--     dans silver) et l'alerte n'est plus critical.
+-- 18. Puis seuil relevé à 110 % (220 kW) : plus de défaut dans la fenêtre,
+--     l'alerte est fermée et garde le seuil qui l'a ouverte (180 kW).
+RESET ROLE;
+INSERT INTO silver.silver_readings (
+    id_site, horodatage, consumption_kw_raw, consumption_kw_imputed,
+    imputation_method, data_quality, null_reasons
+)
+SELECT
+    'SITE-E' AS id_site,
+    '2026-01-01 11:03+00'::TIMESTAMPTZ + n * INTERVAL '1 minute' AS horodatage,
+    v.kw AS consumption_kw_raw,
+    v.kw AS consumption_kw_imputed,
+    'none' AS imputation_method,
+    'good' AS data_quality,
+    '{}'::TEXT[] AS null_reasons
+FROM generate_series(0, 17) AS n
+CROSS JOIN LATERAL (
+    SELECT CASE n WHEN 7 THEN 210 WHEN 15 THEN 230 ELSE 190 END AS kw
+) AS v;
+SET ROLE etl;
+
+DO $$
+DECLARE
+    a RECORD;
+BEGIN
+    PERFORM gold.detecter_alertes();
+
+    SELECT * INTO a FROM gold.alerte WHERE id_site = 'SITE-E';
+    ASSERT a.valeur = 230 AND a.valeur_le = '2026-01-01 11:18+00'
+    AND a.severite = 'critical',
+    format('valeur %s le %s, %s', a.valeur, a.valeur_le, a.severite);
+END
+$$;
+
+RESET ROLE;
+UPDATE silver.silver_readings
+SET consumption_kw_raw = 195, consumption_kw_imputed = 195
+WHERE id_site = 'SITE-E' AND horodatage = '2026-01-01 11:18+00';
+SET ROLE etl;
+
+DO $$
+DECLARE
+    a RECORD;
+BEGIN
+    PERFORM gold.detecter_alertes(INTERVAL '5 minutes');
+
+    SELECT * INTO a FROM gold.alerte WHERE id_site = 'SITE-E';
+    ASSERT a.debut = '2026-01-01 11:00+00', format('début : %s', a.debut);
+    ASSERT a.fin IS null, 'toujours en cours';
+    ASSERT a.valeur = 210 AND a.valeur_le = '2026-01-01 11:10+00',
+    format('valeur %s le %s', a.valeur, a.valeur_le);
+    ASSERT a.severite = 'high', format('sévérité : %s', a.severite);
+    RAISE NOTICE 'OK 17 : maximum réécrit plus bas, relu avant la fenêtre';
+END
+$$;
+
+RESET ROLE;
+UPDATE app.site SET seuil_alerte_pct = 110
+WHERE id_site = 'SITE-E';
+SET ROLE etl;
+
+DO $$
+DECLARE
+    a RECORD;
+BEGIN
+    PERFORM gold.detecter_alertes(INTERVAL '5 minutes');
+
+    SELECT * INTO a FROM gold.alerte WHERE id_site = 'SITE-E';
+    ASSERT a.debut = '2026-01-01 11:00+00', format('début : %s', a.debut);
+    ASSERT a.fin = '2026-01-01 11:15+00', format('fin : %s', a.fin);
+    ASSERT a.valeur = 210, format('valeur : %s', a.valeur);
+    ASSERT a.seuil = 180, format('seuil : %s', a.seuil);
+    RAISE NOTICE 'OK 18 : seuil relevé, l''alerte garde le seuil qui l''a ouverte';
 END
 $$;
 
