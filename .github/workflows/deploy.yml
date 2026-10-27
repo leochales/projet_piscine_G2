@@ -75,6 +75,14 @@ jobs:
       KEYCLOAK_ADMIN_PASSWORD: ${{ secrets[format('{0}_KEYCLOAK_ADMIN_PASSWORD', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
       KEYCLOAK_DB_PASSWORD: ${{ secrets[format('{0}_KEYCLOAK_DB_PASSWORD', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
       KEYCLOAK_ADMIN_CLIENT_SECRET: ${{ secrets[format('{0}_KEYCLOAK_ADMIN_CLIENT_SECRET', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
+      # Mot de passe des comptes de démonstration, créés par l'API à son démarrage
+      # (api/seed.py). Facultatif : sans lui, l'API n'en crée pas
+      SEED_PASSWORD: ${{ secrets[format('{0}_SEED_PASSWORD', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
+      # Sauvegarde : clé de chiffrement restic et SAS du conteneur restic-<env> ; le compte
+      # de stockage (infra/terraform) est commun à dev et prod
+      RESTIC_PASSWORD: ${{ secrets[format('{0}_RESTIC_PASSWORD', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
+      AZURE_ACCOUNT_SAS: ${{ secrets[format('{0}_AZURE_ACCOUNT_SAS', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
+      AZURE_ACCOUNT_NAME: ${{ vars.AZURE_ACCOUNT_NAME }}
       # Adresse publique du front (redirectUris de Keycloak) : https://<VM_IP> en prod,
       # https://<VM_IP>:8443 en dev. Le port 443 est omis, comme dans l'adresse du navigateur.
       FRONT_URL: ${{ format('https://{0}{1}', vars.VM_IP, github.ref_name != 'main' && ':8443' || '') }}
@@ -138,12 +146,17 @@ jobs:
           for key in POSTGRES_USER POSTGRES_DB POSTGRES_PASSWORD ETL_DB_PASSWORD \
                      MODEL_DB_PASSWORD API_DB_PASSWORD BACKUP_DB_PASSWORD \
                      KEYCLOAK_ADMIN KEYCLOAK_ADMIN_PASSWORD KEYCLOAK_DB_PASSWORD \
-                     KEYCLOAK_ADMIN_CLIENT_SECRET; do
+                     KEYCLOAK_ADMIN_CLIENT_SECRET RESTIC_PASSWORD AZURE_ACCOUNT_SAS; do
             if [ -z "${!key}" ]; then
               echo "::error::${ENV_PREFIX}_${key} manquant (Settings → Secrets and variables → Actions)"
               missing=1
             fi
           done
+          # Variable commune à dev et prod (sans préfixe)
+          if [ -z "$AZURE_ACCOUNT_NAME" ]; then
+            echo "::error::Variable AZURE_ACCOUNT_NAME manquante (Settings → Secrets and variables → Actions → Variables)"
+            missing=1
+          fi
           exit "$missing"
 
       # Images testées et scannées par images.yml : aucune reconstruction sur la VM.
@@ -217,6 +230,26 @@ jobs:
           docker compose -p "enervision-${DEPLOY_ENV}" logs --tail=50 api
           exit 1
 
+      # Console d'administration exposée : le realm master bloque un compte après 5 mots de
+      # passe faux (15 min, puis plus longtemps). Un échec (mot de passe administrateur changé
+      # dans Keycloak depuis le premier démarrage) n'arrête pas le déploiement.
+      - name: Protéger la connexion à la console Keycloak
+        continue-on-error: true
+        run: |
+          kcadm() {
+            docker compose -f compose-prod.yml exec -T -e KC_CLI_PASSWORD keycloak \
+              /opt/keycloak/bin/kcadm.sh "$@" --config /tmp/kcadm-deploy.config
+          }
+          # Jeton de session kcadm : effacé du conteneur, même en cas d'échec
+          trap 'docker compose -f compose-prod.yml exec -T keycloak rm -f /tmp/kcadm-deploy.config' EXIT
+          if ! KC_CLI_PASSWORD="$KEYCLOAK_ADMIN_PASSWORD" kcadm config credentials \
+               --server http://localhost:8080/auth --realm master --user "$KEYCLOAK_ADMIN"; then
+            echo "::warning::Connexion kcadm refusée ($DEPLOY_ENV) : protection du realm master non vérifiée"
+            exit 1
+          fi
+          kcadm update realms/master -s bruteForceProtected=true -s failureFactor=5 \
+            -s waitIncrementSeconds=900 -s maxFailureWaitSeconds=3600 -s permanentLockout=false
+
       # Images orphelines, et anciennes versions de nos images qu'aucun conteneur
       # (dev ou prod) n'utilise plus. Elles restent récupérables sur GHCR.
       - name: Nettoyer les anciennes images
@@ -226,3 +259,27 @@ jobs:
         run: |
           docker image prune -f
           docker image prune -af --filter "label=org.opencontainers.image.source=${REPO_URL}"
+
+  # GHCR est gratuit « pour l'instant » : on ne garde que les 20 dernières versions de
+  # chaque image. Les versions sont communes à dev et prod : la purge ne tourne donc
+  # qu'au déploiement de prod, dont la version vient d'être publiée et reste la plus
+  # récente. Une purge lancée par dev pourrait sinon supprimer la version qui tourne en
+  # prod. Après le déploiement, qui ne l'attend pas ; une seule définition pour toutes
+  # les images (matrice). Un échec n'a aucun effet sur l'application.
+  purge:
+    name: Purger les anciennes versions (${{ matrix.image }})
+    needs: deploy
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      packages: write
+    strategy:
+      matrix:
+        image: [api, etl, front, model, backup]
+    steps:
+      - uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
+        with:
+          package-name: enervision-${{ matrix.image }}
+          package-type: container
+          min-versions-to-keep: 20

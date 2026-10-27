@@ -1,0 +1,6 @@
+# Copier en backend.hcl (ignoré par Git) et remplir avec les noms créés à
+# l'amorçage (voir README.md), puis : terraform init -backend-config=backend.hcl
+resource_group_name  = "rg-<login>_cours-projet-eadl"  # même groupe que le stockage des sauvegardes
+storage_account_name = "enervisiontfstate"
+container_name       = "tfstate"
+key                  = "backup.tfstate"

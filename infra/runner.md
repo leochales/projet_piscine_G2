@@ -9,7 +9,7 @@ Un **runner GitHub auto-hébergé**, installé sur la VM, exécute le workflow [
 
 Les deux environnements ont leurs propres conteneurs, volumes et base. Un **Traefik partagé** ([`infra/traefik/compose.yml`](traefik/compose.yml)) les sert en HTTPS, chacun sur son port, car la VM n'a pas de nom de domaine. Un lancement manuel sur une autre branche ne déploie rien (run *skipped*).
 
-Keycloak est servi à la même adresse, sous `/auth` (`https://<VM_IP>/auth`, `https://<VM_IP>:8443/auth`). Seuls le realm `enervision` (`/auth/realms/enervision`) et les fichiers des pages de connexion (`/auth/resources`) sont routés : la console d'administration et le realm `master` ne sont pas exposés. L'administration se fait avec `kcadm.sh` (voir [Faire évoluer le realm Keycloak](#faire-évoluer-le-realm-keycloak)).
+Keycloak est servi à la même adresse, sous `/auth` (`https://<VM_IP>/auth`, `https://<VM_IP>:8443/auth`). La console d'administration est sur `https://<VM_IP>/auth/admin` (prod) et `https://<VM_IP>:8443/auth/admin` (dev), avec l'administrateur du realm `master` (`<ENV>_KEYCLOAK_ADMIN`). Chaque déploiement active la protection contre les essais de mots de passe sur ce realm : 5 échecs bloquent le compte 15 minutes, puis plus longtemps, jusqu'à 1 heure. `kcadm.sh` reste utilisable dans le conteneur (voir [Faire évoluer le realm Keycloak](#faire-évoluer-le-realm-keycloak)).
 
 ---
 
@@ -44,7 +44,7 @@ Les labels par défaut (`self-hosted`, `Linux`, `X64`) correspondent à `runs-on
 
 ## Secrets et variables
 
-Le dépôt est privé sur un plan Free, sans *GitHub Environments*. Les secrets sont donc des secrets **du dépôt**, préfixés par environnement (**Settings → Secrets and variables → Actions**). Le workflow lit `DEV_X` ou `PROD_X` selon la branche et le transmet à `docker compose` sous le nom `X`. Aucun fichier `.env` n'est écrit sur la VM.
+Le dépôt est **public**, et le déploiement n'utilise pas (encore) les *GitHub Environments*. Les secrets sont donc des secrets **du dépôt**, préfixés par environnement (**Settings → Secrets and variables → Actions**). Le workflow lit `DEV_X` ou `PROD_X` selon la branche et le transmet à `docker compose` sous le nom `X`. Aucun fichier `.env` n'est écrit sur la VM.
 
 | Secrets (obligatoires)                               | Rôle                        |
 |------------------------------------------------------|-----------------------------|
@@ -56,6 +56,9 @@ Le dépôt est privé sur un plan Free, sans *GitHub Environments*. Les secrets 
 | `DEV_KEYCLOAK_DB_PASSWORD` / `PROD_KEYCLOAK_DB_PASSWORD` | Compte `keycloak` (base `keycloak`) |
 | `DEV_KEYCLOAK_ADMIN_PASSWORD` / `PROD_KEYCLOAK_ADMIN_PASSWORD` | Administrateur initial de Keycloak |
 | `DEV_KEYCLOAK_ADMIN_CLIENT_SECRET` / `PROD_KEYCLOAK_ADMIN_CLIENT_SECRET` | Secret du client `enervision-admin` (création des comptes par l'API) |
+| `DEV_SEED_PASSWORD` / `PROD_SEED_PASSWORD` | Mot de passe des comptes de démonstration (12 caractères au moins), créés par l'API à son démarrage ; facultatif, sans lui ils ne sont pas créés |
+| `DEV_RESTIC_PASSWORD` / `PROD_RESTIC_PASSWORD` | Clé de chiffrement des sauvegardes restic. **Ne jamais la changer** une fois le dépôt créé (il ne s'ouvrirait plus), et la conserver aussi hors de GitHub |
+| `DEV_AZURE_ACCOUNT_SAS` / `PROD_AZURE_ACCOUNT_SAS` | SAS du conteneur `restic-dev` / `restic-prod` du stockage des sauvegardes ([`infra/terraform`](terraform/README.md), politique d'accès `restic`). À prolonger avant son expiration |
 
 | Variables                                    | Obligatoire | Rôle                                          |
 |----------------------------------------------|-------------|-----------------------------------------------|
@@ -64,6 +67,7 @@ Le dépôt est privé sur un plan Free, sans *GitHub Environments*. Les secrets 
 | `DEV_ETL_ENABLED` / `PROD_ETL_ENABLED`       | non         | `false` pour désactiver l'ETL (défaut `true`) |
 | `DEV_KEYCLOAK_ADMIN` / `PROD_KEYCLOAK_ADMIN` | oui         | Identifiant de l'administrateur initial de Keycloak |
 | `VM_IP`                                      | oui         | IP de la VM, inscrite dans le certificat et dans l'adresse de retour de connexion de Keycloak (`FRONT_URL`) |
+| `AZURE_ACCOUNT_NAME`                         | oui         | Compte de stockage des sauvegardes (`terraform output storage_account_name`), commun à dev et prod |
 | `DVC_STORE`                                  | non         | Dossier du stockage DVC sur la VM (défaut `/srv/enervision-dvc`) |
 
 Utiliser des mots de passe différents entre dev et prod. Les mots de passe des comptes des services (`ETL_`, `MODEL_`, `API_`, `BACKUP_`, `KEYCLOAK_DB_PASSWORD`) sont **réappliqués à chaque déploiement** par la migration de la base : pour en changer un, modifier le secret puis redéployer. Exceptions :
@@ -75,7 +79,7 @@ Utiliser des mots de passe différents entre dev et prod. Les mots de passe des 
 
 ## Déroulement d'un déploiement
 
-1. **Contrôles**, en parallèle sur des runners GitHub : `pre-commit.yml` (lint, tests), `security.yml` (Trivy sur le code) et `images.yml`. Ce dernier construit api, etl, front et model **une seule fois**, démarre la stack de prod complète avec ces images (Traefik, scripts `db/`, comptes PostgreSQL, ETL, front), rejoue la migration de la base, lance le job du jeu d'entraînement sur un petit CSV, les tests SQL et Schemathesis sur le conteneur de l'API, scanne les images avec Trivy, puis les publie sur GHCR (`ghcr.io/<owner>/enervision-<service>:<sha du commit>`). Le déploiement ne démarre que si tout réussit.
+1. **Contrôles**, en parallèle sur des runners GitHub : `pre-commit.yml` (lint, tests), `security.yml` (Trivy sur le code) et `images.yml`. Ce dernier construit api, etl, front, model et backup **une seule fois**, démarre la stack de prod complète avec ces images (Traefik, scripts `db/`, comptes PostgreSQL, ETL, front, sauvegarde dans un dépôt local), rejoue la migration de la base, lance le job du jeu d'entraînement sur un petit CSV, les tests SQL et Schemathesis sur le conteneur de l'API, scanne les images avec Trivy, puis les publie sur GHCR (`ghcr.io/<owner>/enervision-<service>:<sha du commit>`). Le déploiement ne démarre que si tout réussit.
 2. **Certificat HTTPS** : auto-signé pour `VM_IP`, stocké dans `~/traefik-certs`, régénéré s'il expire sous 30 jours ou si `VM_IP` change.
 3. **Traefik** : démarré s'il ne tourne pas. Il lit Docker via `docker-socket-proxy` (lecture seule, réseau interne), sans accès direct au socket.
 4. **Vérifier les secrets** : toutes les variables et tous les secrets obligatoires, avant de toucher à la VM. Le job liste ceux qui manquent et s'arrête.
@@ -83,7 +87,7 @@ Utiliser des mots de passe différents entre dev et prod. Les mots de passe des 
 6. **Migrer la base** : démarrage de Postgres, attente qu'il réponde (120 s au plus, sinon le déploiement s'arrête avec les logs de `db`), puis `db/tools/migrate.sh`, qui rejoue tous les scripts de `db/` sur la base existante : nouvelles tables, comptes, droits et mots de passe. Les scripts doivent pouvoir être rejoués sans effet (voir la section **Base de données** du README). Si un script échoue, les nouveaux conteneurs ne sont pas démarrés : l'ancienne version continue de tourner, sur une base **partiellement migrée** (les scripts précédents restent appliqués, chaque script annulant seulement ses propres changements). Le risque est faible tant que les scripts ne font qu'ajouter (tables, colonnes, droits) : l'ancienne version les ignore. Corriger le script et redéployer : la migration reprend depuis le début.
 7. **Déployer** : `up -d --no-build --remove-orphans`.
 8. **Santé** : `https://localhost:<port>/api/health` pendant 60 s. En cas d'échec, le job affiche l'état des conteneurs et les logs de l'API.
-9. **Nettoyage** : images orphelines et anciennes versions de nos images qu'aucun conteneur n'utilise. Sur GHCR, seules les 20 dernières versions de chaque image sont conservées.
+9. **Nettoyage** : images orphelines et anciennes versions de nos images qu'aucun conteneur n'utilise. Sur GHCR, seules les 20 dernières versions de chaque image sont conservées (job `purge`, lancé après le déploiement : il ne le retarde pas). Les versions étant communes à dev et prod, la purge ne tourne qu'aux déploiements de **prod** : un déploiement de dev ne peut pas supprimer la version qui tourne en prod.
 
 Un seul déploiement à la fois par environnement. Pour **revenir en arrière** : rouvrir le run **Deploy** d'un commit précédent et relancer **uniquement le job Deploy** (icône ↻ du job). Les images de ce commit sont reprises sur GHCR telles quelles. Relancer tout le run reconstruirait les images. Au-delà des 20 dernières versions, faire un `git revert` sur la branche et redéployer.
 
@@ -147,6 +151,9 @@ Commandes à lancer depuis un compte administrateur, dans `/home/github-runner/a
 | Logs du service           | `sudo journalctl -u 'actions.runner.*' -f`       |
 | Logs des jobs             | `_diag/Worker_*.log`                             |
 | État des conteneurs       | `docker compose -p <traefik\|enervision-dev\|enervision-prod> ps` |
+| Logs de la sauvegarde     | `docker compose -p enervision-<env> logs backup` |
+| Sauvegarder tout de suite | `docker compose -p enervision-<env> exec backup /app/backup.sh` |
+| Lister les sauvegardes    | `docker compose -p enervision-<env> exec backup restic snapshots` |
 
 Le runner **se met à jour tout seul**. Pour le réenregistrer (runner supprimé côté GitHub, changement de nom) : `./svc.sh stop`, `./svc.sh uninstall`, `./config.sh remove --token <TOKEN>`, puis reprendre l'étape 2 de l'installation. Après un redémarrage de la VM, le service et les conteneurs repartent seuls.
 
@@ -159,7 +166,7 @@ Keycloak démarre avec `--import-realm` : il importe [`infra/keycloak/realm-ener
 Conséquence : une modification du JSON (rôle, redirect URI, politique de mot de passe, client…) n'atteint **pas** les environnements déjà déployés. Pour faire évoluer le realm :
 
 1. Modifier le JSON et le commiter : il reste la référence pour le local et les futurs environnements.
-2. Reporter le même changement sur dev, vérifier, puis sur prod, avec `kcadm.sh` dans le conteneur (la console d'administration n'est pas exposée sur la VM).
+2. Reporter le même changement sur dev, vérifier, puis sur prod, dans la console d'administration ou avec `kcadm.sh` dans le conteneur.
 
 Ne pas supprimer le realm pour forcer un nouvel import : les comptes des utilisateurs seraient perdus.
 
@@ -183,7 +190,9 @@ kcadm update clients/<id> -r enervision -s 'redirectUris=["https://<VM_IP>/*"]'
 
 ### Créer un compte (premier administrateur, comptes de test)
 
-Les comptes se créent dans Keycloak. En temps normal, ce sont les gestionnaires qui les créent depuis le dashboard (`POST /api/utilisateurs`, SMARTOPS-84). À la main, on passe par l'administration de Keycloak : la console en local (`http://localhost/auth/admin`), `kcadm.sh` sur la VM, où la console n'est pas exposée.
+Les comptes se créent dans Keycloak. En temps normal, ce sont les gestionnaires qui les créent depuis le dashboard (`POST /api/utilisateurs`, SMARTOPS-84). À la main, on passe par l'administration de Keycloak : la console (`http://localhost/auth/admin` en local, `https://<VM_IP>[:8443]/auth/admin` sur la VM) ou `kcadm.sh`.
+
+**Comptes de démonstration** : un compte par rôle (liste dans le README, section « Comptes de démonstration »), créés par l'API à chaque démarrage (`api/seed.py`), en dev comme en prod, avec le mot de passe du secret `<ENV>_SEED_PASSWORD`. En prod, `admin@enervision.test`, qui voit tous les clients, n'est pas créé. Sans ce secret, l'API n'en crée pas. Un compte déjà enregistré n'est jamais modifié. Résultat dans les logs de l'API : `docker compose -p enervision-<env> logs api | grep -i seed`.
 
 **Attention** : l'API n'accepte que les utilisateurs enregistrés dans `app.utilisateur`, car c'est là qu'elle trouve leur entreprise. Un compte créé dans Keycloak sans cette ligne reçoit un 403.
 
@@ -197,7 +206,7 @@ Les comptes se créent dans Keycloak. En temps normal, ce sont les gestionnaires
     kcadm add-roles -r enervision --uusername <email> --rolename <CONSULT-SITE|CONSULT-CLIENT|GESTION-SITE|GESTION-CLIENT>
     ```
 
-    Dans la console (local) : *Users* → *Create user*, onglet *Credentials* (mot de passe, *Temporary* sur On), onglet *Role mapping*. L'identifiant est affiché en haut de la fiche de l'utilisateur.
+    Dans la console : realm `enervision`, *Users* → *Create user*, onglet *Credentials* (mot de passe, *Temporary* sur On), onglet *Role mapping*. L'identifiant est affiché en haut de la fiche de l'utilisateur.
 
 2. Enregistrer le compte dans `app.utilisateur`, avec le même identifiant :
 
@@ -237,14 +246,15 @@ Le secret est injecté dans le realm à l'import : modifier `<ENV>_KEYCLOAK_ADMI
 
 ## Limite connue : secrets et runner
 
-Risque **accepté**, faute de plan payant :
+Risques **acceptés** pour l'instant :
 
 - Un secret du dépôt est lisible par n'importe quel workflow, quelle que soit la branche. Les conditions `if:` de `deploy.yml` évitent un déploiement par erreur, mais ne protègent pas les secrets. Toute personne ayant les **droits d'écriture** peut lire `PROD_*`. Les PR venant de forks ne reçoivent aucun secret.
 - Le runner exécute le code de toute branche dont un workflow cible `runs-on: self-hosted`. Comme `github-runner` est dans le groupe `docker`, les droits d'écriture donnent en pratique un accès root à la VM.
+- **Dépôt public** : n'importe qui peut forker et ouvrir une PR. Sur `pull_request`, GitHub exécute la version des workflows **contenue dans la PR** : un workflow `self-hosted` déclenché par `pull_request` ferait tourner le code d'un inconnu sur la VM. Règle : aucun workflow `runs-on: self-hosted` ne se déclenche sur `pull_request` ; ils se lancent sur `push` (`main`) ou à la main (`workflow_dispatch`, qui demande les droits d'écriture).
 
-Mesures en place : droits d'écriture réservés à l'équipe, mots de passe différents entre dev et prod, un compte PostgreSQL par service.
+Mesures en place : droits d'écriture réservés à l'équipe, mots de passe différents entre dev et prod, un compte PostgreSQL par service, et dans **Settings → Actions → General → Approval for running fork pull request workflows from contributors** : *Require approval for all external contributors*, pour qu'aucun workflow d'une PR de fork ne démarre sans qu'un membre de l'équipe l'ait relue.
 
-Correctif si le dépôt passe sur GitHub Pro, Team, Enterprise ou en public : environnements `dev` (branche `develop`) et `prod` (branche `main`, approbation obligatoire), avec leurs propres secrets, et suppression de `ENV_PREFIX`.
+Correctif possible maintenant que le dépôt est public (les environnements y sont disponibles sur le plan Free) : environnements `dev` (branche `develop`) et `prod` (branche `main`, approbation obligatoire), avec leurs propres secrets, et suppression de `ENV_PREFIX`.
 
 ---
 

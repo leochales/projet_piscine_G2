@@ -107,7 +107,7 @@ class FausseBase:
         sql = str(requete)
         self.requetes.append(sql)
         parametres = parametres or {}
-        if "FROM app.utilisateur" in sql:
+        if "FROM app.utilisateur WHERE" in sql:
             if parametres["id"] in self.utilisateurs:
                 return Resultat([{"id_client": self.utilisateurs[parametres["id"]]}])
             return Resultat([])

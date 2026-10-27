@@ -74,10 +74,10 @@ services:
       - ./infra/keycloak/realm-enervision.json:/opt/keycloak/data/import/realm-enervision.json:ro
     labels:
       - traefik.enable=true
-      # Seulement le realm enervision (connexion, jetons, clés) et les fichiers des pages.
-      # La console d'administration et le realm master ne sont pas exposés : ils
-      # tombent sur la route du front. Administration avec kcadm (infra/runner.md).
-      - traefik.http.routers.enervision-${DEPLOY_ENV}-auth.rule=PathPrefix(`/auth/realms/enervision`) || PathPrefix(`/auth/resources`)
+      # Tout Keycloak : realm enervision (connexion, jetons, clés), console d'administration
+      # (/auth/admin) et realm master, où se connectent ses administrateurs. Santé et
+      # métriques restent sur le port de gestion (9000), non routé.
+      - traefik.http.routers.enervision-${DEPLOY_ENV}-auth.rule=PathPrefix(`/auth`)
       - traefik.http.routers.enervision-${DEPLOY_ENV}-auth.entrypoints=https-${DEPLOY_ENV}
       - traefik.http.services.enervision-${DEPLOY_ENV}-auth.loadbalancer.server.port=8080
     healthcheck:
@@ -117,6 +117,12 @@ services:
       # Clés de signature lues en interne, sur le Keycloak de CET environnement : pas
       # « keycloak », ambigu sur traefik_public (partagé par dev et prod)
       KEYCLOAK_URL_INTERNE: http://keycloak-${DEPLOY_ENV}:8080/auth
+      # Création des comptes (client enervision-admin) et comptes de démonstration
+      # (api/seed.py) ; sans SEED_PASSWORD (secret <ENV>_SEED_PASSWORD), pas de seeding
+      KEYCLOAK_ADMIN_CLIENT_SECRET: ${KEYCLOAK_ADMIN_CLIENT_SECRET}
+      SEED_PASSWORD: ${SEED_PASSWORD:-}
+      # En prod, le seeding ne crée pas les comptes qui voient tous les clients
+      DEPLOY_ENV: ${DEPLOY_ENV}
     labels:
       - traefik.enable=true
       - traefik.http.routers.enervision-${DEPLOY_ENV}-api.rule=PathPrefix(`/api`)
@@ -144,6 +150,36 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: etl
       POSTGRES_PASSWORD: ${ETL_DB_PASSWORD}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - postgres_network
+
+  # Sauvegarde nocturne chiffrée des bases enervision et keycloak vers le stockage
+  # Azure (infra/terraform), un conteneur restic-<DEPLOY_ENV> par environnement
+  backup:
+    image: ${IMAGE_REPO:?IMAGE_REPO manquant}/enervision-backup:${IMAGE_TAG:?IMAGE_TAG manquant}
+    build:
+      context: .
+      dockerfile: backup/Dockerfile
+    restart: unless-stopped
+    environment:
+      # Obligatoire : backup.sh en déduit le seul dépôt accepté (azure:restic-<env>:/)
+      DEPLOY_ENV: ${DEPLOY_ENV:?DEPLOY_ENV manquant (dev ou prod)}
+      PGHOST: db
+      PGUSER: backup
+      # La base de l'application porte le nom POSTGRES_DB de l'environnement (pas
+      # forcément « enervision »), puis celle de Keycloak, toujours « keycloak »
+      BACKUP_DATABASES: ${POSTGRES_DB} keycloak
+      PGPASSWORD: ${BACKUP_DB_PASSWORD}
+      RESTIC_REPOSITORY: azure:restic-${DEPLOY_ENV}:/
+      RESTIC_PASSWORD: ${RESTIC_PASSWORD}
+      AZURE_ACCOUNT_NAME: ${AZURE_ACCOUNT_NAME}
+      AZURE_ACCOUNT_SAS: ${AZURE_ACCOUNT_SAS}
+    volumes:
+      # Cache des index restic : évite de les retélécharger depuis Azure à chaque nuit
+      - backup_cache:/home/backup/.cache/restic
     depends_on:
       db:
         condition: service_healthy
@@ -212,6 +248,7 @@ volumes:
   postgresql_data:
   mlflow_data:
   dataset_data:
+  backup_cache:
 
 networks:
   postgres_network:

@@ -166,6 +166,7 @@ def test_alertes_par_defaut_seulement_en_cours(client: TestClient) -> None:
 
     assert session.parametres == {
         "id_client": 1,
+        "id_utilisateur_sites": None,
         "en_cours": True,
         "id_site": None,
         "limite": 100,
@@ -180,6 +181,7 @@ def test_alertes_filtre_par_site_et_inclut_les_terminees(client: TestClient) -> 
     assert response.status_code == 200
     assert session.parametres == {
         "id_client": 1,
+        "id_utilisateur_sites": None,
         "en_cours": False,
         "id_site": "SITE002",
         "limite": 20,
@@ -248,6 +250,7 @@ def test_recommandations_filtre_par_site_et_statut(client: TestClient) -> None:
     assert response.status_code == 200
     assert session.parametres == {
         "id_client": 1,
+        "id_utilisateur_sites": None,
         "id_site": "SITE002",
         "statut": "proposee",
         "limite": 100,
@@ -261,6 +264,7 @@ def test_recommandations_sans_filtre(client: TestClient) -> None:
 
     assert session.parametres == {
         "id_client": 1,
+        "id_utilisateur_sites": None,
         "id_site": None,
         "statut": None,
         "limite": 100,
@@ -336,6 +340,38 @@ def test_un_administrateur_enervision_voit_tous_les_clients(
     assert client.get(url).status_code == 200
 
     assert session.parametres["id_client"] is None
+
+
+@pytest.mark.parametrize("url", ROUTES_DE_DONNEES)
+@pytest.mark.parametrize("role", ["CONSULT-SITE", "GESTION-SITE"])
+def test_un_role_site_ne_lit_que_ses_sites(
+    client: TestClient, url: str, role: str
+) -> None:
+    utilisateur = replace(UTILISATEUR_AUTORISE, roles=frozenset({role}))
+    app.dependency_overrides[utilisateur_courant] = lambda: utilisateur
+    session = brancher([])
+
+    assert client.get(url).status_code == 200
+
+    assert session.parametres["id_client"] == UTILISATEUR_AUTORISE.id_client
+    assert session.parametres["id_utilisateur_sites"] == UTILISATEUR_AUTORISE.id
+    assert "app.utilisateur_site" in session.requete
+
+
+@pytest.mark.parametrize("url", ROUTES_DE_DONNEES)
+def test_un_role_client_voit_tous_les_sites_du_client(
+    client: TestClient, url: str
+) -> None:
+    # Rôle *-SITE en plus d'un rôle *-CLIENT : c'est le plus large qui compte
+    utilisateur = replace(
+        UTILISATEUR_AUTORISE, roles=frozenset({"CONSULT-CLIENT", "GESTION-SITE"})
+    )
+    app.dependency_overrides[utilisateur_courant] = lambda: utilisateur
+    session = brancher([])
+
+    assert client.get(url).status_code == 200
+
+    assert session.parametres["id_utilisateur_sites"] is None
 
 
 # --- Paramètres inconnus ----------------------------------------------------------

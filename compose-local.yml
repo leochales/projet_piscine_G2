@@ -11,6 +11,10 @@
 # Supervision (Prometheus, Grafana, Loki, Alloy, postgres-exporter) : profil « monitoring »,
 # non démarré par défaut (~1 Go de mémoire). L'activer avec :
 #   docker compose -f compose-local.yml --profile monitoring up -d
+#
+# Sauvegarde (restic) : profil « backup », dans un dépôt local (volume backup_home).
+# Lancer une sauvegarde tout de suite :
+#   docker compose -f compose-local.yml --profile backup run --rm backup /app/backup.sh
 services:
   traefik:
     image: traefik:v3.7
@@ -146,6 +150,9 @@ services:
       # Émetteur des jetons = adresse publique de Keycloak (même valeur que KC_HOSTNAME).
       # Les clés sont lues en interne sur http://keycloak:8080/auth.
       KEYCLOAK_EMETTEUR: ${FRONT_URL:-http://localhost}/auth/realms/enervision
+      # Création des comptes (client enervision-admin) et comptes de démonstration (api/seed.py)
+      KEYCLOAK_ADMIN_CLIENT_SECRET: ${KEYCLOAK_ADMIN_CLIENT_SECRET}
+      SEED_PASSWORD: ${SEED_PASSWORD:-EnerVision-Demo-2026}
     labels:
       - traefik.enable=true
       - traefik.http.routers.api.rule=PathPrefix(`/api`)
@@ -173,6 +180,37 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: etl
       POSTGRES_PASSWORD: ${ETL_DB_PASSWORD}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - postgres_network
+
+  # Sauvegarde nocturne (backup/crontab). En local, dépôt restic dans le volume
+  # backup_home ; RESTIC_REPOSITORY=azure:... pour viser le stockage Azure.
+  backup:
+    build:
+      context: .
+      dockerfile: backup/Dockerfile
+    profiles: [backup]
+    environment:
+      DEPLOY_ENV: local
+      PGHOST: db
+      PGUSER: backup
+      # La base de l'application porte le nom POSTGRES_DB de l'environnement (pas
+      # forcément « enervision »), puis celle de Keycloak, toujours « keycloak »
+      BACKUP_DATABASES: ${POSTGRES_DB} keycloak
+      PGPASSWORD: ${BACKUP_DB_PASSWORD}
+      RESTIC_REPOSITORY: ${RESTIC_REPOSITORY:-/home/backup/repo}
+      # Vide : backup.sh s'arrête avec un message. Pas de :? ici, il bloquerait tout
+      # « docker compose up », même sans le profil backup
+      RESTIC_PASSWORD: ${RESTIC_PASSWORD:-}
+      AZURE_ACCOUNT_NAME: ${AZURE_ACCOUNT_NAME:-}
+      AZURE_ACCOUNT_SAS: ${AZURE_ACCOUNT_SAS:-}
+    volumes:
+      # Dossier personnel de l'utilisateur backup (dépôt local et cache restic) : il existe
+      # dans l'image, le volume en reprend donc le propriétaire et reste accessible en écriture
+      - backup_home:/home/backup
     depends_on:
       db:
         condition: service_healthy
@@ -330,6 +368,7 @@ volumes:
   loki_data:
   grafana_data:
   mlflow_data:
+  backup_home:
 
 networks:
   postgres_network:

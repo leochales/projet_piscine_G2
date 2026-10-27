@@ -1,9 +1,13 @@
 """Point d'entrée de l'API métier EnerVision."""
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
 
+from api import seed
 from api.auth import REPONSES_AUTH, ROLES_METIER, exiger_role, utilisateur_courant
 from api.routers import (
     alertes,
@@ -22,7 +26,16 @@ configure_logging("api")
 # Toutes les routes sont sous /api : Traefik transmet /api tel quel à ce service
 API_PREFIX = "/api"
 
+
+@asynccontextmanager
+async def demarrage(_: FastAPI) -> AsyncIterator[None]:
+    # Comptes de démonstration (api/seed.py), en tâche de fond
+    seed.lancer_en_arriere_plan()
+    yield
+
+
 app = FastAPI(
+    lifespan=demarrage,
     title="EnerVision API",
     description="API métier : sites, mesures, prédictions, alertes et recommandations.",
     version="0.1.0",

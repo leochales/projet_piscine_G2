@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from api.auth import ClientCourant
+from api.auth import PerimetreCourant
 from api.routers.parametres import FiltreSite
 from common.db import get_session
 
@@ -38,7 +38,7 @@ class Alerte(BaseModel):
 )
 def lister_alertes(
     session: Annotated[Session, Depends(get_session)],
-    id_client: ClientCourant,
+    perimetre: PerimetreCourant,
     en_cours: Annotated[
         bool, Query(description="false : inclut les alertes terminées")
     ] = True,
@@ -57,6 +57,11 @@ def lister_alertes(
         JOIN app.site AS s ON s.id_site = a.id_site
         WHERE s.statut = 'active'
           AND (CAST(:id_client AS BIGINT) IS NULL OR s.id_client = :id_client)
+          AND (CAST(:id_utilisateur_sites AS UUID) IS NULL OR EXISTS (
+              SELECT 1 FROM app.utilisateur_site AS us
+              WHERE us.id_utilisateur = :id_utilisateur_sites
+                AND us.id_site = s.id_site
+          ))
           AND (NOT :en_cours OR a.fin IS NULL)
           AND (CAST(:id_site AS VARCHAR) IS NULL OR a.id_site = :id_site)
         ORDER BY a.fin IS NULL DESC,
@@ -71,7 +76,7 @@ def lister_alertes(
         """
     )
     parametres = {
-        "id_client": id_client,
+        **perimetre.parametres,
         "en_cours": en_cours,
         "id_site": id_site,
         "limite": limite,

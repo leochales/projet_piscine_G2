@@ -12,7 +12,8 @@ Plateforme MVP d'optimisation énergétique : collecte des mesures de 7 sites, p
 | `common/` | Code Python partagé (schémas, accès base, config) |
 | `front/`  | Tableau de bord (Vue 3)                         |
 | `db/`     | Scripts SQL d'initialisation                    |
-| `infra/`  | Docker, CI, déploiement                         |
+| `backup/` | Sauvegarde nocturne chiffrée des bases (restic) |
+| `infra/`  | Docker, CI, déploiement, stockage Azure des sauvegardes (`infra/terraform/`) |
 
 ## Lancer le projet
 
@@ -26,6 +27,25 @@ docker compose up --build
 ```
 
 Tout passe par Traefik sur `http://localhost` : le dashboard, l'API (`/api`, Swagger sur `/api/docs`) et Keycloak (`/auth`, console d'administration sur `/auth/admin` avec `KEYCLOAK_ADMIN` / `KEYCLOAK_ADMIN_PASSWORD`). Keycloak est à la même adresse que sur la VM : l'émetteur des jetons (`iss`) est donc le même pour le navigateur et pour l'API.
+
+### Comptes de démonstration
+
+Un compte par rôle, créés **automatiquement**, en local comme sur la VM :
+
+| Compte | Rôles | Client | Sites |
+|---|---|---|---|
+| `admin@enervision.test` | GESTION-CLIENT, MONITORING | aucun (administrateur EnerVision : tous) | tous ; **pas créé en prod** |
+| `gestion.client@demo.test` | GESTION-CLIENT | Démo EnerVision | tous ceux du client |
+| `gestion.site@demo.test` | GESTION-SITE | Démo EnerVision | SITE002, SITE007 |
+| `consult.client@demo.test` | CONSULT-CLIENT | Démo EnerVision | tous ceux du client |
+| `consult.site@demo.test` | CONSULT-SITE | Démo EnerVision | SITE001 |
+| `monitoring@enervision.test` | MONITORING | aucun | aucune donnée métier |
+
+Mot de passe en local : `EnerVision-Demo-2026` (autre valeur : `SEED_PASSWORD` dans le `.env`, 12 caractères au moins).
+
+Ils sont créés par l'API à chaque démarrage ([`api/seed.py`](api/seed.py)), avec les fonctions qui créeront aussi les vrais comptes ([`api/services/comptes.py`](api/services/comptes.py)) : compte créé dans Keycloak (client `enervision-admin`), enregistré dans `app.utilisateur`, puis ses sites dans `app.utilisateur_site`. Un compte déjà enregistré n'est jamais modifié : un mot de passe ou des rôles changés à la main sont gardés. Une création interrompue (compte dans Keycloak, sans rôles ou sans ligne en base) est reprise au démarrage suivant. Un compte mal décrit (client ou site inconnu) est ignoré, avec un avertissement dans les logs. Le seeding tourne en tâche de fond et attend Keycloak s'il n'est pas prêt ; le résultat est dans les logs de l'API (`docker compose -f compose-local.yml logs api | grep -i seed`).
+
+Pour ajouter un compte : une ligne dans `COMPTES_DEMO` (`api/seed.py`), puis redémarrer l'API.
 
 ### Base de données
 
@@ -82,6 +102,46 @@ Grafana : http://localhost/grafana (compte `admin`, mot de passe `GRAFANA_ADMIN_
 - Le compte `monitoring` n'existe que dans une base créée ou migrée après l'ajout de la supervision. Si PostgreSQL apparaît « injoignable » dans Grafana, lancer la migration (voir **Base de données** ci-dessus).
 - Un tableau de bord modifié dans Grafana n'est pas sauvegardé : exporter son JSON dans `infra/monitoring/grafana/dashboards/`.
 
+## Sauvegarde (restic)
+
+Chaque nuit à 2 h UTC, le conteneur `backup` ([`backup/`](backup/)) sauvegarde la base de l'application (celle de `POSTGRES_DB`, propre à chaque environnement) puis `keycloak`, dans la même exécution (les comptes de l'application sont liés à Keycloak). Chaque snapshot porte en tag le nom de sa base, et le fichier s'appelle `<base>.dump` :
+
+- `pg_dump` (format custom) avec le compte `backup`, en lecture seule, envoyé directement à restic, sans fichier sur le disque ;
+- chiffré par restic avec `RESTIC_PASSWORD` avant l'envoi : **sans cette clé, les sauvegardes sont illisibles**, la conserver aussi hors de GitHub ;
+- sur la VM, dans le stockage Azure (`azure:restic-<env>:/`, voir `infra/terraform`) ; le script refuse tout autre dépôt en dev et en prod. En local, dans le volume `backup_home` ;
+- conservation : 7 sauvegardes quotidiennes, 4 hebdomadaires et 6 mensuelles par base. Chaque nuit, `forget` oublie les snapshots en trop (rien si aucune base n'a été sauvegardée) ; le dimanche seulement, `prune` libère la place sur Azure puis `restic check` relit 5 % des données, à la suite dans le même job ;
+- logs JSON au format commun ; un échec (base, `prune`, `check`) est un log `error` et le job se termine en erreur.
+
+Les deux bases ne sont pas figées au même instant (`pg_dump` ne sait pas faire un instantané commun à deux bases). L'ordre fait qu'une ligne de `app.utilisateur` a toujours son compte Keycloak dans la sauvegarde : au pire, un compte créé pendant les quelques secondes entre les deux dumps n'a pas encore sa ligne, à recréer après une restauration.
+
+En local, le service est dans le profil `backup`. Avec `RESTIC_PASSWORD` dans le `.env` :
+
+```bash
+docker compose -f compose-local.yml --profile backup run --rm backup /app/backup.sh
+```
+
+```bash
+docker compose -f compose-local.yml --profile backup run --rm backup restic snapshots
+```
+
+Pour récupérer un dump (ici le dernier de la base `enervision`, le `POSTGRES_DB` du `.env` par défaut ; sur la VM, remplacer par le `POSTGRES_DB` de l'environnement) et l'inspecter avec `pg_restore` :
+
+```bash
+docker compose -f compose-local.yml --profile backup run --rm backup sh -c "restic dump latest enervision.dump --tag enervision | pg_restore --list"
+```
+
+La procédure de restauration complète est l'objet de SMARTOPS-54.
+
+Le dépôt local est dans le volume `backup_home` (dossier `/home/backup/repo` du conteneur). Une première version de la branche utilisait un volume `backup_repo` : il n'est plus lu, et la sauvegarde suivante démarre un nouveau dépôt vide. Ce n'étaient que des sauvegardes de test locales ; pour les garder, copier le volume avant de le supprimer :
+
+```bash
+docker run --rm -v projet_piscine_g2_backup_repo:/ancien:ro -v projet_piscine_g2_backup_home:/home/backup alpine:3.23 sh -c "cp -a /ancien /home/backup/repo && chown -R 1000:1000 /home/backup/repo"
+```
+
+```bash
+docker volume rm projet_piscine_g2_backup_repo
+```
+
 ## Hooks pre-commit
 
 Les vérifications (ruff, sqlfluff, hadolint, prettier, eslint, gitleaks…) tournent avant chaque commit ; les tests avec couverture (pytest, vitest), le typage (mypy, vue-tsc) et Trivy avant chaque push. Configuration : `.pre-commit-config.yaml`.
@@ -101,10 +161,10 @@ Trivy doit aussi être installé sur la machine (`brew install trivy` sous macOS
 
 ### Après un `git pull`
 
-Si `requirements*.txt` ou `front/package-lock.json` ont changé, réinstaller les dépendances, sinon les hooks du push échouent (par exemple `pytest-cov` ou `@vitest/coverage-v8` manquants) :
+Si `requirements*.txt` ou `front/package-lock.json` ont changé, réinstaller les dépendances, sinon les hooks du push échouent (par exemple `pytest-cov` ou `@vitest/coverage-v8` manquants, ou `pytest (model)` qui ne trouve pas scikit-learn) :
 
 ```bash
-.venv/bin/pip install -r api/requirements-dev.txt
+.venv/bin/pip install -r api/requirements-dev.txt -r model/requirements-dev.txt
 npm --prefix front ci
 ```
 
@@ -121,8 +181,9 @@ Chaque pull request vers `develop` ou `main` lance :
 | Workflow | Ce qui bloque la PR |
 |---|---|
 | `pre-commit.yml` | lint et format (ruff, dont les règles de sécurité `S` de Bandit, eslint, prettier, sqlfluff, hadolint, gitleaks), tests et typage, **couverture sous 80 %** |
-| `security.yml` | vulnérabilité HIGH ou CRITICAL dans les fichiers du dépôt |
-| `images.yml` | image qui ne se construit pas ; stack de prod (Traefik, base, api, etl, front) qui ne démarre pas ou échoue aux tests ; réponse de l'API qui ne respecte pas son contrat OpenAPI (Schemathesis, sur le conteneur) ; image qui contient une vulnérabilité corrigeable |
+| `security.yml` | vulnérabilité HIGH ou CRITICAL dans les fichiers du dépôt, ou dans la configuration Terraform |
+| `terraform.yml` | code Terraform mal formaté, invalide ou signalé par tflint (seulement si `infra/terraform/` change) |
+| `images.yml` | image qui ne se construit pas ; stack de prod (Traefik, base, api, etl, front, backup) qui ne démarre pas ou échoue aux tests (dont une sauvegarde complète dans un dépôt restic local) ; réponse de l'API qui ne respecte pas son contrat OpenAPI (Schemathesis, sur le conteneur) ; image qui contient une vulnérabilité corrigeable |
 
 La couverture porte sur la logique métier : `api/` et `common/` côté Python (`pyproject.toml`), `src/stores`, `src/lib` et `src/services` côté front (`front/vitest.config.ts`).
 

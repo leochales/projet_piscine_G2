@@ -209,21 +209,53 @@ def utilisateur_courant(
     return Utilisateur(id=id_utilisateur, id_client=id_client, roles=roles)
 
 
-def client_courant(
-    utilisateur: Annotated[Utilisateur, Depends(utilisateur_courant)],
-) -> int | None:
-    """Client dont l'utilisateur voit les données ; None : administrateur EnerVision (tous).
+ROLES_CLIENT = frozenset({"CONSULT-CLIENT", "GESTION-CLIENT"})
+ROLES_SITE = frozenset({"CONSULT-SITE", "GESTION-SITE"})
 
+
+@dataclass(frozen=True)
+class Perimetre:
+    """Sites dont l'utilisateur voit les données."""
+
+    id_client: int | None  # None : administrateur EnerVision, tous les clients
+    # Renseigné : seulement les sites attribués à cet utilisateur (app.utilisateur_site)
+    id_utilisateur_sites: UUID | None
+
+    @property
+    def parametres(self) -> dict[str, Any]:
+        return {
+            "id_client": self.id_client,
+            "id_utilisateur_sites": self.id_utilisateur_sites,
+        }
+
+
+def perimetre_courant(
+    utilisateur: Annotated[Utilisateur, Depends(utilisateur_courant)],
+) -> Perimetre:
+    """Client de l'utilisateur, et ses sites s'il n'a qu'un rôle *-SITE.
+
+    Un rôle *-CLIENT ouvre tous les sites du client, même avec un rôle *-SITE en plus.
     utilisateur_courant n'est évalué qu'une fois par requête (cache des dépendances
     FastAPI) : pas de deuxième lecture de app.utilisateur.
     """
-    return utilisateur.id_client
+    limite_aux_sites = utilisateur.roles.isdisjoint(ROLES_CLIENT) and not (
+        utilisateur.roles.isdisjoint(ROLES_SITE)
+    )
+    return Perimetre(
+        id_client=utilisateur.id_client,
+        id_utilisateur_sites=utilisateur.id if limite_aux_sites else None,
+    )
 
 
 # Périmètre des routes de données : chaque requête ne lit que les sites du client de
-# l'utilisateur. Condition écrite dans le SQL de chaque route (app.site en alias s) :
+# l'utilisateur, et pour un rôle *-SITE, que ceux qui lui sont attribués. Conditions
+# écrites dans le SQL de chaque route (app.site en alias s), avec **perimetre.parametres :
 #   (CAST(:id_client AS BIGINT) IS NULL OR s.id_client = :id_client)
-ClientCourant = Annotated[int | None, Depends(client_courant)]
+#   AND (CAST(:id_utilisateur_sites AS UUID) IS NULL OR EXISTS (
+#       SELECT 1 FROM app.utilisateur_site AS us
+#       WHERE us.id_utilisateur = :id_utilisateur_sites AND us.id_site = s.id_site
+#   ))
+PerimetreCourant = Annotated[Perimetre, Depends(perimetre_courant)]
 
 
 def exiger_role(*roles_autorises: str) -> Callable[..., Utilisateur]:
