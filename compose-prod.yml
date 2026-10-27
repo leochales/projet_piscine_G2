@@ -117,6 +117,10 @@ services:
       # Clés de signature lues en interne, sur le Keycloak de CET environnement : pas
       # « keycloak », ambigu sur traefik_public (partagé par dev et prod)
       KEYCLOAK_URL_INTERNE: http://keycloak-${DEPLOY_ENV}:8080/auth
+      # Création des comptes (client enervision-admin) et comptes de démonstration
+      # (api/seed.py) ; sans SEED_PASSWORD (secret <ENV>_SEED_PASSWORD), pas de seeding
+      KEYCLOAK_ADMIN_CLIENT_SECRET: ${KEYCLOAK_ADMIN_CLIENT_SECRET}
+      SEED_PASSWORD: ${SEED_PASSWORD:-}
     labels:
       - traefik.enable=true
       - traefik.http.routers.enervision-${DEPLOY_ENV}-api.rule=PathPrefix(`/api`)

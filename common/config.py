@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     keycloak_realm: str = "enervision"
     keycloak_emetteur: str = "http://localhost/auth/realms/enervision"
     keycloak_audience: str = "enervision-api"
+    # Compte de service qui gère les utilisateurs du realm (api/services/comptes.py)
+    keycloak_admin_client_id: str = "enervision-admin"
+    keycloak_admin_client_secret: SecretStr | None = None
+    # Mot de passe des comptes de démonstration (api/seed.py) ; absent : non créés
+    seed_password: SecretStr | None = None
 
     @property
     def keycloak_url_cles(self) -> str:

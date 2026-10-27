@@ -29,13 +29,22 @@ Tout passe par Traefik sur `http://localhost` : le dashboard, l'API (`/api`, Swa
 
 ### Comptes de démonstration
 
-Un compte par rôle, listé dans [`infra/seed/utilisateurs.csv`](infra/seed/utilisateurs.csv) : créé dans Keycloak et enregistré dans `app.utilisateur` (sinon l'API répond 403). Tous ont le même mot de passe, `EnerVision-Demo-2026` (`SEED_PASSWORD=...` pour en choisir un autre, 12 caractères au moins). La stack démarrée :
+Un compte par rôle, créés **automatiquement**, en local comme sur la VM :
 
-```bash
-infra/seed/utilisateurs.sh local
-```
+| Compte | Rôles | Client | Sites |
+|---|---|---|---|
+| `admin@enervision.test` | GESTION-CLIENT, MONITORING | aucun (administrateur EnerVision : tous) | tous |
+| `gestion.client@demo.test` | GESTION-CLIENT | Démo EnerVision | tous ceux du client |
+| `gestion.site@demo.test` | GESTION-SITE | Démo EnerVision | SITE002, SITE007 |
+| `consult.client@demo.test` | CONSULT-CLIENT | Démo EnerVision | tous ceux du client |
+| `consult.site@demo.test` | CONSULT-SITE | Démo EnerVision | SITE001 |
+| `monitoring@enervision.test` | MONITORING | aucun | aucune donnée métier |
 
-Rejouable : un compte existant reçoit le mot de passe, les rôles et le client du fichier. Même commande avec `dev` sur la VM ; refusé en prod.
+Mot de passe en local : `EnerVision-Demo-2026` (autre valeur : `SEED_PASSWORD` dans le `.env`, 12 caractères au moins).
+
+Ils sont créés par l'API à chaque démarrage ([`api/seed.py`](api/seed.py)), avec les fonctions qui créeront aussi les vrais comptes ([`api/services/comptes.py`](api/services/comptes.py)) : compte créé dans Keycloak (client `enervision-admin`), enregistré dans `app.utilisateur`, puis ses sites dans `app.utilisateur_site`. Un compte déjà enregistré n'est jamais modifié : un mot de passe ou des rôles changés à la main sont gardés. Le seeding tourne en tâche de fond et attend Keycloak s'il n'est pas prêt ; le résultat est dans les logs de l'API (`docker compose -f compose-local.yml logs api | grep -i seed`).
+
+Pour ajouter un compte : une ligne dans `COMPTES_DEMO` (`api/seed.py`), puis redémarrer l'API.
 
 ### Base de données
 

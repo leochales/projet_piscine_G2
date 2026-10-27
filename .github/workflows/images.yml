@@ -47,6 +47,8 @@ jobs:
       KEYCLOAK_ADMIN_PASSWORD: ci-keycloak-admin
       KEYCLOAK_DB_PASSWORD: ci-keycloak
       KEYCLOAK_ADMIN_CLIENT_SECRET: ci-keycloak-client
+      # Comptes de démonstration créés par l'API à son démarrage (api/seed.py)
+      SEED_PASSWORD: ci-comptes-demo-mot-de-passe
       FRONT_URL: https://localhost:8443
     steps:
       # Pas de jeton dans .git/config : le job a packages: write et exécute le code de la PR
@@ -276,6 +278,34 @@ jobs:
           [ "$code" = 401 ] || { echo "::error::Sans jeton : $code au lieu de 401"; exit 1; }
           code=$(curl -sk -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" "$url")
           [ "$code" = 200 ] || { echo "::error::Avec jeton : $code au lieu de 200"; exit 1; }
+
+      # Seeding au démarrage de l'API : le compte consult.site@demo.test se connecte, est
+      # enregistré en base (GET /api/moi) et ne voit que son site (rôle CONSULT-SITE)
+      - name: Comptes de démonstration
+        run: |
+          reponse=""
+          for _ in $(seq 1 30); do
+            reponse=$(curl -sSk https://localhost:8443/auth/realms/enervision/protocol/openid-connect/token \
+              -d grant_type=password -d client_id=enervision-front \
+              -d username=consult.site@demo.test --data-urlencode "password=$SEED_PASSWORD")
+            jq -e .access_token <<<"$reponse" >/dev/null && break
+            sleep 2
+          done
+          token=$(jq -r '.access_token // empty' <<<"$reponse")
+          [ -n "$token" ] || {
+            echo "::error::Compte de démonstration absent de Keycloak après 60 s"
+            docker compose -f compose-prod.yml logs api | grep -i seed
+            exit 1
+          }
+          echo "::add-mask::$token"
+          curl -fsSk -H "Authorization: Bearer $token" https://localhost:8443/api/moi \
+            | jq -e '.roles == ["CONSULT-SITE"]' >/dev/null \
+            || { echo "::error::consult.site non enregistré en base ou mauvais rôle"; exit 1; }
+          sites=$(curl -fsSk -H "Authorization: Bearer $token" https://localhost:8443/api/sites/derniere-mesure \
+            | jq -r '[.[].id_site] | unique | join(",")')
+          # Liste vide : pas encore de mesure collectée sur la stack de test
+          [ -z "$sites" ] || [ "$sites" = SITE001 ] \
+            || { echo "::error::consult.site voit d'autres sites que SITE001 : $sites"; exit 1; }
 
       # Contrat OpenAPI vérifié sur le conteneur de l'API, derrière Traefik, avec le jeton
       # du compte de test : les routes protégées sont testées au-delà du 401

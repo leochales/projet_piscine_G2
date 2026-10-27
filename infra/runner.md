@@ -56,6 +56,7 @@ Le dépôt est privé sur un plan Free, sans *GitHub Environments*. Les secrets 
 | `DEV_KEYCLOAK_DB_PASSWORD` / `PROD_KEYCLOAK_DB_PASSWORD` | Compte `keycloak` (base `keycloak`) |
 | `DEV_KEYCLOAK_ADMIN_PASSWORD` / `PROD_KEYCLOAK_ADMIN_PASSWORD` | Administrateur initial de Keycloak |
 | `DEV_KEYCLOAK_ADMIN_CLIENT_SECRET` / `PROD_KEYCLOAK_ADMIN_CLIENT_SECRET` | Secret du client `enervision-admin` (création des comptes par l'API) |
+| `DEV_SEED_PASSWORD` / `PROD_SEED_PASSWORD` | Mot de passe des comptes de démonstration (12 caractères au moins), créés par l'API à son démarrage ; facultatif, sans lui ils ne sont pas créés |
 
 | Variables                                    | Obligatoire | Rôle                                          |
 |----------------------------------------------|-------------|-----------------------------------------------|
@@ -185,13 +186,7 @@ kcadm update clients/<id> -r enervision -s 'redirectUris=["https://<VM_IP>/*"]'
 
 Les comptes se créent dans Keycloak. En temps normal, ce sont les gestionnaires qui les créent depuis le dashboard (`POST /api/utilisateurs`, SMARTOPS-84). À la main, on passe par l'administration de Keycloak : la console (`http://localhost/auth/admin` en local, `https://<VM_IP>[:8443]/auth/admin` sur la VM) ou `kcadm.sh`.
 
-**Comptes de démonstration sur dev** : `infra/seed/utilisateurs.sh` fait les deux étapes ci-dessous pour chaque ligne de `infra/seed/utilisateurs.csv` (un compte par rôle), avec l'administrateur initial de Keycloak. Depuis la racine du dépôt sur la VM, avec un compte du groupe `docker` :
-
-```bash
-infra/seed/utilisateurs.sh dev
-```
-
-Mot de passe de tous les comptes : `EnerVision-Demo-2026`, ou `SEED_PASSWORD` s'il est défini. Le script refuse la prod. Il échoue si le mot de passe de l'administrateur `master` a été changé depuis le premier démarrage de Keycloak.
+**Comptes de démonstration** : un compte par rôle (liste dans le README, section « Comptes de démonstration »), créés par l'API à chaque démarrage (`api/seed.py`), en dev comme en prod, avec le mot de passe du secret `<ENV>_SEED_PASSWORD`. Sans ce secret, l'API n'en crée pas. Un compte déjà enregistré n'est jamais modifié. Résultat dans les logs de l'API : `docker compose -p enervision-<env> logs api | grep -i seed`.
 
 **Attention** : l'API n'accepte que les utilisateurs enregistrés dans `app.utilisateur`, car c'est là qu'elle trouve leur entreprise. Un compte créé dans Keycloak sans cette ligne reçoit un 403.
 

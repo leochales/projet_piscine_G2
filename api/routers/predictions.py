@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from api.auth import ClientCourant
+from api.auth import PerimetreCourant
 from api.routers.parametres import IdSite
 from common.db import get_session
 
@@ -47,7 +47,7 @@ def calculer_fenetre(
 def lister_predictions(
     id_site: IdSite,
     session: Annotated[Session, Depends(get_session)],
-    id_client: ClientCourant,
+    perimetre: PerimetreCourant,
     horizon: Horizon = "24h",
 ) -> list[Prediction]:
     debut, fin = calculer_fenetre(horizon)
@@ -68,6 +68,11 @@ def lister_predictions(
               SELECT 1 FROM app.site AS s
               WHERE s.id_site = :id_site
                 AND (CAST(:id_client AS BIGINT) IS NULL OR s.id_client = :id_client)
+                AND (CAST(:id_utilisateur_sites AS UUID) IS NULL OR EXISTS (
+                    SELECT 1 FROM app.utilisateur_site AS us
+                    WHERE us.id_utilisateur = :id_utilisateur_sites
+                      AND us.id_site = s.id_site
+                ))
           )
         ORDER BY heure_prevue, calculee_le DESC
         """
@@ -76,7 +81,7 @@ def lister_predictions(
         "id_site": id_site,
         "debut": debut,
         "fin": fin,
-        "id_client": id_client,
+        **perimetre.parametres,
     }
     lignes = session.execute(requete, parametres).mappings().all()
     return [Prediction(**ligne) for ligne in lignes]

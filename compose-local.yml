@@ -146,6 +146,9 @@ services:
       # Émetteur des jetons = adresse publique de Keycloak (même valeur que KC_HOSTNAME).
       # Les clés sont lues en interne sur http://keycloak:8080/auth.
       KEYCLOAK_EMETTEUR: ${FRONT_URL:-http://localhost}/auth/realms/enervision
+      # Création des comptes (client enervision-admin) et comptes de démonstration (api/seed.py)
+      KEYCLOAK_ADMIN_CLIENT_SECRET: ${KEYCLOAK_ADMIN_CLIENT_SECRET}
+      SEED_PASSWORD: ${SEED_PASSWORD:-EnerVision-Demo-2026}
     labels:
       - traefik.enable=true
       - traefik.http.routers.api.rule=PathPrefix(`/api`)
