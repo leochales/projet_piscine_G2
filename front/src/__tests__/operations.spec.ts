@@ -96,12 +96,12 @@ describe('useOperationsStore', () => {
   it('compte les alertes critiques restant à traiter', async () => {
     const store = useOperationsStore()
     await store.load()
-    // Données simulées : un pic prévu et un dépassement de seuil (US3), tous deux critiques
+    // Données simulées : seul le pic prévu est critical. Le dépassement est high (90 %).
     const critical = store.alerts.filter((a) => a.gravite === 'critique')
-    expect(store.pendingCritical).toBe(2)
+    expect(store.pendingCritical).toBe(1)
     await store.acknowledge(critical[0]!.id)
     await store.acknowledge('inconnue') // sans effet
-    expect(store.pendingCritical).toBe(1)
+    expect(store.pendingCritical).toBe(0)
   })
 
   it('ne lance qu’un chargement quand l’en-tête et l’écran le demandent en même temps', async () => {

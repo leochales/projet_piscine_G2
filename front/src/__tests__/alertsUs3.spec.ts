@@ -49,7 +49,7 @@ describe('toAlert (GET /api/alertes)', () => {
       siteId: 'SITE005',
       nomSite: 'Entrepôt de Rennes',
       type: 'threshold',
-      gravite: 'critique', // « high » : traité comme critique (3 niveaux dans le dashboard)
+      gravite: 'moyenne', // « high » : pic dès 90 %, pas critique (critical à partir de 110 %)
       message: 'Dépassement du seuil de consommation',
       debut: '2026-10-26T13:00:00Z',
       valeurKw: 752,
@@ -85,6 +85,12 @@ describe('thresholdText', () => {
   it('compare la mesure au seuil, avec l’écart en %', () => {
     expect(thresholdText(toAlert(depassement))).toMatch(
       /^752 kW pour un seuil de 720 kW \(\+4 %\)$/u,
+    )
+  })
+
+  it('un très faible dépassement ne s’affiche pas comme +0 %', () => {
+    expect(thresholdText(toAlert({ ...depassement, valeur: 721 }))).toMatch(
+      /^721 kW pour un seuil de 720 kW \(\+0,1 %\)$/u,
     )
   })
 
@@ -250,6 +256,23 @@ describe('écran 3 : rafraîchissement des alertes (US3)', () => {
     expect(reload).toHaveBeenCalled()
     // Pendant le rafraîchissement, la liste reste affichée
     expect(wrapper.findAll('tbody tr').length).toBeGreaterThan(0)
+  })
+
+  it('au retour, affiche tout de suite les alertes déjà chargées', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useUserStore().setFromToken({ realm_access: { roles: ['GESTION-CLIENT'] } })
+    const first = mount(AlertsView, { global: { plugins: [pinia], stubs: { RouterLink: true } } })
+    await vi.waitFor(() => expect(first.findAll('tbody tr').length).toBeGreaterThan(0))
+    first.unmount()
+
+    const operations = useOperationsStore()
+    vi.spyOn(operations, 'reloadAlerts').mockImplementation(() => new Promise(() => {}))
+    vi.spyOn(operations, 'reloadRecommendations').mockImplementation(() => new Promise(() => {}))
+    const again = mount(AlertsView, { global: { plugins: [pinia], stubs: { RouterLink: true } } })
+
+    expect(again.find('[role="status"]').exists()).toBe(false)
+    expect(again.findAll('tbody tr').length).toBeGreaterThan(0)
   })
 })
 

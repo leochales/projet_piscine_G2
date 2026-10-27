@@ -26,7 +26,7 @@ import { useOperationsStore } from '@/stores/operations'
 const actionsNotice = useActionsNotice()
 
 const operations = useOperationsStore()
-const { alerts, recommendations, savings, pending } = storeToRefs(operations)
+const { alerts, recommendations, savings, pending, loaded } = storeToRefs(operations)
 // Même ordre que la page d'un site, sans les recommandations acceptées depuis longtemps
 const listed = computed(() => listedRecommendations(recommendations.value))
 
@@ -38,10 +38,14 @@ const request = useRequest(async () => {
   await Promise.all([operations.reloadAlerts(), operations.reloadRecommendations()])
 })
 const freshness = useAutoRefresh([request])
-// Squelettes et erreur pleine page au premier chargement seulement : un rafraîchissement
-// garde les listes affichées
-const firstLoading = computed(() => !request.updatedAt.value && request.status.value === 'loading')
-const firstFailed = computed(() => !request.updatedAt.value && request.status.value === 'error')
+// Squelettes et erreur pleine page tant que le store n'a rien. Au retour sur l'écran,
+// les listes déjà chargées restent affichées, même si le rechargement est en cours ou échoue.
+const firstLoading = computed(
+  () => !loaded.value && !request.updatedAt.value && request.status.value === 'loading',
+)
+const firstFailed = computed(
+  () => !loaded.value && !request.updatedAt.value && request.status.value === 'error',
+)
 
 // Filtres de la liste des alertes : gravité et site
 const filter = ref<AlertFilter>({ ...NO_FILTER })

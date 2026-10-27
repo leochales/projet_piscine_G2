@@ -37,8 +37,8 @@ describe('AlertsView : filtres', () => {
       .findAll('[role="radio"], button')
       .find((b) => b.text() === 'moyenne')!
       .trigger('click')
-    expect(rows(wrapper)).toEqual(['SITE003', 'SITE004'])
-    expect(wrapper.text()).toContain('2 alertes sur 5')
+    expect(rows(wrapper)).toEqual(['SITE005', 'SITE003', 'SITE004'])
+    expect(wrapper.text()).toContain('3 alertes sur 5')
 
     await wrapper.get('select#filtre-site').setValue('SITE004')
     expect(rows(wrapper)).toEqual(['SITE004'])

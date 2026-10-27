@@ -2,10 +2,11 @@ import { formatKw, formatRelativeDateTime } from '@/lib/format'
 import type { AlerteApi } from '@/types/api'
 import type { Alert, AlertType, Severity } from '@/types/energy'
 
-// L'API a 4 niveaux, le dashboard 3 : une alerte « high » est traitée comme critique
+// L'API a 4 niveaux, le dashboard 3. SMARTOPS-26 : un pic à 90 % est « high »,
+// « critical » seulement à partir de 110 %. « high » n'est donc pas une alerte critique.
 const GRAVITES: Record<AlerteApi['severite'], Severity> = {
   critical: 'critique',
-  high: 'critique',
+  high: 'moyenne',
   medium: 'moyenne',
   low: 'faible',
 }
@@ -49,7 +50,20 @@ export function thresholdText(alert: Alert): string | null {
   if (valeurKw === null || seuilKw === null || seuilKw <= 0) return null
   const text = `${formatKw(valeurKw)} pour un seuil de ${formatKw(seuilKw)}`
   if (valeurKw <= seuilKw) return text
-  return `${text} (+${Math.round(((valeurKw - seuilKw) / seuilKw) * 100)} %)`
+  return `${text} (${formatEcartPct(((valeurKw - seuilKw) / seuilKw) * 100)})`
+}
+
+/** Écart au-dessus du seuil. Sous 1 %, un arrondi entier donnerait « +0 % ». */
+function formatEcartPct(pct: number): string {
+  if (pct < 0.05) return '< 0,1 %'
+  if (pct < 1) {
+    const dixieme = new Intl.NumberFormat('fr-FR', {
+      minimumFractionDigits: 1,
+      maximumFractionDigits: 1,
+    }).format(pct)
+    return `+${dixieme} %`
+  }
+  return `+${Math.round(pct)} %`
 }
 
 // Alertes datées par la mesure elle-même : l'heure affichée est celle du dépassement

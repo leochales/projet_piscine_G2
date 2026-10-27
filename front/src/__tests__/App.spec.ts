@@ -45,10 +45,11 @@ describe('App', () => {
     const app = mountApp()
     await flushPromises()
 
-    // Données de démonstration : 4 alertes à traiter, dont 2 critiques (pic prévu, seuil)
+    // Données de démonstration : 4 alertes à traiter, dont 1 critique (pic prévu).
+    // Le dépassement de seuil est high : il ne compte pas parmi les critiques.
     const nav = app.get('nav[aria-label="Navigation principale"]')
     // Le service simulé répond après un court délai
-    await vi.waitFor(() => expect(nav.text()).toContain('4 à traiter, dont 2 critiques'))
+    await vi.waitFor(() => expect(nav.text()).toContain('4 à traiter, dont 1 critique'))
   })
 
   it('affiche une page introuvable pour une adresse inconnue, sans renvoyer à l’accueil', async () => {
