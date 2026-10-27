@@ -76,6 +76,26 @@ export const CHECK_ACCOUNT_TIMEOUT_MS = 5000
  * (GET /api/moi). « unavailable » : API injoignable, en erreur ou trop lente, l'application
  * démarre quand même et chaque écran affichera ses propres erreurs.
  */
+/** Attente avant chaque nouvel essai de /api/moi ; le dernier délai se répète ensuite */
+export const ACCOUNT_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000]
+
+/**
+ * Relance checkAccount en arrière-plan tant que l'API ne répond pas (« unavailable ») :
+ * sans réponse de /api/moi, les sites attribués restent inconnus et un GESTION-SITE ne
+ * voit aucun bouton d'action. S'arrête dès que l'API reconnaît ou refuse le compte.
+ */
+export async function retryAccountCheck(
+  delaysMs: readonly number[] = ACCOUNT_RETRY_DELAYS_MS,
+  baseUrl?: string,
+): Promise<AccountStatus> {
+  for (let attempt = 0; ; attempt++) {
+    const delay = delaysMs[Math.min(attempt, delaysMs.length - 1)]
+    await new Promise((resolve) => setTimeout(resolve, delay))
+    const status = await checkAccount(baseUrl)
+    if (status !== 'unavailable') return status
+  }
+}
+
 export async function checkAccount(
   baseUrl?: string,
   timeoutMs: number = CHECK_ACCOUNT_TIMEOUT_MS,

@@ -91,7 +91,20 @@ class FausseBase:
         self._en_cours: list[tuple[str, int, UUID, str | None]] = []
         # Action enregistrée par quelqu'un d'autre entre la lecture et l'ajout
         self.action_concurrente = False
+        # Site désactivé par quelqu'un d'autre juste après l'ajout : la relecture ne
+        # trouve plus l'alerte ni la recommandation
+        self.site_desactive_apres_ajout = False
         self.commits = 0
+
+    def _action_en_cours(
+        self, nature: str, id_objet: int
+    ) -> tuple[UUID, str | None] | None:
+        """Action ajoutée dans la transaction, pas encore commitée : visible par la
+        session qui l'a écrite, comme dans PostgreSQL."""
+        for nature_en_cours, id_en_cours, id_utilisateur, statut in self._en_cours:
+            if (nature_en_cours, id_en_cours) == (nature, id_objet):
+                return id_utilisateur, statut
+        return None
 
     def _visible(self, id_site: str, parametres: dict[str, Any]) -> bool:
         id_client = parametres["id_client"]
@@ -106,7 +119,12 @@ class FausseBase:
             ligne = self.alertes.get(parametres["id_alerte"])
             if ligne is None or not self._visible(ligne["id_site"], parametres):
                 return Resultat([])
-            prise_par = self.prises.get(ligne["id_alerte"])
+            en_cours = self._action_en_cours("prise", ligne["id_alerte"])
+            if en_cours is not None and self.site_desactive_apres_ajout:
+                return Resultat([])
+            prise_par = self.prises.get(ligne["id_alerte"]) or (
+                en_cours[0] if en_cours else None
+            )
             return Resultat(
                 [
                     {
@@ -121,7 +139,12 @@ class FausseBase:
             ligne = self.recommandations.get(parametres["id_recommandation"])
             if ligne is None or not self._visible(ligne["id_site"], parametres):
                 return Resultat([])
-            decision = self.decisions.get(ligne["id_recommandation"])
+            en_cours = self._action_en_cours("decision", ligne["id_recommandation"])
+            if en_cours is not None and self.site_desactive_apres_ajout:
+                return Resultat([])
+            decision = self.decisions.get(ligne["id_recommandation"]) or (
+                (en_cours[0], en_cours[1] or "") if en_cours else None
+            )
             return Resultat(
                 [
                     {
@@ -417,3 +440,31 @@ def test_corps_illisible_400_documente(client: TestClient) -> None:
     chemins = client.get("/api/openapi.json").json()["paths"]
     route = chemins["/api/recommandations/{id_recommandation}/decision"]["post"]
     assert "400" in route["responses"]
+
+
+def test_site_desactive_pendant_la_prise_en_compte_404_sans_enregistrer(
+    client: TestClient, base: FausseBase
+) -> None:
+    connecter("GESTION-CLIENT")
+    base.site_desactive_apres_ajout = True
+
+    response = client.post("/api/alertes/1/prise-en-compte")
+
+    assert response.status_code == 404
+    assert base.prises == {}
+    assert base.commits == 0
+
+
+def test_site_desactive_pendant_la_decision_404_sans_enregistrer(
+    client: TestClient, base: FausseBase
+) -> None:
+    connecter("GESTION-CLIENT")
+    base.site_desactive_apres_ajout = True
+
+    response = client.post(
+        "/api/recommandations/1/decision", json={"statut": "acceptee"}
+    )
+
+    assert response.status_code == 404
+    assert base.decisions == {}
+    assert base.commits == 0

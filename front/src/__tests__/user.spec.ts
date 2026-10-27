@@ -47,7 +47,12 @@ describe('useUserStore', () => {
   it('GESTION-SITE agit seulement sur ses sites attribués (GET /api/moi)', () => {
     const user = useUserStore()
     user.setFromToken(token(['GESTION-SITE']))
-    // Sites pas encore connus : aucune action proposée
+    // Sites pas encore connus (API sans réponse) : aucune action proposée
+    expect(user.sites).toBeNull()
+    expect(user.canActOn('SITE002')).toBe(false)
+
+    // L'API a répondu : aucun site attribué
+    user.sites = []
     expect(user.canActOn('SITE002')).toBe(false)
 
     user.sites = ['SITE002', 'SITE007']

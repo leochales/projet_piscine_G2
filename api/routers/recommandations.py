@@ -190,9 +190,12 @@ def decider(
     if ajout is None:
         session.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, "Recommandation déjà décidée")
-    session.commit()
 
+    # Relue avant le commit : un site désactivé entre-temps donne 404 sans rien
+    # enregistrer, et non 404 sur une décision déjà faite
     a_jour = lire_recommandation(session, id_recommandation, perimetre)
-    if a_jour is None:  # site désactivé entre-temps
+    if a_jour is None:
+        session.rollback()
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Recommandation inconnue")
+    session.commit()
     return a_jour

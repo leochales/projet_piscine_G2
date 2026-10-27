@@ -44,11 +44,30 @@ describe('useDecideRecommendation : retour après une décision', () => {
     )
   })
 
-  it('décision enregistrée : confirmation', async () => {
-    vi.spyOn(service, 'decideRecommendation').mockResolvedValue({ id: 'R1', statut: 'acceptee' })
+  it('décision enregistrée : envoyée à l’API, puis confirmation', async () => {
+    // Recommandation présente dans la liste : sinon le store n'envoie rien
+    useOperationsStore().recommendations = [
+      {
+        id: 'R1',
+        siteId: 'SITE002',
+        nomSite: 'Usine de Lyon',
+        titre: 'Décaler la production',
+        description: null,
+        alerteId: null,
+        gainEstimeEur: 100,
+        periodeGain: 'unique',
+        statut: 'proposee',
+        creeeLe: '2026-10-26T08:00:00Z',
+        decideeLe: null,
+      },
+    ]
+    const send = vi
+      .spyOn(service, 'decideRecommendation')
+      .mockResolvedValue({ id: 'R1', statut: 'acceptee' })
 
     await useDecideRecommendation()('R1', 'acceptee')
 
+    expect(send).toHaveBeenCalledWith('R1', 'acceptee')
     expect(toast.success).toHaveBeenCalledWith('Recommandation acceptée', expect.anything())
   })
 })

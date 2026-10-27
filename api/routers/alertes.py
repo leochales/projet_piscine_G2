@@ -148,9 +148,12 @@ def prendre_en_compte(
     if ajout is None:
         session.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, "Alerte déjà prise en compte")
-    session.commit()
 
+    # Relue avant le commit : un site désactivé entre-temps donne 404 sans rien
+    # enregistrer, et non 404 sur une prise en compte déjà faite
     a_jour = lire_alerte(session, id_alerte, perimetre)
-    if a_jour is None:  # site désactivé entre-temps
+    if a_jour is None:
+        session.rollback()
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Alerte inconnue")
+    session.commit()
     return a_jour

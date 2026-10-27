@@ -35,8 +35,9 @@ export const useUserStore = defineStore('user', () => {
   // Compte connu de Keycloak mais pas de l'API (absent de app.utilisateur) : aucune
   // entreprise, donc aucune donnée. Seule la page « compte non rattaché » s'affiche.
   const unlinked = ref(false)
-  // Sites attribués (GET /api/moi), pour un rôle *-SITE ; vide tant que l'API n'a pas répondu
-  const sites = ref<string[]>([])
+  // Sites attribués (GET /api/moi), pour un rôle *-SITE. null : l'API n'a pas encore
+  // répondu (main.ts relance l'appel) ; [] : aucun site attribué
+  const sites = ref<string[] | null>(null)
 
   /** Libellé du rôle le plus large de l'utilisateur */
   const roleLabel = computed(() => {
@@ -61,7 +62,7 @@ export const useUserStore = defineStore('user', () => {
    */
   function canActOn(siteId: string) {
     if (roles.value.includes('GESTION-CLIENT')) return true
-    return roles.value.includes('GESTION-SITE') && sites.value.includes(siteId)
+    return roles.value.includes('GESTION-SITE') && (sites.value?.includes(siteId) ?? false)
   }
 
   return { roles, nom, email, unlinked, sites, roleLabel, setFromToken, hasAnyRole, canActOn }
