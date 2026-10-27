@@ -19,9 +19,22 @@ BEGIN;
 --   - datacenter : 100 % → 0,7 alerte par jour ;
 --   - usine      :  98 % → 0,1 à 0,6 alerte par jour ;
 --   - autres     :  90 % → 0,3 alerte par jour au plus.
--- Appliquées une seule fois, à l'ajout de la colonne : un seuil modifié
--- ensuite n'est jamais écrasé par une migration.
+-- Appliquées à l'ajout de la colonne, puis à chaque nouveau site créé sans
+-- seuil (trg_site_seuil_alerte) : un seuil modifié ensuite n'est jamais
+-- écrasé par une migration.
 -- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION app.seuil_alerte_par_defaut(type_site VARCHAR)
+RETURNS NUMERIC
+LANGUAGE sql
+IMMUTABLE
+AS $$
+    SELECT CASE type_site
+        WHEN 'datacenter' THEN 100
+        WHEN 'factory' THEN 98
+        ELSE 90
+    END;
+$$;
+
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -34,11 +47,32 @@ BEGIN
         ADD COLUMN seuil_alerte_pct NUMERIC(5, 1) NOT NULL DEFAULT 90
         CHECK (seuil_alerte_pct > 0);
 
-        UPDATE app.site SET seuil_alerte_pct = 100 WHERE type = 'datacenter';
-        UPDATE app.site SET seuil_alerte_pct = 98 WHERE type = 'factory';
+        UPDATE app.site
+        SET seuil_alerte_pct = app.seuil_alerte_par_defaut(type);
     END IF;
 END
 $$;
+
+-- Plus de DEFAULT fixe : un site créé sans seuil le reçoit selon son type.
+-- Le déclencheur passe avant la vérification du NOT NULL.
+ALTER TABLE app.site
+ALTER COLUMN seuil_alerte_pct DROP DEFAULT;
+
+CREATE OR REPLACE FUNCTION app.poser_seuil_alerte()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NEW.seuil_alerte_pct IS null THEN
+        NEW.seuil_alerte_pct := app.seuil_alerte_par_defaut(NEW.type);
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE TRIGGER trg_site_seuil_alerte
+BEFORE INSERT ON app.site
+FOR EACH ROW EXECUTE FUNCTION app.poser_seuil_alerte();
 
 COMMENT ON COLUMN app.site.seuil_alerte_pct IS
 'Seuil d''alerte en % de capacite_kw (alerte après 3 mesures au-dessus)';
@@ -105,6 +139,10 @@ WHERE source = 'etl';
 -- Les pannes de capteur de l'API Mock durent presque toutes moins d'une
 -- minute : sans la règle des 3 minutes, il y aurait 58 alertes par jour et
 -- par capteur, contre 0,1.
+-- C'est pourquoi la panne est lue dans silver (null_reasons), et non dans
+-- gold.etat_capteur (SMARTOPS-23) : ce dernier donne l'état instantané de
+-- l'API, sans la règle des 3 minutes. Un capteur peut donc y être en panne
+-- sans qu'aucune alerte ne soit ouverte : c'est voulu.
 --
 -- Fenêtre : par site, les `fenetre` dernières minutes de silver, élargies au
 -- début des alertes en cours ou récentes, pour retrouver la même alerte à

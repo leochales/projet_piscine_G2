@@ -405,4 +405,45 @@ BEGIN
 END
 $$;
 
+-- 11. Seuil d'un nouveau site : selon son type s'il n'est pas donné,
+--     celui donné sinon
+INSERT INTO app.site (
+    id_site, id_client, nom, type, capacite_kw, seuil_alerte_pct
+)
+SELECT
+    v.id_site,
+    c.id_client,
+    v.nom,
+    v.type_site AS type,  -- noqa: RF04
+    200 AS capacite_kw,
+    v.seuil AS seuil_alerte_pct
+FROM app.client AS c
+CROSS JOIN (
+    VALUES
+    ('SITE-DC', 'Datacenter sans seuil', 'datacenter', null::NUMERIC),
+    ('SITE-US', 'Usine sans seuil', 'factory', null),
+    ('SITE-BU', 'Bureau sans seuil', 'office', null),
+    ('SITE-DC2', 'Datacenter à 95 %', 'datacenter', 95)
+) AS v (id_site, nom, type_site, seuil)
+WHERE c.nom = 'Client test alertes';
+
+DO $$
+DECLARE
+    s RECORD;
+BEGIN
+    FOR s IN
+        SELECT id_site, seuil_alerte_pct FROM app.site
+        WHERE id_site IN ('SITE-DC', 'SITE-US', 'SITE-BU', 'SITE-DC2')
+    LOOP
+        ASSERT s.seuil_alerte_pct = CASE s.id_site
+            WHEN 'SITE-DC' THEN 100
+            WHEN 'SITE-US' THEN 98
+            WHEN 'SITE-BU' THEN 90
+            WHEN 'SITE-DC2' THEN 95
+        END, format('%s : seuil %s', s.id_site, s.seuil_alerte_pct);
+    END LOOP;
+    RAISE NOTICE 'OK 11 : seuil d''un nouveau site selon son type';
+END
+$$;
+
 ROLLBACK;

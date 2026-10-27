@@ -48,10 +48,17 @@ def detect() -> dict[str, int]:
             a.debut.isoformat(),
             "en cours" if a.en_cours else "terminée",
         )
-    return {
+    summary = {
         "alerts_written": len(alerts),
         "in_progress": sum(1 for a in alerts if a.en_cours),
     }
+    # Une ligne à chaque passage, même sans alerte : prouve que l'ETL a tourné
+    logger.info(
+        "alertes : %d écrite(s), dont %d en cours",
+        summary["alerts_written"],
+        summary["in_progress"],
+    )
+    return summary
 
 
 if __name__ == "__main__":
