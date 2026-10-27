@@ -15,7 +15,7 @@ import {
   type Plugin,
 } from 'chart.js'
 
-import { formatAxisHour, formatKw } from '@/lib/format'
+import { formatAxisHour, formatEurCents, formatKwh, formatKw } from '@/lib/format'
 import type { SiteSeries } from '@/types/energy'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler, Tooltip)
@@ -57,11 +57,21 @@ const points = computed(() => {
   return [
     ...mesures.map((m, i) => {
       const junction = i === last ? m.kw : null
-      return { t: m.horodatage, mesure: m.kw, pred: junction, basse: junction, haute: junction }
+      return {
+        t: m.horodatage,
+        mesure: m.kw,
+        kwh: m.kwh ?? null,
+        cout: m.coutEur ?? null,
+        pred: junction,
+        basse: junction,
+        haute: junction,
+      }
     }),
     ...predictions.slice(1).map((p) => ({
       t: p.horodatage,
       mesure: null,
+      kwh: null,
+      cout: null,
       pred: p.kw,
       basse: p.basseKw,
       haute: p.hauteKw,
@@ -174,7 +184,17 @@ const options = computed<ChartOptions<'line'>>(() => ({
     legend: { display: false },
     tooltip: {
       filter: (item) => item.raw !== null && item.datasetIndex >= 2,
-      callbacks: { label: (item) => `${item.dataset.label} : ${formatKw(Number(item.raw))}` },
+      callbacks: {
+        label: (item) => {
+          const point = points.value[item.dataIndex]
+          // Heure réelle : kWh et euros. Le tracé reste en kW (les kWh d'une heure).
+          if (item.datasetIndex === 2 && point?.kwh != null) {
+            const cout = point.cout == null ? '' : ` · ${formatEurCents(point.cout)}`
+            return `Consommation : ${formatKwh(point.kwh)}${cout}`
+          }
+          return `${item.dataset.label} : ${formatKw(Number(item.raw))}`
+        },
+      },
     },
   },
 }))

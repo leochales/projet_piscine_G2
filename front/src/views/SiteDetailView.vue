@@ -22,7 +22,7 @@ import TableSkeleton from '@/components/common/TableSkeleton.vue'
 import ConsumptionChart from '@/components/site/ConsumptionChart.vue'
 import SiteRecommendations from '@/components/site/SiteRecommendations.vue'
 import SitesTable from '@/components/overview/SitesTable.vue'
-import { formatEur, formatKw, formatRelativeHour, formatTonnes } from '@/lib/format'
+import { formatEurCents, formatKw, formatRelativeHour, formatTonnes } from '@/lib/format'
 import { SEUIL_ALERTE_PCT } from '@/lib/indicators'
 import { useAutoRefresh } from '@/lib/refresh'
 import { useRequest } from '@/lib/request'
@@ -94,8 +94,11 @@ const qualityText = computed(() => {
   const qualite = current.value?.qualite
   if (!qualite) return ''
   if (qualite.statut === 'bonne') return 'Aucune mesure manquante sur 7 jours.'
-  if (qualite.statut === 'partielle')
-    return `${qualite.heuresManquantes} h de mesures manquantes : les valeurs ont été estimées.`
+  if (qualite.statut === 'partielle') {
+    return qualite.heuresManquantes == null
+      ? 'Des mesures manquent sur la période.'
+      : `${qualite.heuresManquantes} h de mesures manquantes : les valeurs ont été estimées.`
+  }
   return 'Données insuffisantes : la prédiction est peu fiable.'
 })
 
@@ -275,7 +278,7 @@ const openSite = (siteId: string) => router.push({ name: 'sites', params: { site
       <Card class="gap-2">
         <CardHeader><CardTitle>Coût et CO₂ (7 jours)</CardTitle></CardHeader>
         <CardContent v-if="costs.data.value" class="text-sm text-muted-foreground">
-          {{ formatEur(costs.data.value.coutEur) }} ·
+          {{ formatEurCents(costs.data.value.coutEur) }} ·
           {{ formatTonnes(costs.data.value.co2Tonnes) }} CO₂
         </CardContent>
         <CardContent v-else-if="costs.status.value === 'error'" class="text-sm">

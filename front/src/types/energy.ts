@@ -1,7 +1,8 @@
 // Données affichées par le dashboard. Elles viendront de l'API (schéma gold) ;
 // en attendant, src/mocks/ fournit des valeurs proches du wireframe.
 
-export type SiteType = 'bureaux' | 'usine' | 'data_center' | 'hopital' | 'entrepot' | 'laboratoire'
+export type SiteType =
+  'bureaux' | 'usine' | 'data_center' | 'hopital' | 'entrepot' | 'laboratoire' | 'commerce'
 
 export interface Site {
   id: string
@@ -11,7 +12,10 @@ export interface Site {
 }
 
 export type DataQuality =
-  { statut: 'bonne' } | { statut: 'partielle'; heuresManquantes: number } | { statut: 'mauvaise' }
+  | { statut: 'bonne' }
+  // heuresManquantes : seulement quand on sait combien d'heures ont été estimées
+  | { statut: 'partielle'; heuresManquantes?: number }
+  | { statut: 'mauvaise' }
 
 export interface PredictedPeak {
   horodatage: string // ISO 8601
@@ -22,6 +26,8 @@ export interface SiteOverview {
   site: Site
   // null : pas de mesure, l'API Mock renvoie consumption_kw: null quand le capteur est en panne
   consommationKw: number | null
+  // Heure de cette mesure (ISO 8601). Absente des données simulées.
+  mesureLe?: string | null
   picPrevu: PredictedPeak | null // seulement s'il dépasse le seuil d'alerte
   qualite: DataQuality
 }
@@ -39,6 +45,10 @@ export interface FleetKpis {
 export interface ConsumptionPoint {
   horodatage: string
   kw: number
+  // Présents pour une heure venue de l'API : kWh de l'heure et son coût. Sur une heure,
+  // les kWh égalent la puissance moyenne en kW, d'où le tracé de la courbe.
+  kwh?: number
+  coutEur?: number | null
 }
 
 export interface PredictionPoint {

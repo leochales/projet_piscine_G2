@@ -11,7 +11,9 @@ const label = computed(() => {
     case 'bonne':
       return 'bonne'
     case 'partielle':
-      return `partielle · ${props.qualite.heuresManquantes} h manquantes`
+      return props.qualite.heuresManquantes == null
+        ? 'partielle'
+        : `partielle · ${props.qualite.heuresManquantes} h manquantes`
     case 'mauvaise':
       return 'mauvaise'
   }

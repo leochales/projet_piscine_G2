@@ -7,6 +7,7 @@ export const SITE_TYPE_LABELS: Record<SiteType, string> = {
   hopital: 'Hôpital',
   entrepot: 'Entrepôt',
   laboratoire: 'Laboratoire',
+  commerce: 'Commerce',
 }
 
 export const SEVERITY_LABELS: Record<Severity, string> = {

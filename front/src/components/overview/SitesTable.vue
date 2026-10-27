@@ -13,7 +13,7 @@ import {
 import CapacityBar from '@/components/overview/CapacityBar.vue'
 import SortableHead from '@/components/overview/SortableHead.vue'
 import DataQualityBadge from '@/components/overview/DataQualityBadge.vue'
-import { formatKw, formatPct, formatRelativeHour } from '@/lib/format'
+import { formatKw, formatPct, formatRelativeDateTime, formatRelativeHour } from '@/lib/format'
 import { capacityPct } from '@/lib/indicators'
 import { SITE_TYPE_LABELS } from '@/lib/labels'
 import {
@@ -86,6 +86,9 @@ function onMobileSort(event: Event) {
         >
           {{ formatKw(row.consommationKw) }}
           <span v-if="row.consommationKw === null" class="sr-only">{{ noReading }}</span>
+          <span v-if="row.mesureLe" class="mt-0.5 block text-xs font-normal text-muted-foreground">
+            {{ formatRelativeDateTime(row.mesureLe) }}
+          </span>
         </span>
         <CapacityBar :pourcentage="pourcentage(row)" />
       </div>
@@ -144,6 +147,9 @@ function onMobileSort(event: Event) {
         >
           {{ formatKw(row.consommationKw) }}
           <span v-if="row.consommationKw === null" class="sr-only">{{ noReading }}</span>
+          <span v-if="row.mesureLe" class="mt-0.5 block text-xs font-normal text-muted-foreground">
+            {{ formatRelativeDateTime(row.mesureLe) }}
+          </span>
         </TableCell>
         <TableCell><CapacityBar :pourcentage="pourcentage(row)" /></TableCell>
         <TableCell>

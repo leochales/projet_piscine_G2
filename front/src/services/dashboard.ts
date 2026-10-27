@@ -3,9 +3,17 @@
 
 import * as mocks from '@/mocks/data'
 import { recommandations as mockRecommandations } from '@/mocks/recommandations'
+import {
+  fleetFrom,
+  kpisFrom,
+  parisMidnight,
+  costsFrom,
+  toConsumptionPoint,
+  toSiteOverview,
+} from '@/lib/mesures'
 import { toRecommendation } from '@/lib/recommendations'
 import { getJson } from '@/services/http'
-import type { RecommandationApi } from '@/types/api'
+import type { ConsommationHoraireApi, DerniereMesureApi, RecommandationApi } from '@/types/api'
 import type {
   Alert,
   FleetKpis,
@@ -19,10 +27,12 @@ import type {
  * Source de chaque donnée : 'mock' (données simulées) ou 'api' (vraie route).
  * Les données simulées ont le format exact de la route : passer à 'api' ne change rien d'autre.
  */
-export const SOURCES: Record<'recommandations', 'mock' | 'api'> = {
-  // GET /api/recommandations (SMARTOPS-39). À passer à 'api' une fois les jetons envoyés
-  // par le front (SMARTOPS-85) et gold.recommandation rempli par l'ETL (SMARTOPS-40)
+export const SOURCES: Record<'recommandations' | 'mesures', 'mock' | 'api'> = {
+  // GET /api/recommandations (SMARTOPS-39). À passer à 'api' une fois gold.recommandation
+  // rempli par l'ETL (SMARTOPS-40)
   recommandations: 'mock',
+  // GET /api/sites/derniere-mesure et /api/sites/{id}/consommation (SMARTOPS-42)
+  mesures: 'api',
 }
 
 export type SeriesRange = '24h' | '7j'
@@ -58,23 +68,79 @@ function respond<T>(value: T, empty?: T): Promise<T> {
   )
 }
 
-export const fetchKpis = (): Promise<FleetKpis> => respond(mocks.kpis)
+const HOUR_MS = 3600 * 1000
 
-export const fetchOverview = (): Promise<SiteOverview[]> => respond(mocks.overview, [])
+async function fetchDernieresMesures(): Promise<SiteOverview[]> {
+  const lignes = await getJson<DerniereMesureApi[]>('/sites/derniere-mesure')
+  return lignes.map(toSiteOverview)
+}
 
-export const fetchFleetTrend = (): Promise<FleetTrend> =>
-  respond(mocks.fleetTrend(), { consommationKw24h: [], coutEurJours7: [] })
-
-export const fetchSiteOverview = (siteId: string): Promise<SiteOverview | undefined> =>
-  respond(mocks.overview.find((o) => o.site.id === siteId))
-
-export const fetchSiteSeries = (siteId: string, range: SeriesRange): Promise<SiteSeries> =>
-  respond(mocks.siteSeries(siteId, range === '24h' ? 24 : 7 * 24), {
-    mesures: [],
-    predictions: [],
+async function fetchConsommation(siteId: string, debut: string): Promise<ConsommationHoraireApi[]> {
+  return getJson<ConsommationHoraireApi[]>(`/sites/${encodeURIComponent(siteId)}/consommation`, {
+    debut,
   })
+}
 
-export const fetchSiteCosts = (siteId: string) => respond(mocks.siteCosts(siteId))
+/** Consommation horaire de chaque site du périmètre, depuis `debut` */
+async function fetchConsommationDuParc(
+  sites: readonly SiteOverview[],
+  debut: string,
+): Promise<ConsommationHoraireApi[]> {
+  const series = await Promise.all(sites.map((site) => fetchConsommation(site.site.id, debut)))
+  return series.flat()
+}
+
+export async function fetchKpis(): Promise<FleetKpis> {
+  if (SOURCES.mesures !== 'api') return respond(mocks.kpis)
+  const sites = await fetchDernieresMesures()
+  const heures = await fetchConsommationDuParc(sites, parisMidnight(-1).toISOString())
+  return kpisFrom(sites, heures)
+}
+
+export async function fetchOverview(): Promise<SiteOverview[]> {
+  if (SOURCES.mesures !== 'api') return respond(mocks.overview, [])
+  return fetchDernieresMesures()
+}
+
+export async function fetchFleetTrend(): Promise<FleetTrend> {
+  if (SOURCES.mesures !== 'api')
+    return respond(mocks.fleetTrend(), { consommationKw24h: [], coutEurJours7: [] })
+  const sites = await fetchDernieresMesures()
+  const heures = await fetchConsommationDuParc(sites, parisMidnight(-6).toISOString())
+  return fleetFrom(heures)
+}
+
+export async function fetchSiteOverview(siteId: string): Promise<SiteOverview | undefined> {
+  if (SOURCES.mesures !== 'api') return respond(mocks.overview.find((o) => o.site.id === siteId))
+  const sites = await fetchDernieresMesures()
+  return sites.find((site) => site.site.id === siteId)
+}
+
+export async function fetchSiteSeries(siteId: string, range: SeriesRange): Promise<SiteSeries> {
+  if (SOURCES.mesures !== 'api') {
+    return respond(mocks.siteSeries(siteId, range === '24h' ? 24 : 7 * 24), {
+      mesures: [],
+      predictions: [],
+    })
+  }
+  const heures = range === '24h' ? 24 : 7 * 24
+  const debut = new Date(Date.now() - heures * HOUR_MS).toISOString()
+  const lignes = await fetchConsommation(siteId, debut)
+  return {
+    mesures: lignes.flatMap((ligne) => {
+      const point = toConsumptionPoint(ligne)
+      return point ? [point] : []
+    }),
+    // Prévisions : US2. On ne mélange pas une prévision simulée avec des mesures réelles.
+    predictions: [],
+  }
+}
+
+export async function fetchSiteCosts(siteId: string) {
+  if (SOURCES.mesures !== 'api') return respond(mocks.siteCosts(siteId))
+  const lignes = await fetchConsommation(siteId, parisMidnight(-6).toISOString())
+  return costsFrom(lignes)
+}
 
 export const fetchAlerts = (): Promise<Alert[]> => respond(structuredClone(mocks.alerts), [])
 

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   acknowledgeAlert,
@@ -13,9 +13,18 @@ import {
   fetchSiteSeries,
   readSimulation,
   SLOW_DELAY_MS,
+  SOURCES,
 } from '@/services/dashboard'
 
 describe('services/dashboard', () => {
+  beforeEach(() => {
+    SOURCES.mesures = 'mock'
+  })
+
+  afterEach(() => {
+    SOURCES.mesures = 'api'
+  })
+
   it('charge 24 h ou 7 jours d’historique selon la période', async () => {
     const day = await fetchSiteSeries('SITE002', '24h')
     const week = await fetchSiteSeries('SITE002', '7j')
@@ -72,9 +81,14 @@ describe('services/dashboard', () => {
 })
 
 describe('simulation des cas réels (?simulation=…)', () => {
+  beforeEach(() => {
+    SOURCES.mesures = 'mock'
+  })
+
   const simulate = (value: string) => window.history.replaceState(null, '', `/?simulation=${value}`)
 
   afterEach(() => {
+    SOURCES.mesures = 'api'
     window.history.replaceState(null, '', '/')
     vi.useRealTimers()
   })
