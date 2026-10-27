@@ -1,6 +1,7 @@
 {
   "realm": "enervision",
   "displayName": "EnerVision",
+  "loginTheme": "enervision",
   "enabled": true,
   "sslRequired": "external",
   "registrationAllowed": false,
