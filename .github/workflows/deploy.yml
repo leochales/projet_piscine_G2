@@ -97,9 +97,11 @@ jobs:
         run: echo "IMAGE_REPO=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
 
       # Empreinte du dossier du thème de connexion dans ce commit : label du conteneur
-      # keycloak (compose-prod.yml), qui est recréé quand le thème change
+      # keycloak (compose-prod.yml), qui est recréé quand le thème change. Hash complet :
+      # un préfixe (--short) s'allonge quand le dépôt grandit, ce qui changerait le label
+      # et recréerait Keycloak sans modification du thème
       - name: Version du thème Keycloak
-        run: echo "KEYCLOAK_THEME_VERSION=$(git rev-parse --short HEAD:infra/keycloak/themes/enervision)" >> "$GITHUB_ENV"
+        run: echo "KEYCLOAK_THEME_VERSION=$(git rev-parse HEAD:infra/keycloak/themes/enervision)" >> "$GITHUB_ENV"
 
       # Certificat auto-signé de la VM (pas de domaine ni d'accès Internet entrant) :
       # généré une seule fois et conservé hors du dossier de travail, pour que l'exception
@@ -249,6 +251,10 @@ jobs:
             [ "$(docker inspect -f '{{.State.Health.Status}}' "$keycloak_id")" = healthy ] && break
             sleep 5
           done
+          if [ "$(docker inspect -f '{{.State.Health.Status}}' "$keycloak_id")" != healthy ]; then
+            echo "::warning::Keycloak ($DEPLOY_ENV) pas prêt après 5 min : realms master et enervision non configurés"
+            exit 1
+          fi
           kcadm() {
             docker compose -f compose-prod.yml exec -T -e KC_CLI_PASSWORD keycloak \
               /opt/keycloak/bin/kcadm.sh "$@" --config /tmp/kcadm-deploy.config

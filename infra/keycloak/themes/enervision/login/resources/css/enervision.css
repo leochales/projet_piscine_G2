@@ -278,24 +278,23 @@ form,
   gap: 0.75rem;
 }
 
-/* Case à cocher (Checkbox de shadcn) */
-.ev-check {
+/* Case à cocher (Checkbox de shadcn) « Déconnecter les autres appareils », page du mot
+   de passe : balisage fixe de password-commons.ftl (div.checkbox > label > input), sans
+   classe kc* */
+.checkbox label {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1;
 }
 
-.ev-checkbox {
+.checkbox input[type='checkbox'] {
   width: 1rem;
   height: 1rem;
   flex-shrink: 0;
   accent-color: var(--primary);
-}
-
-.ev-check-label {
-  font-size: 0.875rem;
-  font-weight: 500;
-  line-height: 1;
 }
 
 /* Button : h-9 rounded-md text-sm font-medium, anneau au focus */
