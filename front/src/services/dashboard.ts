@@ -3,8 +3,10 @@
 
 import * as mocks from '@/mocks/data'
 import { alertes as mockAlertes } from '@/mocks/alertes'
+import { etats as mockEtats } from '@/mocks/etat'
 import { recommandations as mockRecommandations } from '@/mocks/recommandations'
 import { toAlert } from '@/lib/alerts'
+import { toSiteStatus } from '@/lib/etat'
 import {
   fleetFrom,
   kpisFrom,
@@ -19,6 +21,7 @@ import type {
   AlerteApi,
   ConsommationHoraireApi,
   DerniereMesureApi,
+  EtatSiteApi,
   RecommandationApi,
 } from '@/types/api'
 import type {
@@ -28,13 +31,14 @@ import type {
   Recommendation,
   SiteOverview,
   SiteSeries,
+  SiteStatus,
 } from '@/types/energy'
 
 /**
  * Source de chaque donnée : 'mock' (données simulées) ou 'api' (vraie route).
  * Les données simulées ont le format exact de la route : passer à 'api' ne change rien d'autre.
  */
-export const SOURCES: Record<'recommandations' | 'alertes' | 'mesures', 'mock' | 'api'> = {
+export const SOURCES: Record<'recommandations' | 'alertes' | 'mesures' | 'etat', 'mock' | 'api'> = {
   // GET /api/recommandations (SMARTOPS-39). À passer à 'api' une fois gold.recommandation
   // rempli par l'ETL (SMARTOPS-40)
   recommandations: 'mock',
@@ -43,6 +47,8 @@ export const SOURCES: Record<'recommandations' | 'alertes' | 'mesures', 'mock' |
   alertes: 'mock',
   // GET /api/sites/derniere-mesure et /api/sites/{id}/consommation (SMARTOPS-42)
   mesures: 'api',
+  // GET /api/sites/etat : transmission et capteurs (US4, vue gold.etat_site de SMARTOPS-23)
+  etat: 'api',
 }
 
 export type SeriesRange = '24h' | '7j'
@@ -199,6 +205,15 @@ export async function fetchSiteCosts(siteId: string) {
   if (SOURCES.mesures !== 'api') return respond(mocks.siteCosts(siteId))
   // 7 × 24 heures closes, pas depuis minuit d'il y a 6 jours : cette fenêtre fait moins de 7 jours.
   return fromApi(() => fetchConsommation(siteId, debutAvant(7 * 24)).then(costsFrom))
+}
+
+/** Transmission et capteurs de chaque site du périmètre (US4) */
+export async function fetchSiteStatuses(): Promise<SiteStatus[]> {
+  const reponse =
+    SOURCES.etat === 'api'
+      ? await fromApi(() => getJson<EtatSiteApi[]>('/sites/etat'), [])
+      : await respond(mockEtats(), [])
+  return reponse.map(toSiteStatus)
 }
 
 /** Alertes en cours de tous les sites : l'écran 3, l'en-tête et la page d'un site les partagent */

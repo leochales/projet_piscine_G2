@@ -10,12 +10,13 @@ import RequestError from '@/components/common/RequestError.vue'
 import TableSkeleton from '@/components/common/TableSkeleton.vue'
 import KpiCard from '@/components/overview/KpiCard.vue'
 import SitesTable from '@/components/overview/SitesTable.vue'
+import TransmissionBanner from '@/components/overview/TransmissionBanner.vue'
 import { formatEur, formatKw, formatSignedPct, formatTonnes } from '@/lib/format'
 import { trend } from '@/lib/indicators'
 import { describeSeries } from '@/lib/sparkline'
 import { useAutoRefresh } from '@/lib/refresh'
 import { useRequest } from '@/lib/request'
-import { fetchFleetTrend, fetchKpis, fetchOverview } from '@/services/dashboard'
+import { fetchFleetTrend, fetchKpis, fetchOverview, fetchSiteStatuses } from '@/services/dashboard'
 import { useOperationsStore } from '@/stores/operations'
 
 const router = useRouter()
@@ -31,7 +32,10 @@ const sites = useRequest(fetchOverview)
 // à l'écran 3 seulement jusqu'au rafraîchissement suivant (pas encore d'API pour les enregistrer)
 // Mini-courbes des KPI. Sans réponse, les KPI s'affichent simplement sans courbe.
 const fleet = useRequest(fetchFleetTrend)
-const freshness = useAutoRefresh([kpis, sites, fleet])
+// Sites qui ne transmettent plus (US4). Sans réponse, pas de bandeau : les autres données
+// restent lisibles, et DataFreshness signale déjà l'échec du rafraîchissement.
+const statuses = useRequest(fetchSiteStatuses)
+const freshness = useAutoRefresh([kpis, sites, fleet, statuses])
 
 const sitesWithoutReading = (n: number) => (n > 1 ? `${n} sites sans mesure` : '1 site sans mesure')
 
@@ -50,6 +54,12 @@ const openSite = (siteId: string) => router.push({ name: 'sites', params: { site
         @refresh="freshness.refresh"
       />
     </div>
+
+    <TransmissionBanner
+      v-if="statuses.data.value"
+      :statuses="statuses.data.value"
+      @select="openSite"
+    />
 
     <Card v-if="kpis.status.value === 'error' && !kpis.data.value" class="py-2">
       <CardContent class="px-2 sm:px-4">

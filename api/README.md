@@ -30,7 +30,15 @@ L'API vérifie (`api/auth.py`) :
 
 Les routes de données (mesures, consommation, prédictions, alertes, recommandations et économies) sont ouvertes aux rôles `CONSULT-SITE`, `CONSULT-CLIENT`, `GESTION-SITE` et `GESTION-CLIENT`. Le rôle `MONITORING` seul n'y donne pas accès.
 
-**Cloisonnement par client** : chaque route de données ne renvoie que les sites du client de l'utilisateur (`app.site.id_client`, dépendance `PerimetreCourant` de `api/auth.py`). Le site d'un autre client se comporte comme un site inconnu (liste vide). Un administrateur EnerVision (`id_client` vide dans `app.utilisateur`) voit tous les clients. Un compte qui n'a qu'un rôle `*-SITE` ne voit que ses sites attribués (`app.utilisateur_site`).
+**Cloisonnement par client et par site** : chaque route de données ne renvoie que les sites visibles par l'utilisateur (dépendance `PerimetreCourant` de `api/auth.py`) :
+
+| Utilisateur | Sites visibles |
+|---|---|
+| Administrateur EnerVision (`id_client` vide dans `app.utilisateur`) | Tous les sites de tous les clients |
+| Rôle `CONSULT-CLIENT` ou `GESTION-CLIENT` | Tous les sites de son client |
+| Rôle `CONSULT-SITE` ou `GESTION-SITE` seul | Ses sites rattachés (`app.utilisateur_site`), aucun s'il n'en a pas |
+
+Un rôle `*-CLIENT` l'emporte sur un rôle `*-SITE` cumulé. Un site hors périmètre (autre client, ou site non rattaché) se comporte comme un site inconnu (liste vide). La base garantit qu'un site rattaché appartient au client de l'utilisateur (clés étrangères composées, `db/16_utilisateur_site_client.sql`) : changer le client d'un utilisateur ou d'un site qui a des rattachements est refusé, il faut d'abord retirer ces rattachements. Le périmètre de gestion des actions (prendre en compte une alerte, décider d'une recommandation) suivra la même règle (SMARTOPS-59) ; l'affichage du front selon les rôles reste dans SMARTOPS-60.
 
 **Protéger une nouvelle route** : ajouter la dépendance `exiger_role(...)` au routeur dans `main.py`, ou à la route pour récupérer l'utilisateur connecté :
 
@@ -50,7 +58,7 @@ Le test `test_toutes_les_routes_api_exigent_un_jeton` échoue si une route `/api
 
 **Entreprise de l'utilisateur** : le jeton ne dit pas à quelle entreprise (client) appartient l'utilisateur. L'API la lit dans `app.utilisateur`, grâce au `sub` du jeton. Cette ligne est écrite à la création du compte par l'API (`POST /api/utilisateurs`, SMARTOPS-84), qui rattache le nouveau compte à l'entreprise du gestionnaire qui le crée. L'API n'écrit jamais cette ligne à la connexion : un compte créé hors de l'API (par exemple dans la console Keycloak) reçoit un 403, car son entreprise est inconnue.
 
-**Comptes de test** : se créent dans la console Keycloak (`http://localhost/auth/admin`), puis s'enregistrent dans `app.utilisateur` avec le même identifiant. Sans cette ligne, l'API refuse le compte (403). Marche à suivre : `infra/runner.md`, section « Créer un compte ».
+**Comptes de test** : se créent dans la console Keycloak (`http://localhost/auth/admin`), puis s'enregistrent dans `app.utilisateur` avec le même identifiant. Sans cette ligne, l'API refuse le compte (403). Un compte `*-SITE` doit aussi être rattaché à ses sites (`app.utilisateur_site`), sinon il ne voit aucun site. Marche à suivre : `infra/runner.md`, section « Créer un compte ».
 
 **Tester dans Swagger** : récupérer un jeton depuis le front connecté (outils de développement du navigateur, en-tête `Authorization` d'un appel `/api`), puis le coller avec le bouton « Authorize ».
 
@@ -112,11 +120,45 @@ Consommation heure par heure d'un site (lue dans `gold.consommation_horaire`), e
 
 ```json
 [
-  { "heure": "2026-10-21T13:00:00Z", "consommation_kwh": 500.0, "cout_eur": 70.0 }
+  {
+    "heure": "2026-10-21T13:00:00Z",
+    "consommation_kwh": 500.0,
+    "cout_eur": 70.0,
+    "nb_imputees": 12,
+    "taux_couverture": 1.0
+  }
 ]
 ```
 
 `cout_eur` = `consommation_kwh` × `PRIX_KWH_EUR` (variable du `.env`, tarif fixe provisoire de 0,14 € HT/kWh). Il vaut `null` si la consommation manque.
+
+`nb_imputees` : minutes de l'heure reconstituées par imputation en silver après une panne (la valeur de l'heure est en partie estimée ; le dashboard le signale sur la courbe). `taux_couverture` : part des 60 minutes qui ont une consommation, mesurée ou imputée ; sous 1, `consommation_kwh` est sous-estimée.
+
+### `GET /api/sites/etat`
+
+Transmission et capteurs de chaque site du périmètre (vue `gold.etat_site`), pour le bandeau « sites qui ne transmettent plus » et la page d'un site (US4).
+
+```json
+[
+  {
+    "id_site": "SITE003",
+    "nom": "Data center de Lille",
+    "derniere_mesure_le": "2026-10-21T14:12:00Z",
+    "collecte_a_jour": true,
+    "transmet": false,
+    "etat_capteurs": "critical",
+    "capteurs_en_panne": ["network"],
+    "retablissement_prevu": "2026-10-21T15:00:00Z"
+  }
+]
+```
+
+| Champ | Sens |
+|---|---|
+| `transmet` | Mesure transmise par le site depuis moins de 5 minutes. `null` (inconnu) quand `collecte_a_jour` est faux : la panne vient de notre collecte (ETL arrêté, API Mock injoignable), pas du site |
+| `etat_capteurs` | `critical` si le capteur réseau est en panne, `degraded` si un autre l'est, `ok` sinon ; `null` tant que l'état des capteurs n'a jamais été lu |
+| `capteurs_en_panne` | Parmi `consumption`, `electrical`, `temperature`, `humidity`, `network` |
+| `retablissement_prevu` | Dernier rétablissement annoncé parmi les capteurs en panne, `null` si aucun |
 
 ### `GET /api/sites/{id_site}/predictions`
 

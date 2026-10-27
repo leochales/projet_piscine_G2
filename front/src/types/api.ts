@@ -16,6 +16,22 @@ export interface ConsommationHoraireApi {
   heure: string
   consommation_kwh: number | null
   cout_eur: number | null
+  nb_imputees: number // minutes de l'heure reconstituées par imputation (valeurs estimées)
+  taux_couverture: number // part des 60 minutes qui ont une consommation, mesurée ou imputée
+}
+
+export type CapteurApi = 'consumption' | 'electrical' | 'temperature' | 'humidity' | 'network'
+
+/** GET /api/sites/etat (modèle EtatSite) : transmission et capteurs de chaque site (US4) */
+export interface EtatSiteApi {
+  id_site: string
+  nom: string
+  derniere_mesure_le: string | null // null : le site n'a jamais transmis
+  collecte_a_jour: boolean // faux : panne de notre côté (ETL, API Mock), pas du site
+  transmet: boolean | null // null : inconnu, la collecte n'est pas à jour
+  etat_capteurs: 'ok' | 'degraded' | 'critical' | null // null : jamais lu
+  capteurs_en_panne: CapteurApi[]
+  retablissement_prevu: string | null
 }
 // Elles sont converties vers les types du dashboard (types/energy.ts) dans src/lib/.
 // À garder identiques aux modèles Pydantic de api/routers/.

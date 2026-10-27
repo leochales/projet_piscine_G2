@@ -22,6 +22,7 @@ import TableSkeleton from '@/components/common/TableSkeleton.vue'
 import ConsumptionChart from '@/components/site/ConsumptionChart.vue'
 import SiteAlerts from '@/components/site/SiteAlerts.vue'
 import SiteRecommendations from '@/components/site/SiteRecommendations.vue'
+import SiteTransmission from '@/components/site/SiteTransmission.vue'
 import SitesTable from '@/components/overview/SitesTable.vue'
 import { useActionsNotice } from '@/lib/actions'
 import { formatEur, formatKw, formatRelativeHour, formatTonnes } from '@/lib/format'
@@ -33,6 +34,7 @@ import {
   fetchSiteCosts,
   fetchSiteOverview,
   fetchSiteSeries,
+  fetchSiteStatuses,
   type SeriesRange,
 } from '@/services/dashboard'
 import { useOperationsStore } from '@/stores/operations'
@@ -69,6 +71,15 @@ const series = useRequest(
   { watch: [() => props.siteId, range] },
 )
 
+// Transmission et capteurs (US4) : la route renvoie tous les sites, on garde celui-ci.
+// Inutile sans site (onglet « Sites »).
+const statuses = useRequest(async () => (props.siteId ? fetchSiteStatuses() : undefined), {
+  watch: () => props.siteId,
+})
+const siteStatus = computed(() =>
+  statuses.data.value?.find((s) => s.siteId === current.value?.site.id),
+)
+
 // Recommandations de tous les sites (store partagé avec l'écran 3) : filtrées par site à
 // l'affichage, inutile de les recharger quand on change de site
 const operations = useOperationsStore()
@@ -80,7 +91,7 @@ const actionsNotice = useActionsNotice()
 
 // Rafraîchit tout chaque minute ; un changement de site ou de période recharge déjà de
 // lui-même (useRequest)
-const freshness = useAutoRefresh([siteList, site, costs, series, alerts, recommendations])
+const freshness = useAutoRefresh([siteList, site, costs, series, statuses, alerts, recommendations])
 
 const current = computed(() => site.data.value)
 const notFound = computed(() => site.status.value === 'success' && !site.data.value)
@@ -233,6 +244,8 @@ const openSite = (siteId: string) => router.push({ name: 'sites', params: { site
         </ToggleGroup>
       </div>
     </div>
+
+    <SiteTransmission v-if="siteStatus" :status="siteStatus" />
 
     <Card>
       <CardContent>

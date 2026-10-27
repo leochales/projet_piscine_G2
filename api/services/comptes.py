@@ -213,10 +213,13 @@ def lier_site(session: Session, id_utilisateur: UUID, id_site: str) -> None:
         raise DonneeInvalide(
             f"Site {id_site} absent du client du compte {id_utilisateur}"
         )
+    # id_client : celui du compte. La base vérifie qu'il est aussi celui du site
+    # (clés étrangères composées, db/16_utilisateur_site_client.sql).
     session.execute(
         text(
-            "INSERT INTO app.utilisateur_site (id_utilisateur, id_site) "
-            "VALUES (:id, :id_site) ON CONFLICT DO NOTHING"
+            "INSERT INTO app.utilisateur_site (id_utilisateur, id_site, id_client) "
+            "SELECT u.id, :id_site, u.id_client FROM app.utilisateur AS u "
+            "WHERE u.id = :id ON CONFLICT DO NOTHING"
         ),
         parametres,
     )

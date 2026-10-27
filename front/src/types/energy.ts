@@ -51,6 +51,24 @@ export interface ConsumptionPoint {
   // les kWh égalent la puissance moyenne en kW, d'où le tracé de la courbe.
   kwh?: number | null
   coutEur?: number | null
+  // Minutes de l'heure reconstituées après une panne (US4) : la valeur est en partie estimée
+  minutesImputees?: number
+}
+
+export type Sensor = 'consommation' | 'electrique' | 'temperature' | 'humidite' | 'reseau'
+
+// Venue de GET /api/sites/etat (types/api.ts), convertie par lib/etat.ts (US4)
+export interface SiteStatus {
+  siteId: string
+  nomSite: string
+  // 'ok' : le site transmet ; 'muet' : plus de mesure depuis 5 min ; 'inconnu' : notre
+  // collecte est arrêtée, on ne peut pas savoir (le site n'est pas mis en cause)
+  transmission: 'ok' | 'muet' | 'inconnu'
+  derniereMesureLe: string | null // ISO 8601, null : jamais transmis
+  capteursEnPanne: Sensor[]
+  // null : état des capteurs jamais lu
+  etatCapteurs: 'ok' | 'degrade' | 'critique' | null
+  retablissementPrevu: string | null // ISO 8601
 }
 
 export interface PredictionPoint {
