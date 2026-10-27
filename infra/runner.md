@@ -186,7 +186,7 @@ kcadm update clients/<id> -r enervision -s 'redirectUris=["https://<VM_IP>/*"]'
 
 Les comptes se créent dans Keycloak. En temps normal, ce sont les gestionnaires qui les créent depuis le dashboard (`POST /api/utilisateurs`, SMARTOPS-84). À la main, on passe par l'administration de Keycloak : la console (`http://localhost/auth/admin` en local, `https://<VM_IP>[:8443]/auth/admin` sur la VM) ou `kcadm.sh`.
 
-**Comptes de démonstration** : un compte par rôle (liste dans le README, section « Comptes de démonstration »), créés par l'API à chaque démarrage (`api/seed.py`), en dev comme en prod, avec le mot de passe du secret `<ENV>_SEED_PASSWORD`. Sans ce secret, l'API n'en crée pas. Un compte déjà enregistré n'est jamais modifié. Résultat dans les logs de l'API : `docker compose -p enervision-<env> logs api | grep -i seed`.
+**Comptes de démonstration** : un compte par rôle (liste dans le README, section « Comptes de démonstration »), créés par l'API à chaque démarrage (`api/seed.py`), en dev comme en prod, avec le mot de passe du secret `<ENV>_SEED_PASSWORD`. En prod, `admin@enervision.test`, qui voit tous les clients, n'est pas créé. Sans ce secret, l'API n'en crée pas. Un compte déjà enregistré n'est jamais modifié. Résultat dans les logs de l'API : `docker compose -p enervision-<env> logs api | grep -i seed`.
 
 **Attention** : l'API n'accepte que les utilisateurs enregistrés dans `app.utilisateur`, car c'est là qu'elle trouve leur entreprise. Un compte créé dans Keycloak sans cette ligne reçoit un 403.
 

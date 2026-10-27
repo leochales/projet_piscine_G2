@@ -121,6 +121,8 @@ services:
       # (api/seed.py) ; sans SEED_PASSWORD (secret <ENV>_SEED_PASSWORD), pas de seeding
       KEYCLOAK_ADMIN_CLIENT_SECRET: ${KEYCLOAK_ADMIN_CLIENT_SECRET}
       SEED_PASSWORD: ${SEED_PASSWORD:-}
+      # En prod, le seeding ne crée pas les comptes qui voient tous les clients
+      DEPLOY_ENV: ${DEPLOY_ENV}
     labels:
       - traefik.enable=true
       - traefik.http.routers.enervision-${DEPLOY_ENV}-api.rule=PathPrefix(`/api`)

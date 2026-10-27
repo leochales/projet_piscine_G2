@@ -31,6 +31,10 @@ class CompteExistant(ErreurCompte):
     """Un compte Keycloak a déjà cet e-mail."""
 
 
+class DonneeInvalide(ErreurCompte):
+    """Donnée refusée (client ou site) : réessayer ne changerait rien."""
+
+
 @dataclass(frozen=True)
 class NouveauCompte:
     email: str
@@ -108,7 +112,7 @@ class KeycloakAdmin:
         return UUID(utilisateurs[0]["id"]) if utilisateurs else None
 
     def creer(self, compte: NouveauCompte, mot_de_passe: str) -> UUID:
-        """Crée le compte avec son mot de passe et ses rôles ; renvoie son identifiant."""
+        """Crée le compte avec son mot de passe, sans rôle ; renvoie son identifiant."""
         entetes, _ = self._appeler(
             "POST",
             "/users",
@@ -125,13 +129,17 @@ class KeycloakAdmin:
             },
         )
         # Adresse du compte créé : .../users/<identifiant>
-        id_utilisateur = UUID(entetes["Location"].rsplit("/", 1)[1])
-        roles = [
+        return UUID(entetes["Location"].rsplit("/", 1)[1])
+
+    def attribuer_roles(self, id_utilisateur: UUID, roles: list[str]) -> None:
+        """Ajoute les rôles du realm au compte ; sans effet sur un rôle déjà attribué."""
+        representations = [
             self._appeler("GET", f"/roles/{urllib.parse.quote(role)}")[1]
-            for role in compte.roles
+            for role in roles
         ]
-        self._appeler("POST", f"/users/{id_utilisateur}/role-mappings/realm", roles)
-        return id_utilisateur
+        self._appeler(
+            "POST", f"/users/{id_utilisateur}/role-mappings/realm", representations
+        )
 
 
 def est_enregistre(session: Session, id_utilisateur: UUID) -> bool:
@@ -153,13 +161,38 @@ def enregistrer(session: Session, id_utilisateur: UUID, id_client: int | None) -
 def creer_compte(
     session: Session, keycloak: KeycloakAdmin, compte: NouveauCompte, mot_de_passe: str
 ) -> UUID:
-    """Crée le compte dans Keycloak puis l'enregistre en base ; renvoie son identifiant.
+    """Crée le compte dans Keycloak, avec ses rôles, puis l'enregistre en base.
 
-    Lève CompteExistant si l'e-mail est déjà pris. Le commit est laissé à l'appelant.
+    Renvoie son identifiant. Lève CompteExistant si l'e-mail est déjà pris. Le commit
+    est laissé à l'appelant : si une étape échoue, le compte peut exister dans Keycloak
+    sans ligne en base ; le reprendre avec terminer_compte.
     """
     id_utilisateur = keycloak.creer(compte, mot_de_passe)
-    enregistrer(session, id_utilisateur, compte.id_client)
+    terminer_compte(session, keycloak, id_utilisateur, compte)
     return id_utilisateur
+
+
+def terminer_compte(
+    session: Session,
+    keycloak: KeycloakAdmin,
+    id_utilisateur: UUID,
+    compte: NouveauCompte,
+) -> None:
+    """Rôles dans Keycloak et ligne en base d'un compte Keycloak existant.
+
+    Rejouable : reprend une création interrompue (rôles non attribués, ligne absente).
+    """
+    keycloak.attribuer_roles(id_utilisateur, compte.roles)
+    enregistrer(session, id_utilisateur, compte.id_client)
+
+
+def sites_du_client(session: Session, id_client: int, sites: list[str]) -> set[str]:
+    """Parmi les sites donnés, ceux qui appartiennent au client."""
+    requete = text(
+        "SELECT id_site FROM app.site WHERE id_client = :id_client AND id_site = ANY(:sites)"
+    )
+    lignes = session.execute(requete, {"id_client": id_client, "sites": sites})
+    return set(lignes.scalars())
 
 
 def lier_site(session: Session, id_utilisateur: UUID, id_site: str) -> None:
@@ -173,7 +206,7 @@ def lier_site(session: Session, id_utilisateur: UUID, id_site: str) -> None:
     )
     parametres = {"id": id_utilisateur, "id_site": id_site}
     if session.execute(requete, parametres).first() is None:
-        raise ErreurCompte(
+        raise DonneeInvalide(
             f"Site {id_site} absent du client du compte {id_utilisateur}"
         )
     session.execute(

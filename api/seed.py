@@ -1,13 +1,17 @@
 """Seeding : comptes de démonstration, créés au démarrage de l'API.
 
 Comme le ferait un test, le seeding passe par les fonctions de l'application
-(api/services/comptes.py) : création du compte dans Keycloak et en base, puis
-attribution de ses sites.
+(api/services/comptes.py) : création du compte dans Keycloak avec ses rôles, ligne en
+base, puis attribution de ses sites.
 
-Un compte déjà enregistré dans app.utilisateur n'est jamais modifié. Un compte présent
-dans Keycloak mais pas en base (création interrompue) est seulement enregistré.
+  - Un compte déjà enregistré dans app.utilisateur n'est jamais modifié.
+  - Un compte présent dans Keycloak mais pas en base (création interrompue) est repris :
+    rôles réattribués, ligne en base, sites.
+  - Un compte mal décrit (client ou site inconnu) est ignoré, avec un avertissement ;
+    les suivants sont créés.
+  - En prod, les comptes marqués hors_prod (accès à tous les clients) ne sont pas créés.
 
-Sans SEED_PASSWORD ou sans KEYCLOAK_ADMIN_CLIENT_SECRET, rien n'est créé. Le seeding
+Sans SEED_PASSWORD ou sans KEYCLOAK_ADMIN_CLIENT_SECRET, rien n'est lancé. Le seeding
 tourne en tâche de fond : l'API répond pendant qu'il attend Keycloak, et une erreur
 n'est qu'écrite dans les logs.
 """
@@ -21,12 +25,14 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
 from api.services.comptes import (
+    DonneeInvalide,
     KeycloakAdmin,
     NouveauCompte,
     creer_compte,
-    enregistrer,
     est_enregistre,
     lier_site,
+    sites_du_client,
+    terminer_compte,
 )
 from common.config import Settings, get_settings
 from common.db import get_engine
@@ -44,15 +50,18 @@ class CompteDemo:
     roles: list[str]
     client: str | None  # None : administrateur EnerVision (tous les clients)
     sites: list[str] = field(default_factory=list)  # rôles *-SITE seulement
+    hors_prod: bool = False  # True : jamais créé en prod (DEPLOY_ENV=prod)
 
 
 COMPTES_DEMO = [
+    # Toutes les données de tous les clients : pas en prod
     CompteDemo(
         "admin@enervision.test",
         "Alice",
         "Admin",
         ["GESTION-CLIENT", "MONITORING"],
         None,
+        hors_prod=True,
     ),
     CompteDemo(
         "gestion.client@demo.test", "Gaston", "Client", ["GESTION-CLIENT"], CLIENT_DEMO
@@ -94,36 +103,58 @@ def id_client(session: Session, nom: str) -> int | None:
     return session.execute(requete, {"nom": nom}).scalar()
 
 
+def preparer(session: Session, compte: CompteDemo) -> NouveauCompte:
+    """Compte à créer, client résolu ; DonneeInvalide si le client ou un site est inconnu.
+
+    Vérifié avant tout appel à Keycloak : un compte mal décrit n'y est jamais créé.
+    """
+    client = None
+    if compte.client is not None:
+        client = id_client(session, compte.client)
+        if client is None:
+            raise DonneeInvalide(f"client inconnu {compte.client!r}")
+        inconnus = set(compte.sites) - sites_du_client(session, client, compte.sites)
+        if inconnus:
+            raise DonneeInvalide(
+                f"sites absents du client : {', '.join(sorted(inconnus))}"
+            )
+    elif compte.sites:
+        raise DonneeInvalide("sites sans client")
+    return NouveauCompte(compte.email, compte.prenom, compte.nom, compte.roles, client)
+
+
 def seeder(
     session: Session,
     keycloak: KeycloakAdmin,
     mot_de_passe: str,
     comptes: list[CompteDemo] = COMPTES_DEMO,
+    prod: bool = False,
 ) -> int:
-    """Crée les comptes absents de la base ; renvoie le nombre de comptes ajoutés."""
+    """Crée les comptes absents de la base ; renvoie le nombre de comptes ajoutés.
+
+    Une panne de Keycloak ou de la base remonte à l'appelant, qui réessaie.
+    """
     ajoutes = 0
     for compte in comptes:
+        if prod and compte.hors_prod:
+            continue
         existant = keycloak.chercher(compte.email)
         if existant is not None and est_enregistre(session, existant):
             continue
-
-        client = None
-        if compte.client is not None:
-            client = id_client(session, compte.client)
-            if client is None:
-                logger.warning(
-                    "Compte %s ignoré : client inconnu %r", compte.email, compte.client
-                )
-                continue
+        try:
+            nouveau = preparer(session, compte)
+        except DonneeInvalide as erreur:
+            logger.warning(
+                "Compte de démonstration %s ignoré : %s", compte.email, erreur
+            )
+            continue
 
         if existant is None:
-            nouveau = NouveauCompte(
-                compte.email, compte.prenom, compte.nom, compte.roles, client
-            )
             id_utilisateur = creer_compte(session, keycloak, nouveau, mot_de_passe)
         else:
+            # Création interrompue : rôles et ligne en base à reprendre
             id_utilisateur = existant
-            enregistrer(session, id_utilisateur, client)
+            terminer_compte(session, keycloak, id_utilisateur, nouveau)
         for id_site in compte.sites:
             lier_site(session, id_utilisateur, id_site)
         session.commit()
@@ -153,17 +184,21 @@ def mot_de_passe_demo(settings: Settings) -> str | None:
     return mot_de_passe
 
 
-def lancer_seeding(essais: int = ESSAIS, attente: float = ATTENTE_ENTRE_ESSAIS) -> None:
+def lancer_seeding(
+    settings: Settings,
+    mot_de_passe: str,
+    essais: int = ESSAIS,
+    attente: float = ATTENTE_ENTRE_ESSAIS,
+) -> None:
     """Seeding complet ; réessaie tant que Keycloak ou la base ne répondent pas."""
-    settings = get_settings()
-    mot_de_passe = mot_de_passe_demo(settings)
-    if mot_de_passe is None:
-        return
     session_factory = sessionmaker(bind=get_engine())
+    prod = settings.deploy_env == "prod"
     for essai in range(1, essais + 1):
         try:
             with session_factory() as session:
-                ajoutes = seeder(session, KeycloakAdmin(settings), mot_de_passe)
+                ajoutes = seeder(
+                    session, KeycloakAdmin(settings), mot_de_passe, prod=prod
+                )
         except Exception as erreur:  # noqa: BLE001 : le seeding n'arrête jamais l'API
             logger.warning("Seeding, essai %d/%d : %s", essai, essais, erreur)
             time.sleep(attente)
@@ -173,7 +208,17 @@ def lancer_seeding(essais: int = ESSAIS, attente: float = ATTENTE_ENTRE_ESSAIS) 
     logger.error("Seeding abandonné après %d essais", essais)
 
 
-def lancer_en_arriere_plan() -> threading.Thread:
-    tache = threading.Thread(target=lancer_seeding, name="seeding", daemon=True)
+def lancer_en_arriere_plan() -> threading.Thread | None:
+    """Au démarrage de l'API : tâche de fond, seulement si le seeding est configuré."""
+    settings = get_settings()
+    mot_de_passe = mot_de_passe_demo(settings)
+    if mot_de_passe is None:
+        return None
+    tache = threading.Thread(
+        target=lancer_seeding,
+        args=(settings, mot_de_passe),
+        name="seeding",
+        daemon=True,
+    )
     tache.start()
     return tache

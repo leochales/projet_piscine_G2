@@ -33,7 +33,7 @@ Un compte par rôle, créés **automatiquement**, en local comme sur la VM :
 
 | Compte | Rôles | Client | Sites |
 |---|---|---|---|
-| `admin@enervision.test` | GESTION-CLIENT, MONITORING | aucun (administrateur EnerVision : tous) | tous |
+| `admin@enervision.test` | GESTION-CLIENT, MONITORING | aucun (administrateur EnerVision : tous) | tous ; **pas créé en prod** |
 | `gestion.client@demo.test` | GESTION-CLIENT | Démo EnerVision | tous ceux du client |
 | `gestion.site@demo.test` | GESTION-SITE | Démo EnerVision | SITE002, SITE007 |
 | `consult.client@demo.test` | CONSULT-CLIENT | Démo EnerVision | tous ceux du client |
@@ -42,7 +42,7 @@ Un compte par rôle, créés **automatiquement**, en local comme sur la VM :
 
 Mot de passe en local : `EnerVision-Demo-2026` (autre valeur : `SEED_PASSWORD` dans le `.env`, 12 caractères au moins).
 
-Ils sont créés par l'API à chaque démarrage ([`api/seed.py`](api/seed.py)), avec les fonctions qui créeront aussi les vrais comptes ([`api/services/comptes.py`](api/services/comptes.py)) : compte créé dans Keycloak (client `enervision-admin`), enregistré dans `app.utilisateur`, puis ses sites dans `app.utilisateur_site`. Un compte déjà enregistré n'est jamais modifié : un mot de passe ou des rôles changés à la main sont gardés. Le seeding tourne en tâche de fond et attend Keycloak s'il n'est pas prêt ; le résultat est dans les logs de l'API (`docker compose -f compose-local.yml logs api | grep -i seed`).
+Ils sont créés par l'API à chaque démarrage ([`api/seed.py`](api/seed.py)), avec les fonctions qui créeront aussi les vrais comptes ([`api/services/comptes.py`](api/services/comptes.py)) : compte créé dans Keycloak (client `enervision-admin`), enregistré dans `app.utilisateur`, puis ses sites dans `app.utilisateur_site`. Un compte déjà enregistré n'est jamais modifié : un mot de passe ou des rôles changés à la main sont gardés. Une création interrompue (compte dans Keycloak, sans rôles ou sans ligne en base) est reprise au démarrage suivant. Un compte mal décrit (client ou site inconnu) est ignoré, avec un avertissement dans les logs. Le seeding tourne en tâche de fond et attend Keycloak s'il n'est pas prêt ; le résultat est dans les logs de l'API (`docker compose -f compose-local.yml logs api | grep -i seed`).
 
 Pour ajouter un compte : une ligne dans `COMPTES_DEMO` (`api/seed.py`), puis redémarrer l'API.
 

@@ -62,7 +62,10 @@ def serveur(monkeypatch: pytest.MonkeyPatch) -> FauxServeur:
 
 
 def test_creer_envoie_le_compte_puis_ses_roles(serveur: FauxServeur) -> None:
-    assert KeycloakAdmin(_settings()).creer(COMPTE, "mot-de-passe-long") == UUID(ID)
+    keycloak = KeycloakAdmin(_settings())
+
+    assert keycloak.creer(COMPTE, "mot-de-passe-long") == UUID(ID)
+    keycloak.attribuer_roles(UUID(ID), COMPTE.roles)
 
     assert [(m, c) for m, c, _ in serveur.requetes] == [
         ("POST", "/realms/enervision/protocol/openid-connect/token"),

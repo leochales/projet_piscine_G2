@@ -301,11 +301,16 @@ jobs:
           curl -fsSk -H "Authorization: Bearer $token" https://localhost:8443/api/moi \
             | jq -e '.roles == ["CONSULT-SITE"]' >/dev/null \
             || { echo "::error::consult.site non enregistré en base ou mauvais rôle"; exit 1; }
+          # Une mesure pour SITE001 (son site) et SITE002 (pas le sien), sans attendre l'ETL
+          docker compose -f compose-prod.yml exec -T db \
+            psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "
+              INSERT INTO gold.derniere_mesure (id_site, horodatage, consommation_kw, data_quality)
+              VALUES ('SITE001', now(), 100, 'good'), ('SITE002', now(), 200, 'good')
+              ON CONFLICT (id_site) DO NOTHING"
           sites=$(curl -fsSk -H "Authorization: Bearer $token" https://localhost:8443/api/sites/derniere-mesure \
             | jq -r '[.[].id_site] | unique | join(",")')
-          # Liste vide : pas encore de mesure collectée sur la stack de test
-          [ -z "$sites" ] || [ "$sites" = SITE001 ] \
-            || { echo "::error::consult.site voit d'autres sites que SITE001 : $sites"; exit 1; }
+          [ "$sites" = SITE001 ] \
+            || { echo "::error::consult.site doit voir SITE001 seulement, pas '$sites'"; exit 1; }
 
       # Contrat OpenAPI vérifié sur le conteneur de l'API, derrière Traefik, avec le jeton
       # du compte de test : les routes protégées sont testées au-delà du 401

@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     keycloak_admin_client_secret: SecretStr | None = None
     # Mot de passe des comptes de démonstration (api/seed.py) ; absent : non créés
     seed_password: SecretStr | None = None
+    # Environnement de la VM (dev, prod) ; local hors déploiement
+    deploy_env: str = "local"
 
     @property
     def keycloak_url_cles(self) -> str:
