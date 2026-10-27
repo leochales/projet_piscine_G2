@@ -51,7 +51,7 @@ Pour ajouter un compte : une ligne dans `COMPTES_DEMO` (`api/seed.py`), puis red
 
 Le realm `enervision` (`infra/keycloak/realm-enervision.json`) utilise le thème de connexion `enervision` ([`infra/keycloak/themes/enervision/login/`](infra/keycloak/themes/enervision/login/)), monté dans `/opt/keycloak/themes`. Il reprend le style du front (shadcn-vue) sans Tailwind : un thème FreeMarker qui hérite du thème `keycloak` de base, dont il remplace seulement :
 
-- `template.ftl` : mise en page de toutes les pages (marque, carte, alerte, pied de page) ;
+- `template.ftl` : mise en page de toutes les pages (marque, carte, alerte) ;
 - `login.ftl` : la page de connexion (courriel, mot de passe avec bouton œil, « Se souvenir de moi » et « Mot de passe oublié ? » s'ils sont activés dans le realm) ;
 - `resources/css/enervision.css` : les composants Card, Label, Input, Button et Alert, avec les couleurs de `front/src/assets/main.css` (**à modifier aux deux endroits**) et la police Inter du front ;
 - `messages/messages_fr.properties` (et `_en`) : les textes propres à EnerVision ; les autres viennent de Keycloak (`msg(...)`).

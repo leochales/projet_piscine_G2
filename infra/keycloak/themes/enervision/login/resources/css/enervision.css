@@ -515,30 +515,6 @@ form,
   border-top: 1px solid var(--border);
 }
 
-.ev-footer {
-  display: flex;
-  justify-content: center;
-  gap: 1rem;
-  color: var(--muted-foreground);
-  font-size: 0.75rem;
-}
-
-.ev-locales {
-  display: flex;
-  gap: 0.5rem;
-}
-
-.ev-locales .ev-link {
-  color: var(--muted-foreground);
-  font-weight: 400;
-  text-decoration: none;
-}
-
-.ev-locales .ev-link[aria-current='true'] {
-  color: var(--foreground);
-  font-weight: 500;
-}
-
 .ev-sr-only {
   position: absolute;
   width: 1px;

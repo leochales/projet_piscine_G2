@@ -1,6 +1,6 @@
 <#--
   Mise en page commune à toutes les pages de connexion du realm (connexion, mot de passe
-  oublié, erreur...) : la marque EnerVision, une Card de shadcn et le pied de page.
+  oublié, erreur...) : la marque EnerVision, et une Card de shadcn.
   Même macro et mêmes sections que le template.ftl du thème de base, que les autres pages
   appellent ; « subtitle » en plus, pour le sous-titre de la carte (login.ftl).
 -->
@@ -152,17 +152,6 @@
             </#if>
         </div>
     </div>
-
-    <footer class="ev-footer">
-        <span>&copy; ${.now?string("yyyy")} EnerVision</span>
-        <#if realm.internationalizationEnabled && locale.supported?size gt 1>
-            <nav class="ev-locales" aria-label="${msg("languages")}">
-                <#list locale.supported as l>
-                    <a href="${l.url}" class="ev-link" lang="${l.languageTag}"<#if l.languageTag == locale.currentLanguageTag> aria-current="true"</#if>>${l.languageTag?upper_case}</a>
-                </#list>
-            </nav>
-        </#if>
-    </footer>
 </main>
 </body>
 </html>
