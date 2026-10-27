@@ -4,7 +4,7 @@ import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 
 import App from './App.vue'
-import { checkAccount, onUnlinkedAccount } from './lib/api'
+import { checkAccount, onAccountChecked, onUnlinkedAccount } from './lib/api'
 import { initAuth, onTokenRefresh } from './lib/auth'
 import { useUserStore } from './stores/user'
 
@@ -28,6 +28,8 @@ async function start() {
     user.unlinked = true
     void router.replace({ name: 'unlinked-account' })
   })
+  // Sites attribués : un GESTION-SITE n'agit que sur ceux-là (US7)
+  onAccountChecked((moi) => (user.sites = moi.sites))
   // Avant le premier affichage : l'API accepte-t-elle le jeton et connaît-elle le compte ?
   await checkAccount()
 

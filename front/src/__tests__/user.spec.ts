@@ -37,11 +37,29 @@ describe('useUserStore', () => {
     expect(user.roleLabel).toBe('Aucun rôle')
   })
 
-  it('les rôles de gestion agissent sur tous les sites du client', () => {
+  it('GESTION-CLIENT agit sur tous les sites du client', () => {
     const user = useUserStore()
-    user.setFromToken(token(['GESTION-SITE']))
+    user.setFromToken(token(['GESTION-CLIENT']))
     expect(user.canActOn('SITE002')).toBe(true)
     expect(user.canActOn('SITE007')).toBe(true)
+  })
+
+  it('GESTION-SITE agit seulement sur ses sites attribués (GET /api/moi)', () => {
+    const user = useUserStore()
+    user.setFromToken(token(['GESTION-SITE']))
+    // Sites pas encore connus : aucune action proposée
+    expect(user.canActOn('SITE002')).toBe(false)
+
+    user.sites = ['SITE002', 'SITE007']
+    expect(user.canActOn('SITE002')).toBe(true)
+    expect(user.canActOn('SITE001')).toBe(false)
+  })
+
+  it('un rôle de consultation ne gère pas ses sites attribués', () => {
+    const user = useUserStore()
+    user.setFromToken(token(['CONSULT-SITE']))
+    user.sites = ['SITE002']
+    expect(user.canActOn('SITE002')).toBe(false)
   })
 
   it('les rôles de consultation et le monitoring sont en lecture seule', () => {

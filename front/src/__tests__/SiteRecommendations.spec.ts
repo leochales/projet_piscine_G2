@@ -95,7 +95,7 @@ describe('SiteRecommendations (US5)', () => {
     expect(wrapper.findAll('button').map((b) => b.text())).not.toContain('Accepter')
   })
 
-  it('avec les vraies données, ne propose pas de décision tant qu’elle ne peut être enregistrée', async () => {
+  it('avec les vraies données, propose de décider (route POST de l’US7)', async () => {
     SOURCES.recommandations = 'api'
     vi.stubGlobal(
       'fetch',
@@ -109,7 +109,7 @@ describe('SiteRecommendations (US5)', () => {
     const wrapper = mountFor('SITE002')
     await vi.waitFor(() => expect(titles(wrapper).length).toBeGreaterThan(0))
 
-    expect(wrapper.findAll('button').map((b) => b.text())).not.toContain('Accepter')
+    expect(wrapper.findAll('button').map((b) => b.text())).toContain('Accepter')
   })
 
   it('garde la liste affichée pendant un rafraîchissement en échec', async () => {

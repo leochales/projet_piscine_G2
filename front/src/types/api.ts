@@ -20,6 +20,14 @@ export interface ConsommationHoraireApi {
 // Elles sont converties vers les types du dashboard (types/energy.ts) dans src/lib/.
 // À garder identiques aux modèles Pydantic de api/routers/.
 
+/** GET /api/moi (api/routers/utilisateurs.py, modèle Moi) */
+export interface MoiApi {
+  id: string // identifiant Keycloak
+  id_client: number | null
+  roles: string[]
+  sites: string[] // sites attribués (rôles *-SITE), vide pour un rôle *-CLIENT
+}
+
 /** GET /api/recommandations (api/routers/recommandations.py, modèle Recommandation) */
 export interface RecommandationApi {
   id_recommandation: number

@@ -6,6 +6,7 @@ import {
   checkAccount,
   CODE_COMPTE_NON_RATTACHE,
   ENTETE_ERREUR,
+  onAccountChecked,
   onUnlinkedAccount,
 } from '@/lib/api'
 import { getToken, login } from '@/lib/auth'
@@ -120,10 +121,16 @@ describe('checkAccount (GET /api/moi après la connexion)', () => {
   beforeEach(() => vi.stubGlobal('fetch', fetchMock))
   afterEach(() => vi.unstubAllGlobals())
 
-  it('appelle /api/moi avec le jeton : compte reconnu', async () => {
-    fetchMock.mockResolvedValue(json(200, { id: 'x', id_client: 1, roles: ['CONSULT-SITE'] }))
+  it('appelle /api/moi avec le jeton : compte reconnu, sites transmis', async () => {
+    const moi = { id: 'x', id_client: 1, roles: ['GESTION-SITE'], sites: ['SITE002'] }
+    fetchMock.mockResolvedValue(json(200, moi))
+    const listener = vi.fn<(moi: unknown) => void>()
+    const retirer = onAccountChecked(listener)
 
     expect(await checkAccount('/api')).toBe('ok')
+    retirer()
+
+    expect(listener).toHaveBeenCalledWith(moi)
 
     const [url, init] = fetchMock.mock.calls[0]!
     expect(url).toBe('/api/moi')

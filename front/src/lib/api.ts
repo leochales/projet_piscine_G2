@@ -1,4 +1,5 @@
 import { getToken, login } from '@/lib/auth'
+import type { MoiApi } from '@/types/api'
 
 export class ApiError extends Error {
   constructor(
@@ -26,6 +27,17 @@ const unlinkedListeners = new Set<() => void>()
 export function onUnlinkedAccount(listener: () => void): () => void {
   unlinkedListeners.add(listener)
   return () => unlinkedListeners.delete(listener)
+}
+
+const accountListeners = new Set<(moi: MoiApi) => void>()
+
+/**
+ * Appelé avec le compte renvoyé par /api/moi (sites attribués compris) quand l'API le
+ * reconnaît. Renvoie la fonction qui retire l'écouteur.
+ */
+export function onAccountChecked(listener: (moi: MoiApi) => void): () => void {
+  accountListeners.add(listener)
+  return () => accountListeners.delete(listener)
 }
 
 /** Le 403 vient-il d'un compte non rattaché (et non d'un rôle insuffisant) ? */
@@ -76,7 +88,11 @@ export async function checkAccount(
       { headers: { Accept: 'application/json' }, signal: controller.signal },
       baseUrl,
     )
-    if (response.ok) return 'ok'
+    if (response.ok) {
+      const moi = (await response.json()) as MoiApi
+      accountListeners.forEach((listener) => listener(moi))
+      return 'ok'
+    }
     return isUnlinkedAccount(response) ? 'unlinked' : 'unavailable'
   } catch (error) {
     // 401 : la connexion est déjà relancée par apiFetch

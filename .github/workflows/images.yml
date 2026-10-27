@@ -352,6 +352,51 @@ jobs:
           [ "$sites" = SITE001 ] \
             || { echo "::error::consult.site doit voir SITE001 seulement, pas '$sites'"; exit 1; }
 
+      # Actions du dashboard (US7) avec les comptes de démonstration : un rôle de
+      # consultation ne peut pas agir, GESTION-SITE agit sur ses sites (SITE002) et ne voit
+      # pas les autres, une deuxième prise en compte est refusée
+      - name: Actions du dashboard
+        run: |
+          jeton() {
+            curl -fsSk https://localhost:8443/auth/realms/enervision/protocol/openid-connect/token \
+              -d grant_type=password -d client_id=enervision-front \
+              -d "username=$1" --data-urlencode "password=$SEED_PASSWORD" | jq -r .access_token
+          }
+          consult=$(jeton consult.site@demo.test)
+          gestion=$(jeton gestion.site@demo.test)
+          echo "::add-mask::$consult"
+          echo "::add-mask::$gestion"
+          ids=$(docker compose -f compose-prod.yml exec -T db \
+            psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -qtA -c "
+              INSERT INTO gold.alerte (id_site, source, type, severite, debut, valeur, seuil)
+              VALUES ('SITE001', 'etl', 'threshold', 'high', now(), 752, 720),
+                     ('SITE002', 'etl', 'threshold', 'high', now(), 752, 720)
+              RETURNING id_alerte" | tr -d '\r' | paste -sd ' ')
+          read -r alerte_site001 alerte_site002 <<<"$ids"
+          ids=$(docker compose -f compose-prod.yml exec -T db \
+            psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -qtA -c "
+              INSERT INTO gold.recommandation (id_site, regle, titre)
+              VALUES ('SITE001', 'ci', 'Décaler la production'),
+                     ('SITE002', 'ci', 'Décaler la production')
+              RETURNING id_recommandation" | tr -d '\r' | paste -sd ' ')
+          read -r reco_site001 reco_site002 <<<"$ids"
+
+          verifier() {
+            local attendu=$1 jeton=$2 chemin=$3 corps=${4:-}
+            code=$(curl -sk -o /dev/null -w '%{http_code}' -X POST \
+              -H "Authorization: Bearer $jeton" -H 'Content-Type: application/json' \
+              ${corps:+-d "$corps"} "https://localhost:8443/api$chemin")
+            [ "$code" = "$attendu" ] \
+              || { echo "::error::POST $chemin : $code au lieu de $attendu"; exit 1; }
+          }
+          verifier 403 "$consult" "/alertes/$alerte_site001/prise-en-compte"
+          verifier 404 "$gestion" "/alertes/$alerte_site001/prise-en-compte"
+          verifier 200 "$gestion" "/alertes/$alerte_site002/prise-en-compte"
+          verifier 409 "$gestion" "/alertes/$alerte_site002/prise-en-compte"
+          verifier 403 "$consult" "/recommandations/$reco_site001/decision" '{"statut":"acceptee"}'
+          verifier 200 "$gestion" "/recommandations/$reco_site002/decision" '{"statut":"acceptee"}'
+          verifier 409 "$gestion" "/recommandations/$reco_site002/decision" '{"statut":"refusee"}'
+
       # Contrat OpenAPI vérifié sur le conteneur de l'API, derrière Traefik, avec le jeton
       # du compte de test : les routes protégées sont testées au-delà du 401
       - name: Contrat d'API (Schemathesis)

@@ -3,7 +3,6 @@ import { storeToRefs } from 'pinia'
 
 import RecommendationItem from '@/components/alerts/RecommendationItem.vue'
 import { useDecideRecommendation } from '@/lib/actions'
-import { canDecideRecommendations } from '@/services/dashboard'
 import { useOperationsStore } from '@/stores/operations'
 import { useUserStore } from '@/stores/user'
 import type { Recommendation } from '@/types/energy'
@@ -15,8 +14,8 @@ const user = useUserStore()
 const { pending } = storeToRefs(useOperationsStore())
 const decide = useDecideRecommendation()
 
-// Rôle de l'utilisateur, et décisions enregistrables (pas avec les vraies données avant US7)
-const canAct = (siteId: string) => canDecideRecommendations() && user.canActOn(siteId)
+// Rôle de l'utilisateur sur le site de la recommandation (mêmes règles que l'API)
+const canAct = (siteId: string) => user.canActOn(siteId)
 </script>
 
 <template>

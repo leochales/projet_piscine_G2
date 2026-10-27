@@ -61,9 +61,7 @@ GRANT SELECT ON ids TO api;
 -- À partir d'ici, tout est exécuté avec les droits du compte api
 SET ROLE api;
 
--- 1. L'API enregistre des décisions : la dernière l'emporte.
---    (Même transaction, donc même now() : l'identifiant départage les
---    ex aequo.)
+-- 1. L'API enregistre une décision ; la deuxième est refusée (US7, db/16).
 INSERT INTO app.decision_recommandation (
     id_recommandation, id_utilisateur, statut
 )
@@ -72,27 +70,29 @@ VALUES (
     '00000000-0000-0000-0000-00000000000a',
     'acceptee'
 );
-INSERT INTO app.decision_recommandation (
-    id_recommandation, id_utilisateur, statut
-)
-VALUES (
-    (SELECT reco FROM ids),
-    '00000000-0000-0000-0000-00000000000b',
-    'refusee'
-);
 
 DO $$
 DECLARE
     etat app.recommandation_etat;
 BEGIN
+    BEGIN
+        INSERT INTO app.decision_recommandation (
+            id_recommandation, id_utilisateur, statut
+        )
+        SELECT reco, '00000000-0000-0000-0000-00000000000b', 'refusee' FROM ids;
+        RAISE EXCEPTION 'une deuxième décision devrait être refusée';
+    EXCEPTION WHEN unique_violation THEN
+        NULL;  -- refus attendu : l'API répondra 409
+    END;
+
     SELECT re.* INTO etat FROM app.recommandation_etat AS re, ids WHERE re.id_recommandation = ids.reco;
-    ASSERT etat.statut = 'refusee', 'la dernière décision doit être « refusee »';
-    ASSERT etat.decide_par = '00000000-0000-0000-0000-00000000000b', 'mauvais décideur';
+    ASSERT etat.statut = 'acceptee', 'la décision doit rester « acceptee »';
+    ASSERT etat.decide_par = '00000000-0000-0000-0000-00000000000a', 'mauvais décideur';
 
     SELECT re.* INTO etat FROM app.recommandation_etat AS re, ids WHERE re.id_recommandation = ids.reco_seule;
     ASSERT etat.statut = 'proposee' AND etat.decide_par IS NULL,
         'une recommandation sans décision doit être « proposee »';
-    RAISE NOTICE 'OK 1 : décisions enregistrées, état courant = dernière décision';
+    RAISE NOTICE 'OK 1 : décision enregistrée, deuxième refusée';
 END
 $$;
 
@@ -155,7 +155,7 @@ BEGIN
 
     BEGIN
         INSERT INTO app.decision_recommandation (id_recommandation, id_utilisateur, statut)
-        SELECT reco, '00000000-0000-0000-0000-00000000000a', 'peut-etre' FROM ids;
+        SELECT reco_seule, '00000000-0000-0000-0000-00000000000a', 'peut-etre' FROM ids;
         RAISE EXCEPTION 'un statut inconnu devrait être refusé';
     EXCEPTION WHEN check_violation THEN
         NULL;
@@ -163,7 +163,7 @@ BEGIN
 
     BEGIN
         INSERT INTO app.decision_recommandation (id_recommandation, id_utilisateur, statut)
-        SELECT reco, '00000000-0000-0000-0000-0000000000ff', 'acceptee' FROM ids;
+        SELECT reco_seule, '00000000-0000-0000-0000-0000000000ff', 'acceptee' FROM ids;
         RAISE EXCEPTION 'un utilisateur inconnu devrait être refusé';
     EXCEPTION WHEN foreign_key_violation THEN
         NULL;

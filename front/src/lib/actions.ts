@@ -1,7 +1,7 @@
 import { computed } from 'vue'
 import { toast } from 'vue-sonner'
 
-import { canAcknowledgeAlerts, canDecideRecommendations } from '@/services/dashboard'
+import { ApiError } from '@/lib/api'
 import { useOperationsStore } from '@/stores/operations'
 import { ACTION_ROLES, useUserStore } from '@/stores/user'
 
@@ -14,6 +14,20 @@ export const notifyActionFailed = () =>
     description: 'Le service de données ne répond pas. Réessayez dans un instant.',
   })
 
+const isStatus = (error: unknown, status: number) =>
+  error instanceof ApiError && error.status === status
+
+/** Action refusée par l'API sur ce site (403, 404), ou service en panne */
+function notifyRefusedOrFailed(error: unknown) {
+  if (isStatus(error, 403) || isStatus(error, 404)) {
+    toast.error('Action impossible', {
+      description: 'Vous ne pouvez pas agir sur ce site.',
+    })
+  } else {
+    notifyActionFailed()
+  }
+}
+
 /** Accepter ou refuser une recommandation, avec le retour à l'utilisateur */
 export function useDecideRecommendation() {
   const operations = useOperationsStore()
@@ -25,8 +39,16 @@ export function useDecideRecommendation() {
       toast.success(statut === 'acceptee' ? 'Recommandation acceptée' : 'Recommandation refusée', {
         description: rec && `${rec.siteId} · ${rec.titre}`,
       })
-    } catch {
-      notifyActionFailed()
+    } catch (error) {
+      if (isStatus(error, 409)) {
+        // Décidée entre-temps par quelqu'un d'autre : la liste montre sa décision
+        toast.info('Recommandation déjà décidée', {
+          description: 'Quelqu’un l’a acceptée ou refusée avant vous.',
+        })
+        await operations.reloadRecommendations().catch(() => {})
+      } else {
+        notifyRefusedOrFailed(error)
+      }
     }
   }
 }
@@ -42,35 +64,35 @@ export function useAcknowledgeAlert() {
       toast.success('Alerte prise en compte', {
         description: alert && `${alert.siteId} · ${alert.message}`,
       })
-    } catch {
-      notifyActionFailed()
+    } catch (error) {
+      if (isStatus(error, 409)) {
+        // Prise en compte par quelqu'un d'autre, ou terminée entre-temps
+        toast.info('Alerte déjà traitée', {
+          description: 'Elle a été prise en compte par quelqu’un d’autre, ou vient de se terminer.',
+        })
+        await operations.reloadAlerts().catch(() => {})
+      } else {
+        notifyRefusedOrFailed(error)
+      }
     }
   }
 }
 
-/**
- * Qui peut prendre une alerte en compte sur un site : un rôle de gestion, et seulement avec les
- * données simulées tant que l'API ne sait pas l'enregistrer (US7)
- */
+/** Qui peut prendre une alerte en compte sur un site : mêmes règles que l'API (US7) */
 export function useCanAcknowledge() {
   const user = useUserStore()
-  return (siteId: string) => canAcknowledgeAlerts() && user.canActOn(siteId)
+  return (siteId: string) => user.canActOn(siteId)
 }
 
 /**
  * Pourquoi les boutons d'action manquent, à afficher au-dessus des listes (null : rien à
- * dire). Un rôle de consultation ne peut pas agir ; avec les vraies données, personne ne
- * peut agir tant que l'API ne sait pas enregistrer les actions (US7).
+ * dire) : un rôle de consultation ne peut pas agir.
  */
 export function useActionsNotice() {
   const user = useUserStore()
-  return computed(() => {
-    if (!user.hasAnyRole(ACTION_ROLES)) {
-      return 'Lecture seule : les actions sont réservées aux gestionnaires.'
-    }
-    if (!canAcknowledgeAlerts() || !canDecideRecommendations()) {
-      return 'Prendre une alerte en compte et décider d’une recommandation ne sont pas encore possibles : ces actions arriveront prochainement.'
-    }
-    return null
-  })
+  return computed(() =>
+    user.hasAnyRole(ACTION_ROLES)
+      ? null
+      : 'Lecture seule : les actions sont réservées aux gestionnaires.',
+  )
 }

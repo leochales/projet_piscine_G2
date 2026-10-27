@@ -6,9 +6,9 @@
 -- écrit. gold reste en lecture seule pour l'API, car l'ETL et le modèle le
 -- recalculent : une action stockée dans gold pourrait être écrasée.
 --
--- Une ligne par action, jamais modifiée. Les décisions gardent tout leur
--- historique (la dernière l'emporte) ; une alerte n'est prise en compte qu'une
--- fois. L'état courant est donné par les vues.
+-- Une ligne par action, jamais modifiée. Une recommandation n'est décidée
+-- qu'une fois (16_decision_unique.sql) et une alerte n'est prise en compte
+-- qu'une fois. L'état courant est donné par les vues.
 --
 -- Après 05_gold.sql (clés étrangères vers gold) et 06_roles.sql (droits par
 -- défaut du compte api sur app, appliqués aux tables créées ici).

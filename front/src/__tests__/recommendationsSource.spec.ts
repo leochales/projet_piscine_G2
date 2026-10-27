@@ -1,11 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import {
-  canDecideRecommendations,
-  decideRecommendation,
-  fetchRecommendations,
-  SOURCES,
-} from '@/services/dashboard'
+import { decideRecommendation, fetchRecommendations, SOURCES } from '@/services/dashboard'
 import { login } from '@/lib/auth'
 import { ApiError, getJson } from '@/services/http'
 import { recommandations } from '@/mocks/recommandations'
@@ -105,14 +100,28 @@ describe('getJson', () => {
 })
 
 describe('décisions', () => {
-  it('sont possibles avec les données simulées', async () => {
-    expect(canDecideRecommendations()).toBe(true)
+  it('sont simulées avec les données simulées', async () => {
+    const fetchMock = stubFetch(200, {})
     expect(await decideRecommendation('1', 'acceptee')).toEqual({ id: '1', statut: 'acceptee' })
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('sont refusées avec les vraies données, faute de route pour les enregistrer (US7)', async () => {
+  it('avec les vraies données, sont enregistrées par POST /api/recommandations/{id}/decision (US7)', async () => {
     SOURCES.recommandations = 'api'
-    expect(canDecideRecommendations()).toBe(false)
-    await expect(decideRecommendation('1', 'acceptee')).rejects.toThrow('US7')
+    const fetchMock = stubFetch(200, { ...recommandations[0], statut: 'refusee' })
+
+    expect(await decideRecommendation('1', 'refusee')).toEqual({ id: '1', statut: 'refusee' })
+
+    const [url, init] = fetchMock.mock.calls[0]!
+    expect(url).toBe('/api/recommandations/1/decision')
+    expect(init?.method).toBe('POST')
+    expect(JSON.parse(String(init?.body))).toEqual({ statut: 'refusee' })
+  })
+
+  it('une recommandation déjà décidée lève une erreur 409', async () => {
+    SOURCES.recommandations = 'api'
+    stubFetch(409, { detail: 'Recommandation déjà décidée' })
+
+    await expect(decideRecommendation('1', 'acceptee')).rejects.toMatchObject({ status: 409 })
   })
 })
