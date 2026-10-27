@@ -48,6 +48,23 @@ def metriques(tableau: pd.DataFrame, jeu: str) -> dict[str, float]:
     }
 
 
+def description(resultat: Resultat) -> str:
+    """Explique d'où viennent les scores du run, et quel modèle est enregistré : les
+    deux ne sont pas entraînés sur les mêmes données."""
+    texte = (
+        f"Scores : {resultat.meilleur} entraîné sur le jeu d'entraînement, choisi sur "
+        "la validation et mesuré une seule fois sur le test. "
+    )
+    if resultat.bat_reference:
+        return texte + (
+            "Modèle enregistré : le même, réentraîné sur toutes les données "
+            "(entraînement, validation et test)."
+        )
+    return texte + (
+        "Aucun modèle enregistré : il ne bat pas la référence sur la validation."
+    )
+
+
 def enregistrer(
     resultat: Resultat,
     horizon: int,
@@ -74,6 +91,8 @@ def enregistrer(
             | metriques(resultat.test, "test")
         )
         mlflow.set_tag("bat_reference", str(resultat.bat_reference).lower())
+        # Description du run, affichée par l'interface de MLflow
+        mlflow.set_tag("mlflow.note.content", description(resultat))
         if not resultat.bat_reference or final is None:
             return None
         modele, moyennes = final

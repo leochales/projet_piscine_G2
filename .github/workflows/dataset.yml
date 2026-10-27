@@ -3,8 +3,9 @@ name: Dataset
 # Construit le jeu d'entraînement du modèle sur la VM, à la demande (Actions → Dataset →
 # Run workflow) : python -m model.dataset dans l'image du modèle déjà déployée, avec les
 # données brutes versionnées par DVC (data/raw.dvc, stockage DVC de la VM), puis
-# enregistrement dans le MLflow de l'environnement. develop construit le jeu de dev, main
-# celui de prod.
+# enregistrement dans le MLflow de l'environnement. Le modèle est ensuite entraîné sur ce
+# jeu et enregistré dans le même MLflow (SMARTOPS-32). develop construit le jeu et le
+# modèle de dev, main ceux de prod.
 
 on:
   workflow_dispatch:
@@ -55,3 +56,8 @@ jobs:
       # Image du modèle déjà sur la VM : récupérée et gardée par deploy.yml
       - name: Construire le jeu
         run: docker compose -f compose-prod.yml run --rm --pull never dataset
+
+      # Modèle entraîné sur ce jeu : enregistré, avec l'alias production, seulement s'il
+      # bat la prévision de référence sur la validation
+      - name: Entraîner le modèle
+        run: docker compose -f compose-prod.yml run --rm --pull never entrainement

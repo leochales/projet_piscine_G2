@@ -75,6 +75,7 @@ def test_modele_enregistre_puis_recharge(client):
     assert run.data.params["empreinte_jeu"] == "abc123"
     assert run.data.params["modele"] == r.meilleur
     assert run.data.tags["bat_reference"] == "true"
+    assert "réentraîné sur toutes les données" in run.data.tags["mlflow.note.content"]
     assert f"validation_{REFERENCE}_WAPE" in run.data.metrics
     assert f"test_{r.meilleur}_WAPE" in run.data.metrics
 
@@ -102,6 +103,7 @@ def test_modele_refuse_garde_le_run_sans_version(client):
     )
     assert len(runs) == 1
     assert runs[0].data.tags["bat_reference"] == "false"
+    assert "Aucun modèle enregistré" in runs[0].data.tags["mlflow.note.content"]
 
 
 def test_main_enregistre_les_deux_horizons(client, tmp_path):

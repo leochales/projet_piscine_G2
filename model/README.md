@@ -222,9 +222,11 @@ MLFLOW_TRACKING_URI=http://localhost/mlflow python -m model.entrainement
 
 Sous Windows (PowerShell) : `$env:MLFLOW_TRACKING_URI="http://localhost/mlflow"`, puis la commande, avec `$env:PYTHONIOENCODING="utf-8"` (voir le jeu d'entraînement).
 
+Sur la VM, le workflow **Dataset** (Actions → Dataset → Run workflow) entraîne et enregistre le modèle juste après avoir construit le jeu, dans le MLflow de l'environnement (service `entrainement` de `compose-prod.yml`, voir `infra/runner.md`).
+
 Pour chaque horizon, dans l'expérience `prevision-consommation` :
 
-1. un run `prevision-24h` ou `prevision-168h`, toujours : modèle retenu et réglages, scores de validation et de test du modèle et des références (`validation_random_forest_WAPE`, `test_baseline_semaine_MAE`…), empreinte du jeu (`empreinte_jeu`, lue dans `rapport_qualite.json`) et tag `bat_reference` ;
+1. un run `prevision-24h` ou `prevision-168h`, toujours : modèle retenu et réglages, scores de validation et de test du modèle et des références (`validation_random_forest_WAPE`, `test_baseline_semaine_MAE`…), empreinte du jeu (`empreinte_jeu`, lue dans `rapport_qualite.json`), tag `bat_reference` et une description qui rappelle d'où viennent les scores ;
 2. si le modèle bat la référence sur la validation, il est réentraîné sur toutes les données (entraînement, validation et test) et enregistré comme nouvelle version du modèle `prevision-conso-24h` ou `prevision-conso-168h`. Les moyennes par site, recalculées sur ces données, sont enregistrées dans le même run (`moyennes_par_site.json`) ;
 3. l'alias `production` passe sur cette nouvelle version. Sinon, aucune version n'est créée et l'alias ne bouge pas.
 
