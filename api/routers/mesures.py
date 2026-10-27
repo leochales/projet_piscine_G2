@@ -4,11 +4,13 @@ from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import AwareDatetime, BaseModel, BeforeValidator
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from api.auth import ClientCourant
+from api.routers.parametres import IdSite
 from common.config import Settings, get_settings
 from common.db import get_session
 
@@ -38,17 +40,19 @@ class DerniereMesure(BaseModel):
 @router.get("/derniere-mesure", summary="Dernière mesure de chaque site")
 def lister_dernieres_mesures(
     session: Annotated[Session, Depends(get_session)],
+    id_client: ClientCourant,
 ) -> list[DerniereMesure]:
     requete = text(
         """
-                SELECT m.id_site, s.nom, s.type, s.capacite_kw,
+        SELECT m.id_site, s.nom, s.type, s.capacite_kw,
                m.horodatage, m.consommation_kw, m.data_quality
         FROM gold.derniere_mesure AS m
         JOIN app.site AS s ON s.id_site = m.id_site
+        WHERE (CAST(:id_client AS BIGINT) IS NULL OR s.id_client = :id_client)
         ORDER BY m.id_site
         """
     )
-    lignes = session.execute(requete).mappings().all()
+    lignes = session.execute(requete, {"id_client": id_client}).mappings().all()
     return [DerniereMesure(**ligne) for ligne in lignes]
 
 
@@ -97,9 +101,10 @@ def calculer_periode(
     responses={400: {"description": "Période invalide"}},
 )
 def lister_consommation_horaire(
-    id_site: Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{1,20}$")],
+    id_site: IdSite,
     session: Annotated[Session, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
+    id_client: ClientCourant,
     debut: DateIso | None = None,
     fin: DateIso | None = None,
 ) -> list[ConsommationHoraire]:
@@ -110,10 +115,21 @@ def lister_consommation_horaire(
         SELECT heure, consommation_kwh
         FROM gold.consommation_horaire
         WHERE id_site = :id_site AND heure >= :debut AND heure < :fin
+          -- Site d'un autre client : aucune ligne, comme un site inconnu
+          AND EXISTS (
+              SELECT 1 FROM app.site AS s
+              WHERE s.id_site = :id_site
+                AND (CAST(:id_client AS BIGINT) IS NULL OR s.id_client = :id_client)
+          )
         ORDER BY heure
         """
     )
-    parametres = {"id_site": id_site, "debut": debut, "fin": fin}
+    parametres = {
+        "id_site": id_site,
+        "debut": debut,
+        "fin": fin,
+        "id_client": id_client,
+    }
     lignes = session.execute(requete, parametres).mappings().all()
 
     return [

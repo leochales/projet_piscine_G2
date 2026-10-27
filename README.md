@@ -12,7 +12,7 @@ Plateforme MVP d'optimisation énergétique : collecte des mesures de 7 sites, p
 | `common/` | Code Python partagé (schémas, accès base, config) |
 | `front/`  | Tableau de bord (Vue 3)                         |
 | `db/`     | Scripts SQL d'initialisation                    |
-| `infra/`  | Docker, CI, déploiement                         |
+| `infra/`  | Docker, CI, déploiement, stockage Azure des sauvegardes (`infra/terraform/`) |
 
 ## Lancer le projet
 
@@ -101,10 +101,10 @@ Trivy doit aussi être installé sur la machine (`brew install trivy` sous macOS
 
 ### Après un `git pull`
 
-Si `requirements*.txt` ou `front/package-lock.json` ont changé, réinstaller les dépendances, sinon les hooks du push échouent (par exemple `pytest-cov` ou `@vitest/coverage-v8` manquants) :
+Si `requirements*.txt` ou `front/package-lock.json` ont changé, réinstaller les dépendances, sinon les hooks du push échouent (par exemple `pytest-cov` ou `@vitest/coverage-v8` manquants, ou `pytest (model)` qui ne trouve pas scikit-learn) :
 
 ```bash
-.venv/bin/pip install -r api/requirements-dev.txt
+.venv/bin/pip install -r api/requirements-dev.txt -r model/requirements-dev.txt
 npm --prefix front ci
 ```
 
@@ -121,7 +121,8 @@ Chaque pull request vers `develop` ou `main` lance :
 | Workflow | Ce qui bloque la PR |
 |---|---|
 | `pre-commit.yml` | lint et format (ruff, dont les règles de sécurité `S` de Bandit, eslint, prettier, sqlfluff, hadolint, gitleaks), tests et typage, **couverture sous 80 %** |
-| `security.yml` | vulnérabilité HIGH ou CRITICAL dans les fichiers du dépôt |
+| `security.yml` | vulnérabilité HIGH ou CRITICAL dans les fichiers du dépôt, ou dans la configuration Terraform |
+| `terraform.yml` | code Terraform mal formaté, invalide ou signalé par tflint (seulement si `infra/terraform/` change) |
 | `images.yml` | image qui ne se construit pas ; stack de prod (Traefik, base, api, etl, front) qui ne démarre pas ou échoue aux tests ; réponse de l'API qui ne respecte pas son contrat OpenAPI (Schemathesis, sur le conteneur) ; image qui contient une vulnérabilité corrigeable |
 
 La couverture porte sur la logique métier : `api/` et `common/` côté Python (`pyproject.toml`), `src/stores`, `src/lib` et `src/services` côté front (`front/vitest.config.ts`).

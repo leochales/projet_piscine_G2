@@ -4,11 +4,41 @@ import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 
 import App from './App.vue'
-import router from './router'
+import { checkAccount, onUnlinkedAccount } from './lib/api'
+import { initAuth, onTokenRefresh } from './lib/auth'
+import { useUserStore } from './stores/user'
 
-const app = createApp(App)
+async function start() {
+  const claims = await initAuth()
+  // Le routeur mémorise l'adresse à sa création : créé avant la connexion, il remettrait dans
+  // l'adresse le #state=…&code=… que keycloak-js vient de retirer
+  const { default: router } = await import('./router')
 
-app.use(createPinia())
-app.use(router)
+  const app = createApp(App)
+  const pinia = createPinia()
+  app.use(pinia)
 
-app.mount('#app')
+  const user = useUserStore(pinia)
+  user.setFromToken(claims)
+  onTokenRefresh((refreshed) => user.setFromToken(refreshed))
+
+  // Compte refusé par l'API (absent de app.utilisateur), au démarrage ou plus tard :
+  // la page « compte non rattaché » remplace les écrans de données (garde du routeur)
+  onUnlinkedAccount(() => {
+    user.unlinked = true
+    void router.replace({ name: 'unlinked-account' })
+  })
+  // Avant le premier affichage : l'API accepte-t-elle le jeton et connaît-elle le compte ?
+  await checkAccount()
+
+  app.use(router)
+  app.mount('#app')
+}
+
+start().catch((error: unknown) => {
+  console.error(error)
+  const root = document.getElementById('app')
+  if (root) {
+    root.textContent = 'Le service de connexion est indisponible. Réessayez dans quelques instants.'
+  }
+})

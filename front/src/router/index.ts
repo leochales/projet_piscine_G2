@@ -1,5 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
+import { DASHBOARD_ROLES, useUserStore } from '@/stores/user'
+
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
@@ -7,23 +9,52 @@ const router = createRouter({
       path: '/',
       name: 'overview',
       component: () => import('@/views/OverviewView.vue'),
-      meta: { title: "Vue d'ensemble" },
+      meta: { title: "Vue d'ensemble", roles: DASHBOARD_ROLES },
     },
     {
       path: '/sites/:siteId?',
       name: 'sites',
       component: () => import('@/views/SiteDetailView.vue'),
       props: true,
-      meta: { title: 'Sites' },
+      meta: { title: 'Sites', roles: DASHBOARD_ROLES },
     },
     {
       path: '/alertes',
       name: 'alerts',
       component: () => import('@/views/AlertsView.vue'),
-      meta: { title: 'Alertes et recommandations' },
+      meta: { title: 'Alertes et recommandations', roles: DASHBOARD_ROLES },
     },
-    { path: '/:pathMatch(.*)*', redirect: '/' },
+    {
+      path: '/compte-non-rattache',
+      name: 'unlinked-account',
+      component: () => import('@/views/UnlinkedAccountView.vue'),
+      meta: { title: 'Compte non rattaché' },
+    },
+    {
+      path: '/acces-refuse',
+      name: 'access-denied',
+      component: () => import('@/views/AccessDeniedView.vue'),
+      meta: { title: 'Accès refusé' },
+    },
+    // Adresse inconnue : une vraie page plutôt qu'un renvoi silencieux vers l'accueil,
+    // qui laisserait croire que le lien fonctionne
+    {
+      path: '/:pathMatch(.*)*',
+      name: 'not-found',
+      component: () => import('@/views/NotFoundView.vue'),
+      meta: { title: 'Page introuvable' },
+    },
   ],
+})
+
+router.beforeEach((to) => {
+  const user = useUserStore()
+  // Compte refusé par l'API : aucune page de données, quel que soit le rôle
+  if (user.unlinked) {
+    return to.name === 'unlinked-account' ? true : { name: 'unlinked-account', replace: true }
+  }
+  if (!to.meta.roles || user.hasAnyRole(to.meta.roles)) return true
+  return { name: 'access-denied', replace: true }
 })
 
 router.afterEach((to) => {

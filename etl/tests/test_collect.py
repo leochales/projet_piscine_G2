@@ -1,27 +1,37 @@
+import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 import requests
 
-from etl import api_client, collect
+from etl import collect
 from etl.collect import (
-    DEFAULT_BACKFILL,
-    MAX_BACKFILL,
-    STEP,
-    Window,
+    MAX_CLOCK_SKEW,
+    ReadingRejected,
     check_sites_consistency,
-    floor_to_step,
-    plan_windows,
-    select_readings,
+    reading_slot,
 )
+from etl.grid import floor_to_step
 from etl.schemas import SiteInfo
 
-# Horloge locale ; la dernière minute collectable est 12:28 (now − 2 min)
-NOW = datetime(2026, 10, 22, 12, 30, 45, tzinfo=UTC)
-LAST = datetime(2026, 10, 22, 12, 28, tzinfo=UTC)
+# Horloge locale ; l'horloge de l'API Mock retarde d'une trentaine de secondes
+NOW = datetime(2026, 10, 26, 8, 13, 5, tzinfo=UTC)
+# Minute du passage (horloge locale), et non celle de l'horodatage de l'API
+SLOT = datetime(2026, 10, 26, 8, 13, tzinfo=UTC)
+
+
+def _mesure(site: str, ts: str = "2026-10-26T08:12:39.385024") -> dict[str, Any]:
+    """Réponse type de /current : horodatage sans fuseau, à la microseconde."""
+    return {
+        "site_id": site,
+        "timestamp": ts,
+        "consumption_kw": 10.0,
+        "data_quality": "good",
+    }
 
 
 def test_floor_to_step_tronque_a_la_minute() -> None:
@@ -29,74 +39,46 @@ def test_floor_to_step_tronque_a_la_minute() -> None:
     assert floor_to_step(ts) == datetime(2026, 10, 22, 13, 1, tzinfo=UTC)
 
 
-def test_sans_watermark_remonte_24_h_en_fenetres_de_1000_minutes() -> None:
-    windows = plan_windows(None, NOW)
-
-    assert windows[0].start == LAST - DEFAULT_BACKFILL
-    assert [w.limit for w in windows] == [1000, 441]  # 24 h + 1 = 1441 minutes
-    assert windows[0].end == windows[1].start  # fenêtres jointives
-    assert windows[-1].end == LAST + STEP  # borne de fin exclue
+# --- reading_slot -------------------------------------------------------------
 
 
-def test_chaque_fenetre_donne_un_pas_de_60_s() -> None:
-    # L'API calcule le pas comme (end − start) / limit
-    for w in plan_windows(None, NOW):
-        assert (w.end - w.start) / w.limit == STEP
-        assert w.start.second == 0 and w.start.microsecond == 0
+def test_reading_slot_range_la_mesure_current_sur_la_minute_utc() -> None:
+    assert reading_slot("SITE001", _mesure("SITE001"), NOW) == SLOT
 
 
-def test_watermark_aligne_repart_a_la_minute_suivante() -> None:
-    windows = plan_windows(datetime(2026, 10, 22, 12, 20, tzinfo=UTC), NOW)
-    assert windows == [
-        Window(
-            start=datetime(2026, 10, 22, 12, 21, tzinfo=UTC),
-            end=LAST + STEP,
-            limit=8,
-        )
-    ]
+def test_reading_slot_ne_depend_pas_du_retard_de_l_api() -> None:
+    # Démarrage à :00.5 puis à :01.5 : l'horodatage de l'API (≈ −31 s) passe
+    # d'une minute à l'autre, la clé reste la minute du passage
+    for t, ts in [
+        (datetime(2026, 10, 26, 8, 13, 0, 500000, tzinfo=UTC), "2026-10-26T08:12:29.6"),
+        (datetime(2026, 10, 26, 8, 14, 1, 500000, tzinfo=UTC), "2026-10-26T08:13:30.6"),
+    ]:
+        assert reading_slot("SITE001", _mesure("SITE001", ts), t) == floor_to_step(t)
 
 
-def test_watermark_hors_grille_de_l_ancienne_collecte() -> None:
-    watermark = datetime(2026, 10, 22, 12, 20, 19, 285952, tzinfo=UTC)
-    assert plan_windows(watermark, NOW)[0].start == datetime(
-        2026, 10, 22, 12, 21, tzinfo=UTC
-    )
+def test_reading_slot_rejette_la_mesure_d_un_autre_site() -> None:
+    with pytest.raises(ReadingRejected, match="autre site"):
+        reading_slot("SITE001", _mesure("SITE002"), NOW)
 
 
-def test_rien_a_collecter_quand_le_site_est_a_jour() -> None:
-    assert plan_windows(LAST, NOW) == []
+def test_reading_slot_rejette_un_horodatage_trop_ancien() -> None:
+    trop_vieux = (NOW - MAX_CLOCK_SKEW - timedelta(seconds=1)).replace(tzinfo=None)
+    with pytest.raises(ReadingRejected, match="trop loin"):
+        reading_slot("SITE001", _mesure("SITE001", trop_vieux.isoformat()), NOW)
 
 
-def test_rattrapage_plafonne_apres_une_longue_coupure() -> None:
-    windows = plan_windows(NOW - timedelta(days=30), NOW)
-    assert windows[0].start == LAST - MAX_BACKFILL
-    assert sum(w.limit for w in windows) == MAX_BACKFILL // STEP + 1
+def test_reading_slot_accepte_un_retard_dans_la_tolerance() -> None:
+    limite = (NOW - MAX_CLOCK_SKEW).replace(tzinfo=None)
+    slot = reading_slot("SITE001", _mesure("SITE001", limite.isoformat()), NOW)
+    assert slot == floor_to_step(NOW)
 
 
-def _mesure(site: str, ts: str) -> dict[str, Any]:
-    return {"site_id": site, "timestamp": ts, "consumption_kw": 10.0}
+def test_reading_slot_rejette_un_payload_sans_horodatage() -> None:
+    with pytest.raises(ReadingRejected, match="clé valide"):
+        reading_slot("SITE001", {"site_id": "SITE001", "consumption_kw": 1.0}, NOW)
 
 
-def test_select_readings_garde_les_points_de_la_grille() -> None:
-    window = Window(
-        start=datetime(2026, 10, 21, tzinfo=UTC),
-        end=datetime(2026, 10, 21, 0, 3, tzinfo=UTC),
-        limit=3,
-    )
-    readings = [
-        _mesure("SITE001", "2026-10-21T00:00:00Z"),
-        _mesure("SITE001", "2026-10-21T00:01:00Z"),
-        _mesure("SITE001", "2026-10-21T00:01:30Z"),  # hors grille
-        _mesure("SITE002", "2026-10-21T00:02:00Z"),  # autre site
-        _mesure("SITE001", "2026-10-21T00:03:00Z"),  # borne de fin exclue
-        {"site_id": "SITE001"},  # sans horodatage
-    ]
-
-    kept, rejected = select_readings("SITE001", window, readings)
-
-    assert [ts.minute for ts, _ in kept] == [0, 1]
-    assert kept[0][1] is readings[0]  # payload conservé tel quel
-    assert rejected == 4
+# --- Cohérence des sites ------------------------------------------------------
 
 
 def _site(site_id: str, capacity: float) -> SiteInfo:
@@ -140,47 +122,111 @@ class FakeEngine:
 
 @pytest.fixture
 def fake_db(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    state: dict[str, Any] = {"declared": {"SITE001": 200.0, "SITE002": 1000.0}}
+    state: dict[str, Any] = {
+        "declared": {"SITE001": 200.0, "SITE002": 1000.0, "SITE003": 800.0},
+        "calls": [],
+        "inserted": [],
+    }
+
+    def get_current_reading(site_id: str) -> dict[str, Any]:
+        state["calls"].append(site_id)
+        return _mesure(site_id)
+
+    def insert_bronze(_: Any, id_site: str, ts: datetime, payload: Any) -> bool:
+        state["inserted"].append((id_site, ts, payload))
+        return True
+
     monkeypatch.setattr(collect, "get_engine", FakeEngine)
     monkeypatch.setattr(collect, "load_declared_sites", lambda _: state["declared"])
-    monkeypatch.setattr(
-        collect, "get_watermarks", lambda _, ids: dict.fromkeys(ids, LAST)
-    )
     monkeypatch.setattr(collect, "log_stale_sites", lambda *_: None)
     monkeypatch.setattr(collect, "get_sites", list)
+    monkeypatch.setattr(collect, "get_current_reading", get_current_reading)
+    monkeypatch.setattr(collect, "insert_bronze", insert_bronze)
     return state
 
 
-def test_collect_additionne_les_insertions(
-    fake_db: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+def test_collect_appelle_current_une_fois_par_site_declare(
+    fake_db: dict[str, Any],
 ) -> None:
-    monkeypatch.setattr(collect, "collect_site", lambda *_: 5)
+    collect.collect(NOW)
+    assert sorted(fake_db["calls"]) == ["SITE001", "SITE002", "SITE003"]
+
+
+def test_collect_additionne_les_insertions(fake_db: dict[str, Any]) -> None:
     assert collect.collect(NOW) == {
-        "sites": 2,
-        "readings_inserted": 10,
+        "sites": 3,
+        "readings_inserted": 3,
         "sites_in_error": 0,
     }
 
 
-def test_un_site_en_echec_n_arrete_pas_les_autres(
+def test_la_collecte_n_amorce_jamais(fake_db: dict[str, Any]) -> None:
+    # L'amorçage /readings est une commande à part (etl.bootstrap) : la
+    # collecte minute ne l'attend ni ne le déclenche
+    assert not hasattr(collect, "fetch_history")
+    assert collect.collect(NOW)["readings_inserted"] == 3
+
+
+def test_une_erreur_inattendue_sur_un_site_n_arrete_pas_les_autres(
     fake_db: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def collect_site(id_site: str, *_: Any) -> int:
-        if id_site == "SITE001":
-            raise requests.ConnectionError("API injoignable")
-        return 3
+    def get_current_reading(site_id: str) -> dict[str, Any]:
+        if site_id == "SITE001":
+            raise KeyError("réponse imprévue")
+        return _mesure(site_id)
 
-    monkeypatch.setattr(collect, "collect_site", collect_site)
-    assert collect.collect(NOW)["sites_in_error"] == 1
+    monkeypatch.setattr(collect, "get_current_reading", get_current_reading)
+
+    assert collect.collect(NOW) == {
+        "sites": 3,
+        "readings_inserted": 2,
+        "sites_in_error": 1,
+    }
+
+
+def test_une_erreur_inattendue_du_controle_des_sites_est_loguee(
+    fake_db: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def get_sites() -> list[SiteInfo]:
+        raise KeyError("réponse imprévue")
+
+    monkeypatch.setattr(collect, "get_sites", get_sites)
+
+    assert collect.collect(NOW)["readings_inserted"] == 3
+    assert "contrôle des sites : erreur inattendue" in caplog.text
+
+
+def test_un_site_en_echec_api_ou_rejete_n_arrete_pas_les_autres(
+    fake_db: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def get_current_reading(site_id: str) -> dict[str, Any]:
+        if site_id == "SITE001":
+            raise requests.ConnectionError("API injoignable")
+        if site_id == "SITE002":
+            return _mesure("SITE999")  # mesure rejetée : autre site
+        return _mesure(site_id)
+
+    monkeypatch.setattr(collect, "get_current_reading", get_current_reading)
+
+    assert collect.collect(NOW) == {
+        "sites": 3,
+        "readings_inserted": 1,
+        "sites_in_error": 2,
+    }
+    assert [i[0] for i in fake_db["inserted"]] == ["SITE003"]
 
 
 def test_tous_les_sites_en_echec_sort_en_1(
     fake_db: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def collect_site(*_: Any) -> int:
-        raise requests.ConnectionError("API injoignable")
+    def get_current_reading(site_id: str) -> dict[str, Any]:
+        if site_id == "SITE001":
+            raise requests.ConnectionError("API injoignable")
+        return _mesure(site_id, "2020-01-01T00:00:00")  # trop ancienne
 
-    monkeypatch.setattr(collect, "collect_site", collect_site)
+    monkeypatch.setattr(collect, "get_current_reading", get_current_reading)
     with pytest.raises(SystemExit) as exc:
         collect.collect(NOW)
     assert exc.value.code == collect.EXIT_ALL_SITES_FAILED
@@ -191,37 +237,57 @@ def test_aucun_site_declare_sort_en_2(fake_db: dict[str, Any]) -> None:
     with pytest.raises(SystemExit) as exc:
         collect.collect(NOW)
     assert exc.value.code == collect.EXIT_NO_DECLARED_SITE
+    assert fake_db["calls"] == []
 
 
-def test_collect_site_demande_chaque_fenetre_et_insere(
-    monkeypatch: pytest.MonkeyPatch,
+def test_collect_site_insere_la_minute_arrondie_et_le_payload_brut(
+    fake_db: dict[str, Any],
 ) -> None:
-    calls: list[dict[str, Any]] = []
+    mesure = _mesure("SITE001")
+    copie = dict(mesure)
 
-    def get_readings_history(**params: Any) -> list[dict[str, Any]]:
-        calls.append(params)
-        start = params["start_time"]
-        return [
-            _mesure("SITE001", (start + k * STEP).isoformat())
-            for k in range(params["limit"])
-        ]
+    assert collect.collect_site("SITE001", mesure, NOW) == 1
 
-    inserted: list[int] = []
-
-    def insert_bronze(_: Any, __: str, rows: list[Any]) -> int:
-        inserted.append(len(rows))
-        return len(rows)
-
-    monkeypatch.setattr(collect, "get_readings_history", get_readings_history)
-    monkeypatch.setattr(collect, "get_engine", FakeEngine)
-    monkeypatch.setattr(collect, "insert_bronze", insert_bronze)
-
-    collect.collect_site("SITE001", None, NOW)
-
-    assert [c["limit"] for c in calls] == [1000, 441]
-    assert inserted == [1000, 441]
+    [(id_site, ts, payload)] = fake_db["inserted"]
+    assert (id_site, ts) == ("SITE001", SLOT)
+    assert payload is mesure  # payload transmis tel quel…
+    assert payload == copie  # …et non modifié
 
 
-def test_get_readings_history_refuse_une_limite_invalide() -> None:
-    with pytest.raises(ValueError, match="limit"):
-        api_client.get_readings_history("SITE001", NOW, NOW, 1001)
+def test_collect_site_renvoie_0_si_la_minute_est_deja_collectee(
+    fake_db: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(collect, "insert_bronze", lambda *_: False)
+    assert collect.collect_site("SITE001", _mesure("SITE001"), NOW) == 0
+
+
+# --- Sites rassis (requête remplacée) ----------------------------------------
+
+
+class _StaleConn:
+    """Connexion dont execute(...) renvoie les sites rassis (site, retard)."""
+
+    def __init__(self, rows: list[tuple[str, timedelta | None]]) -> None:
+        self.rows = rows
+        self.params: dict[str, Any] = {}
+
+    def execute(self, _: Any, params: dict[str, Any]) -> list[Any]:
+        self.params = params
+        return [SimpleNamespace(id_site=s, lag=lag) for s, lag in self.rows]
+
+
+def test_site_rassis_et_site_jamais_collecte_signales(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    conn = _StaleConn([("SITE001", timedelta(minutes=42)), ("SITE-TEST", None)])
+    with caplog.at_level(logging.WARNING, logger=collect.__name__):
+        collect.log_stale_sites(conn, ["SITE001", "SITE002", "SITE-TEST"])  # type: ignore[arg-type]
+
+    assert conn.params == {
+        "ids": ["SITE001", "SITE002", "SITE-TEST"],
+        "threshold": collect.STALE_THRESHOLD,
+    }
+    assert [r.getMessage() for r in caplog.records] == [
+        "site SITE001 : dernière mesure il y a 0:42:00",
+        "site SITE-TEST : aucune mesure en bronze",
+    ]

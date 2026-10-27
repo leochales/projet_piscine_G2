@@ -7,31 +7,17 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from api.auth import utilisateur_courant
 from api.main import app
 from api.routers.mesures import calculer_cout, calculer_periode
+from api.tests.fausse_session import FausseSession
+from api.tests.utilisateur_autorise import UTILISATEUR_AUTORISE
 from common.db import get_session
-
-
-class FausseSession:
-    """Remplace la vraie session : renvoie des lignes écrites à la main."""
-
-    def __init__(self, lignes: list[dict[str, Any]]) -> None:
-        self.lignes = lignes
-
-    def execute(
-        self, requete: Any, parametres: dict[str, Any] | None = None
-    ) -> "FausseSession":
-        return self
-
-    def mappings(self) -> "FausseSession":
-        return self
-
-    def all(self) -> list[dict[str, Any]]:
-        return self.lignes
 
 
 @pytest.fixture
 def client() -> Iterator[TestClient]:
+    app.dependency_overrides[utilisateur_courant] = lambda: UTILISATEUR_AUTORISE
     yield TestClient(app)
     app.dependency_overrides.clear()
 

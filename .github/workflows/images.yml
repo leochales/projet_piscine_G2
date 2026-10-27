@@ -1,6 +1,6 @@
 name: Images
 
-# Construit api, etl et front une seule fois, teste la stack de prod complète avec ces
+# Construit api, etl, front et model une seule fois, teste la stack de prod complète avec ces
 # images (Traefik + compose-prod.yml, scripts db/ compris), les scanne avec Trivy, puis,
 # appelé par deploy.yml avec push: true, les publie sur GHCR taguées par le SHA du commit.
 # La VM déploie ensuite exactement ces images (docker compose pull), sans les reconstruire.
@@ -69,7 +69,7 @@ jobs:
         with:
           source: .
           files: compose-prod.yml
-          targets: api,etl,front
+          targets: api,etl,front,dataset
           load: true
           set: |
             *.pull=true
@@ -81,6 +81,9 @@ jobs:
             etl.cache-to=type=gha,scope=etl,mode=max
             front.cache-from=type=gha,scope=front
             front.cache-to=type=gha,scope=front,mode=max
+            dataset.cache-from=type=gha,scope=model
+            dataset.cache-to=type=gha,scope=model,mode=max
+            front.args.MAJ_SECURITE=${{ github.run_id }}-${{ github.run_attempt }}
 
       - uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
         with:
@@ -98,7 +101,7 @@ jobs:
           echo "TRIVY_DIR=$dir" >> "$GITHUB_ENV"
           (
             failed=""
-            for service in api etl front; do
+            for service in api etl front model; do
               trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 \
                 --format table --ignorefile .trivyignore --skip-version-check \
                 "$IMAGE_REPO/enervision-$service:$IMAGE_TAG" > "$dir/$service.log" 2>&1 \
@@ -139,14 +142,16 @@ jobs:
           expected="$base/auth/realms/enervision"
           issuer=$(curl -fsSk "$expected/.well-known/openid-configuration" | jq -r .issuer)
           [ "$issuer" = "$expected" ] || { echo "::error::Émetteur Keycloak inattendu : '$issuer'"; exit 1; }
+          # Même adresse interne que l'API (KEYCLOAK_URL_INTERNE de compose-prod.yml)
           internal=$(docker compose -f compose-prod.yml exec -T api python -c \
-            "import json, urllib.request; print(json.load(urllib.request.urlopen('http://keycloak:8080/auth/realms/enervision/.well-known/openid-configuration'))['issuer'])")
+            "import json, os, urllib.request; print(json.load(urllib.request.urlopen(os.environ['KEYCLOAK_URL_INTERNE'] + '/realms/enervision/.well-known/openid-configuration'))['issuer'])")
           [ "$internal" = "$expected" ] || { echo "::error::Émetteur vu par l'API : '$internal'"; exit 1; }
-          # Console d'administration et realm master non exposés : servis par le front
-          for path in /auth/admin/ /auth/realms/master/.well-known/openid-configuration; do
-            curl -fsSk "$base$path" | grep -q '<div id="app"' \
-              || { echo "::error::$path ne doit pas être routé vers Keycloak"; exit 1; }
-          done
+          # Console d'administration et realm master servis par Keycloak, pas par le front
+          master=$(curl -fsSk "$base/auth/realms/master/.well-known/openid-configuration" | jq -r .issuer)
+          [ "$master" = "$base/auth/realms/master" ] \
+            || { echo "::error::Realm master non routé vers Keycloak : '$master'"; exit 1; }
+          curl -fsSkL "$base/auth/admin/master/console/" | grep -q '<title>Keycloak Administration Console' \
+            || { echo "::error::/auth/admin n'est pas routé vers la console Keycloak"; exit 1; }
           # Scripts db/ : chaque compte de service se connecte avec son mot de passe.
           # -h db (réseau Docker) et non 127.0.0.1, où l'image postgres ne demande aucun
           # mot de passe (trust dans pg_hba.conf) : le test ne prouverait rien.
@@ -168,6 +173,36 @@ jobs:
           docker compose -f compose-prod.yml exec -T etl supercronic -test etl/crontab
           [ -n "$(docker compose -f compose-prod.yml ps etl --status running -q)" ] \
             || { echo "::error::Le conteneur etl n'est pas démarré"; exit 1; }
+
+      # Job du jeu d'entraînement (profil jobs), sur un petit CSV généré : image du modèle,
+      # montage des données brutes et enregistrement dans le MLflow de la stack
+      - name: Tester le job du jeu d'entraînement
+        run: |
+          raw="$RUNNER_TEMP/dataset-raw"
+          mkdir -p "$raw"
+          python3 - "$raw" <<'PY'
+          import csv, json, sys
+          from datetime import datetime, timedelta
+          raw = sys.argv[1]
+          start = datetime(2023, 1, 1)
+          with open(f"{raw}/all_sites_combined.csv", "w", newline="") as f:
+              out = csv.writer(f)
+              out.writerow(["timestamp", "site_id", "consumption_kwh"])
+              for site in ("SITE001", "SITE002"):
+                  for h in range(48):
+                      value = "" if h == 10 else 100 + h
+                      out.writerow([(start + timedelta(hours=h)).isoformat(" "), site, value])
+          meta = {"site_id": "SITE001", "anomalies": [
+              {"timestamp": "2023-01-01T05:00:00", "type": "spike", "severity": "high"}]}
+          with open(f"{raw}/SITE001_metadata.json", "w") as f:
+              json.dump(meta, f)
+          PY
+          DATASET_RAW_DIR="$raw" docker compose -f compose-prod.yml run --rm --pull never \
+            dataset 2>&1 | tee "$RUNNER_TEMP/dataset.log"
+          grep -q "jeu enregistré dans MLflow" "$RUNNER_TEMP/dataset.log" \
+            || { echo "::error::Le jeu n'a pas été enregistré dans MLflow"; exit 1; }
+          docker compose -f compose-prod.yml exec -T mlflow python -c \
+            "import urllib.request; urllib.request.urlopen('http://localhost:5000/mlflow/api/2.0/mlflow/experiments/get-by-name?experiment_name=jeu-entrainement')"
 
       # Même migration que deploy.yml. Les scripts de db/ ont déjà tourné à la création de
       # la base : ce second passage échoue si l'un d'eux ne peut pas être rejoué sur une
@@ -191,11 +226,64 @@ jobs:
         with:
           python-version: "3.14"
 
-      # Contrat OpenAPI vérifié sur le conteneur de l'API, derrière Traefik
+      # Jeton Keycloak pour tester les routes protégées. Sur cette stack jetable seulement :
+      # connexion par mot de passe ouverte sur enervision-front (fermée dans le realm), et
+      # compte de test administrateur EnerVision (sans client : voit toutes les données).
+      - name: Compte de test et jeton Keycloak
+        env:
+          CI_TEST_PASSWORD: ci-schemathesis-mot-de-passe
+          # Le realm prend l'e-mail comme identifiant (registrationEmailAsUsername) :
+          # on se connecte avec l'e-mail, pas avec un nom d'utilisateur
+          CI_TEST_EMAIL: ci-schemathesis@example.test
+        run: |
+          kcadm() {
+            docker compose -f compose-prod.yml exec -T -e KC_CLI_PASSWORD keycloak \
+              /opt/keycloak/bin/kcadm.sh "$@" --config /tmp/kcadm-ci.config
+          }
+          KC_CLI_PASSWORD="$KEYCLOAK_ADMIN_PASSWORD" kcadm config credentials \
+            --server http://localhost:8080/auth --realm master --user "$KEYCLOAK_ADMIN"
+          id_front=$(kcadm get clients -r enervision -q clientId=enervision-front \
+            --fields id --format csv --noquotes)
+          kcadm update "clients/$id_front" -r enervision -s directAccessGrantsEnabled=true
+          # Jeton valable 30 min : le temps de toute la campagne Schemathesis
+          kcadm update realms/enervision -s accessTokenLifespan=1800
+          id_user=$(kcadm create users -r enervision -i -s "email=$CI_TEST_EMAIL" \
+            -s firstName=CI -s lastName=Schemathesis \
+            -s enabled=true -s emailVerified=true)
+          KC_CLI_PASSWORD="$CI_TEST_PASSWORD" kcadm set-password -r enervision --userid "$id_user"
+          kcadm add-roles -r enervision --uid "$id_user" --rolename GESTION-CLIENT
+          docker compose -f compose-prod.yml exec -T db \
+            psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+            -c "INSERT INTO app.utilisateur (id) VALUES ('$id_user')"
+
+          # Sans -f : en cas de refus, on affiche la raison donnée par Keycloak
+          reponse=$(curl -sSk https://localhost:8443/auth/realms/enervision/protocol/openid-connect/token \
+            -d grant_type=password -d client_id=enervision-front \
+            --data-urlencode "username=$CI_TEST_EMAIL" \
+            --data-urlencode "password=$CI_TEST_PASSWORD")
+          token=$(jq -r '.access_token // empty' <<<"$reponse")
+          [ -n "$token" ] || {
+            echo "::error::Pas de jeton Keycloak : $(jq -r '.error_description // .error // .' <<<"$reponse")"
+            exit 1
+          }
+          echo "::add-mask::$token"
+          echo "API_TOKEN=$token" >> "$GITHUB_ENV"
+
+          # Chaîne complète : jeton émis par Keycloak (adresse publique), vérifié par l'API
+          # avec les clés lues en interne, compte retrouvé dans app.utilisateur
+          url="https://localhost:8443/api/sites/derniere-mesure"
+          code=$(curl -sk -o /dev/null -w '%{http_code}' "$url")
+          [ "$code" = 401 ] || { echo "::error::Sans jeton : $code au lieu de 401"; exit 1; }
+          code=$(curl -sk -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" "$url")
+          [ "$code" = 200 ] || { echo "::error::Avec jeton : $code au lieu de 200"; exit 1; }
+
+      # Contrat OpenAPI vérifié sur le conteneur de l'API, derrière Traefik, avec le jeton
+      # du compte de test : les routes protégées sont testées au-delà du 401
       - name: Contrat d'API (Schemathesis)
         run: |
           pip install schemathesis==4.29.4
-          schemathesis run https://localhost:8443/api/openapi.json --checks all --tls-verify false
+          schemathesis run https://localhost:8443/api/openapi.json --checks all --tls-verify false \
+            --header "Authorization: Bearer $API_TOKEN"
 
       - name: Logs de la stack
         if: failure()
@@ -219,7 +307,7 @@ jobs:
             echo "::error::Les scans Trivy n'ont pas fini en 5 minutes"
             exit 1
           fi
-          for service in api etl front; do
+          for service in api etl front model; do
             echo "::group::Trivy - $service"
             cat "$TRIVY_DIR/$service.log"
             echo "::endgroup::"
@@ -238,7 +326,7 @@ jobs:
         run: |
           echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           trap 'docker logout ghcr.io >/dev/null' EXIT
-          docker compose -f compose-prod.yml push api etl front
+          docker compose -f compose-prod.yml push api etl front dataset
 
       # GHCR est gratuit « pour l'instant » : on ne garde que les 20 dernières versions
       - name: Purger les anciennes versions (api)
@@ -265,5 +353,14 @@ jobs:
         uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
         with:
           package-name: enervision-front
+          package-type: container
+          min-versions-to-keep: 20
+
+      - name: Purger les anciennes versions (model)
+        if: inputs.push
+        continue-on-error: true
+        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
+        with:
+          package-name: enervision-model
           package-type: container
           min-versions-to-keep: 20

@@ -33,6 +33,16 @@ dist/
 .vite/
 npm-debug.log*
 
+# --- Terraform (infra/terraform) ---
+# Le fichier .terraform.lock.hcl est commité
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+!*.tfvars.example
+backend.hcl
+
 # --- IDE ---
 .idea/
 .vscode/

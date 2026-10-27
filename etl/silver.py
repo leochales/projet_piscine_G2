@@ -28,14 +28,20 @@ de MAX_LOAD_RATIO × capacité sont jugées physiquement aberrantes.
 Rejouable : chaque exécution retraite les REPROCESS_MARGIN dernières
 minutes déjà en silver (upsert), ce qui impute un trou dès que la mesure qui
 le suit arrive.
+
+Un site actif sans aucune mesure en bronze apparaît quand même en silver
+(``no_reading``) à partir du premier passage qui le voit. Le travail d'un
+passage est borné à MAX_MINUTES_PER_RUN minutes par site : un long retard
+(site réactivé, historique ancien) est rattrapé sur plusieurs passages.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import sys
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from pydantic import ValidationError
@@ -44,7 +50,8 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from common.db import get_engine
 from common.logs import configure_logging
-from etl.collect import STEP, load_declared_sites
+from etl.collect import load_declared_sites
+from etl.grid import STEP, floor_to_step
 from etl.schemas import EnergyReading
 
 logger = logging.getLogger(__name__)
@@ -54,6 +61,21 @@ MAX_IMPUTED_GAP = 5
 
 # Minutes déjà en silver retraitées à chaque exécution
 REPROCESS_MARGIN = timedelta(minutes=10)
+
+# Dernière minute matérialisée quand bronze est en retard : now − SETTLE_DELAY.
+# La collecte range sa mesure sur la minute du passage (horloge locale) et
+# tourne juste avant silver ; on laisse une minute de marge à un passage lent
+# avant de déclarer la minute manquante.
+SETTLE_DELAY = timedelta(minutes=1)
+
+# Minutes écrites au plus par site et par passage, marge de retraitement
+# comprise (le contexte d'imputation, lu mais pas écrit, s'y ajoute). 8 jours :
+# l'amorçage de 7 jours (etl.bootstrap.BOOTSTRAP_DEPTH) et les minutes
+# collectées pendant qu'il tourne passent en un seul passage, soit ~11 500
+# lignes (quelques secondes), bien en deçà de la minute du cron. Au-delà (site
+# réactivé après des mois), le reste est traité aux passages suivants. Doit
+# rester très supérieur à REPROCESS_MARGIN, sinon le rattrapage n'avance pas.
+MAX_MINUTES_PER_RUN = 8 * 24 * 60
 
 # Consommation au-delà de ce multiple de la capacité : capteur aberrant
 MAX_LOAD_RATIO = 2.0
@@ -66,6 +88,8 @@ RANGES: dict[str, tuple[float | None, float | None]] = {
     "temperature_celsius": (-40.0, 60.0),
     "humidity_percent": (0.0, 100.0),
 }
+
+EXIT_ALL_SITES_FAILED = 1
 
 NO_READING = "no_reading"
 REJECTED_READING = "rejected_reading"
@@ -186,12 +210,16 @@ def build_silver_rows(
     grid_end: datetime,
     bronze: dict[datetime, BronzeRow],
     output_from: datetime,
+    output_to: datetime | None = None,
 ) -> tuple[list[dict[str, Any]], list[Rejection]]:
-    """Construit les lignes silver de ``output_from`` à ``grid_end`` (inclus).
+    """Construit les lignes silver de ``output_from`` à ``output_to`` (inclus).
 
-    Les minutes entre ``grid_start`` et ``output_from`` servent de contexte
-    à l'imputation et ne sont pas renvoyées.
+    ``output_to`` vaut ``grid_end`` par défaut. Les minutes entre
+    ``grid_start`` et ``output_from``, et entre ``output_to`` et ``grid_end``,
+    servent de contexte à l'imputation et ne sont pas renvoyées.
     """
+    if output_to is None:
+        output_to = grid_end
     rows: list[dict[str, Any]] = []
     rejections: list[Rejection] = []
     ts = grid_start
@@ -214,33 +242,105 @@ def build_silver_rows(
             None if value is None else round(100 * value / capacite_kw, 2)
         )
 
-    rows = [r for r in rows if r["horodatage"] >= output_from]
-    rejections = [r for r in rejections if r.horodatage >= output_from]
+    rows = [r for r in rows if output_from <= r["horodatage"] <= output_to]
+    rejections = [r for r in rejections if output_from <= r.horodatage <= output_to]
     return rows, rejections
 
 
 def _processing_range(
-    conn: Connection, id_site: str
+    conn: Connection, id_site: str, now: datetime
 ) -> tuple[datetime, datetime] | None:
-    """Période à (re)traiter pour un site, ou None s'il n'y a rien en bronze."""
+    """Période à (re)traiter pour un site, au plus MAX_MINUTES_PER_RUN minutes.
+
+    La période va jusqu'à ``now − SETTLE_DELAY`` même si bronze s'arrête
+    avant, ou n'a encore aucune mesure : une collecte en panne, ou un site
+    jamais collecté, apparaît en silver (``no_reading``) au lieu de rester
+    invisible. Sans bronze ni silver, silver commence à cette minute.
+
+    Silver reste d'un seul tenant, de sa première à sa dernière minute :
+      - cas courant, il avance depuis sa dernière minute (moins la marge de
+        retraitement) ;
+      - si la première mesure de bronze manque en silver, ou n'y est qu'en
+        ``no_reading`` (amorçage relancé après le début de la collecte,
+        ``etl.bootstrap``), il repart de cette mesure. Si elle précède silver
+        de plus d'un passage, il recule d'un passage à la fois, en recouvrant
+        la marge de retraitement au début de silver.
+    Le reste de la période (rattrapage) est traité aux passages suivants.
+
+    Les requêtes passent par les index (id_site, horodatage) et s'arrêtent à
+    la première ligne trouvée : leur coût ne dépend pas du volume du site.
+    """
     sql = text("""
+        WITH b AS (
+            SELECT
+                (
+                    SELECT horodatage FROM bronze.raw_readings
+                    WHERE id_site = :id_site
+                      AND horodatage = date_trunc('minute', horodatage)
+                    ORDER BY horodatage LIMIT 1
+                ) AS bronze_first,
+                (
+                    SELECT horodatage FROM bronze.raw_readings
+                    WHERE id_site = :id_site
+                      AND horodatage = date_trunc('minute', horodatage)
+                    ORDER BY horodatage DESC LIMIT 1
+                ) AS bronze_last
+        )
         SELECT
-            (SELECT MAX(horodatage) FROM silver.silver_readings
+            (SELECT min(horodatage) FROM silver.silver_readings
+             WHERE id_site = :id_site) AS silver_first,
+            (SELECT max(horodatage) FROM silver.silver_readings
              WHERE id_site = :id_site) AS silver_last,
-            MIN(horodatage) AS bronze_first,
-            MAX(horodatage) AS bronze_last
-        FROM bronze.raw_readings
-        WHERE id_site = :id_site
-          AND horodatage = date_trunc('minute', horodatage)
+            b.bronze_first,
+            b.bronze_last,
+            EXISTS (
+                SELECT 1 FROM silver.silver_readings AS s
+                WHERE s.id_site = :id_site
+                  AND s.horodatage = b.bronze_first
+                  AND s.bronze_id IS NOT NULL
+            ) AS bronze_first_in_silver
+        FROM b
     """)
     r = conn.execute(sql, {"id_site": id_site}).one()
-    if r.bronze_last is None:
+    run = (MAX_MINUTES_PER_RUN - 1) * STEP
+    target = floor_to_step(now - SETTLE_DELAY)
+    if r.bronze_last is not None:
+        target = max(target, r.bronze_last)
+
+    if r.silver_last is None:
+        start = r.bronze_first if r.bronze_first is not None else target
+    elif (
+        r.bronze_first is not None
+        and r.bronze_first <= r.silver_last
+        and not r.bronze_first_in_silver
+    ):
+        # Recul d'un passage au plus, en gardant la marge sur le début de
+        # silver : la fin de la période (start + run) recouvre silver_first
+        start = max(r.bronze_first, r.silver_first - run + REPROCESS_MARGIN)
+        if start > r.bronze_first:
+            logger.info(
+                "site %s : rattrapage de l'historique, silver recule à %s "
+                "(bronze commence à %s)",
+                id_site,
+                start.isoformat(timespec="minutes"),
+                r.bronze_first.isoformat(timespec="minutes"),
+            )
+    else:
+        start = max(r.silver_last - REPROCESS_MARGIN, r.silver_first)
+
+    end = min(target, start + run)
+    # Dernière minute de silver après ce passage
+    front = end if r.silver_last is None else max(r.silver_last, end)
+    if front < target:
+        logger.info(
+            "site %s : rattrapage, silver à jour jusqu'à %s (retard %s)",
+            id_site,
+            front.isoformat(timespec="minutes"),
+            target - front,
+        )
+    if start > end:
         return None
-    start = r.silver_last - REPROCESS_MARGIN if r.silver_last else r.bronze_first
-    start = max(start, r.bronze_first)
-    if start > r.bronze_last:
-        return None
-    return start, r.bronze_last
+    return start, end
 
 
 def _load_bronze(
@@ -301,16 +401,26 @@ UPSERT_REJECTION = text("""
 """)
 
 
-def transform_site(conn: Connection, id_site: str, capacite_kw: float) -> int:
+def transform_site(
+    conn: Connection, id_site: str, capacite_kw: float, now: datetime
+) -> int:
     """Met à jour silver pour un site. Retourne le nombre de lignes écrites."""
-    period = _processing_range(conn, id_site)
+    period = _processing_range(conn, id_site, now)
     if period is None:
         return 0
     start, end = period
-    context_start = start - (MAX_IMPUTED_GAP + 1) * STEP
-    bronze = _load_bronze(conn, id_site, context_start, end)
+    # Contexte d'imputation des deux côtés : la fin de la période peut être
+    # suivie de minutes déjà en silver (rattrapage de l'historique)
+    context = (MAX_IMPUTED_GAP + 1) * STEP
+    bronze = _load_bronze(conn, id_site, start - context, end + context)
     rows, rejections = build_silver_rows(
-        id_site, capacite_kw, context_start, end, bronze, output_from=start
+        id_site,
+        capacite_kw,
+        start - context,
+        end + context,
+        bronze,
+        output_from=start,
+        output_to=end,
     )
     if rows:
         conn.execute(UPSERT_SILVER, rows)
@@ -333,8 +443,9 @@ def transform_site(conn: Connection, id_site: str, capacite_kw: float) -> int:
     return len(rows)
 
 
-def transform() -> dict[str, int]:
+def transform(now: datetime | None = None) -> dict[str, int]:
     """Transforme bronze → silver pour tous les sites actifs déclarés."""
+    now = now or datetime.now(tz=UTC)
     with get_engine().connect() as conn:
         declared = load_declared_sites(conn)
 
@@ -343,13 +454,23 @@ def transform() -> dict[str, int]:
         # Une transaction par site : un site en erreur n'annule pas les autres
         try:
             with get_engine().begin() as conn:
-                n = transform_site(conn, id_site, capacite_kw)
+                n = transform_site(conn, id_site, capacite_kw, now)
         except SQLAlchemyError as exc:
             logger.error("site %s : échec de la transformation — %s", id_site, exc)
             sites_in_error += 1
             continue
+        except Exception:
+            # Une erreur imprévue sur un site n'arrête pas les autres
+            logger.exception("site %s : erreur inattendue", id_site)
+            sites_in_error += 1
+            continue
         logger.info("site=%s : %d ligne(s) silver écrites", id_site, n)
         total += n
+
+    # Tous les sites en échec : code non nul pour que l'ordonnanceur le voie
+    if declared and sites_in_error == len(declared):
+        logger.error("tous les sites ont échoué — exit %d", EXIT_ALL_SITES_FAILED)
+        sys.exit(EXIT_ALL_SITES_FAILED)
     return {
         "sites": len(declared),
         "rows_written": total,

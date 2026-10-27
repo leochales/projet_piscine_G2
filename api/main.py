@@ -1,10 +1,19 @@
 """Point d'entrée de l'API métier EnerVision."""
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
 
-from api.routers import health, mesures
+from api.auth import REPONSES_AUTH, ROLES_METIER, exiger_role, utilisateur_courant
+from api.routers import (
+    alertes,
+    health,
+    mesures,
+    predictions,
+    recommandations,
+    utilisateurs,
+)
+from api.routers.parametres import REPONSE_PARAMETRES, refuser_parametres_inconnus
 from common.config import get_settings
 from common.logs import configure_logging
 
@@ -29,8 +38,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(health.router, prefix=API_PREFIX)
-app.include_router(mesures.router, prefix=API_PREFIX)
+# /api/health reste public : Docker, Traefik et la supervision l'appellent sans jeton.
+# Tout autre routeur ajouté ici doit exiger un jeton : exiger_role, ou utilisateur_courant
+# pour /api/moi (test_auth.py vérifie qu'aucune route /api n'est ouverte par erreur).
+# Sur chaque route, un paramètre de requête inconnu est refusé (422) ; vérifié après le
+# jeton, pour qu'une requête sans jeton reçoive toujours 401.
+REFUS_PARAMETRES = Depends(refuser_parametres_inconnus)
+
+app.include_router(
+    health.router,
+    prefix=API_PREFIX,
+    dependencies=[REFUS_PARAMETRES],
+    responses=REPONSE_PARAMETRES,
+)
+# Données du dashboard, en lecture : ouvertes aux 4 rôles métier (pas à MONITORING seul)
+for routeur in (mesures, predictions, alertes, recommandations):
+    app.include_router(
+        routeur.router,
+        prefix=API_PREFIX,
+        dependencies=[Depends(exiger_role(*ROLES_METIER)), REFUS_PARAMETRES],
+        responses=REPONSES_AUTH | REPONSE_PARAMETRES,
+    )
+# Utilisateur connecté : tout compte rattaché, quel que soit son rôle. utilisateur_courant
+# exige le jeton (avant le refus des paramètres inconnus, comme exiger_role ailleurs)
+app.include_router(
+    utilisateurs.router,
+    prefix=API_PREFIX,
+    dependencies=[Depends(utilisateur_courant), REFUS_PARAMETRES],
+    responses=REPONSES_AUTH | REPONSE_PARAMETRES,
+)
 
 # Métriques Prometheus sur /metrics, hors de /api : Traefik ne les expose pas,
 # seul Prometheus les lit par le réseau Docker. Absent de Swagger et de Schemathesis.

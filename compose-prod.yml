@@ -64,7 +64,7 @@ services:
       FRONT_DEV_URL: ${FRONT_URL}
       # Servi par Traefik sous /auth, à la même adresse que le front : https://<VM_IP>/auth
       # (prod) ou https://<VM_IP>:8443/auth (dev). L'adresse publique fixe l'émetteur (iss)
-      # des jetons ; l'API joint quand même Keycloak en interne (keycloak:8080/auth).
+      # des jetons ; l'API joint quand même Keycloak en interne (keycloak-<env>:8080/auth).
       KC_HTTP_RELATIVE_PATH: /auth
       KC_HOSTNAME: ${FRONT_URL}/auth
       KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
@@ -74,10 +74,10 @@ services:
       - ./infra/keycloak/realm-enervision.json:/opt/keycloak/data/import/realm-enervision.json:ro
     labels:
       - traefik.enable=true
-      # Seulement le realm enervision (connexion, jetons, clés) et les fichiers des pages.
-      # La console d'administration et le realm master ne sont pas exposés : ils
-      # tombent sur la route du front. Administration avec kcadm (infra/runner.md).
-      - traefik.http.routers.enervision-${DEPLOY_ENV}-auth.rule=PathPrefix(`/auth/realms/enervision`) || PathPrefix(`/auth/resources`)
+      # Tout Keycloak : realm enervision (connexion, jetons, clés), console d'administration
+      # (/auth/admin) et realm master, où se connectent ses administrateurs. Santé et
+      # métriques restent sur le port de gestion (9000), non routé.
+      - traefik.http.routers.enervision-${DEPLOY_ENV}-auth.rule=PathPrefix(`/auth`)
       - traefik.http.routers.enervision-${DEPLOY_ENV}-auth.entrypoints=https-${DEPLOY_ENV}
       - traefik.http.services.enervision-${DEPLOY_ENV}-auth.loadbalancer.server.port=8080
     healthcheck:
@@ -93,8 +93,12 @@ services:
       db:
         condition: service_healthy
     networks:
-      - postgres_network
-      - traefik_public
+      postgres_network:
+        # Nom propre à l'environnement : dev et prod partagent traefik_public, où le
+        # nom « keycloak » désigne les deux Keycloak. L'API utilise cet alias.
+        aliases:
+          - keycloak-${DEPLOY_ENV}
+      traefik_public:
 
   api:
     image: ${IMAGE_REPO:?IMAGE_REPO manquant}/enervision-api:${IMAGE_TAG:?IMAGE_TAG manquant}
@@ -108,6 +112,11 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: api
       POSTGRES_PASSWORD: ${API_DB_PASSWORD}
+      # Émetteur des jetons = adresse publique de Keycloak (même valeur que KC_HOSTNAME)
+      KEYCLOAK_EMETTEUR: ${FRONT_URL}/auth/realms/enervision
+      # Clés de signature lues en interne, sur le Keycloak de CET environnement : pas
+      # « keycloak », ambigu sur traefik_public (partagé par dev et prod)
+      KEYCLOAK_URL_INTERNE: http://keycloak-${DEPLOY_ENV}:8080/auth
     labels:
       - traefik.enable=true
       - traefik.http.routers.enervision-${DEPLOY_ENV}-api.rule=PathPrefix(`/api`)
@@ -116,6 +125,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      keycloak:
+        condition: service_started
     networks:
       - postgres_network
       - traefik_public
@@ -139,6 +150,47 @@ services:
     networks:
       - postgres_network
 
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v3.17.0
+    restart: unless-stopped
+    command: >
+      mlflow server
+      --host 0.0.0.0
+      --port 5000
+      --backend-store-uri sqlite:////mlflow/mlflow.db
+      --artifacts-destination /mlflow/artifacts
+      --serve-artifacts
+      --allowed-hosts mlflow,mlflow:5000,localhost,localhost:5000
+      --static-prefix /mlflow
+    volumes:
+      - mlflow_data:/mlflow
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/mlflow/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      - mlflow_network
+
+  dataset:
+    image: ${IMAGE_REPO:?IMAGE_REPO manquant}/enervision-model:${IMAGE_TAG:?IMAGE_TAG manquant}
+    build:
+      context: .
+      dockerfile: model/Dockerfile
+    profiles: ["jobs"]
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000/mlflow
+      DATASET_RAW_DIR: /data/raw
+      DATASET_OUTPUT_DIR: /data/processed
+    volumes:
+      - ${DATASET_RAW_DIR:-./data/raw}:/data/raw:ro
+      - dataset_data:/data/processed
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    networks:
+      - mlflow_network
+
   front:
     image: ${IMAGE_REPO:?IMAGE_REPO manquant}/enervision-front:${IMAGE_TAG:?IMAGE_TAG manquant}
     build:
@@ -158,9 +210,12 @@ services:
 
 volumes:
   postgresql_data:
+  mlflow_data:
+  dataset_data:
 
 networks:
   postgres_network:
+  mlflow_network:
   # Créé par infra/traefik/compose.yml
   traefik_public:
     external: true

@@ -143,6 +143,9 @@ services:
       POSTGRES_USER: api
       POSTGRES_PASSWORD: ${API_DB_PASSWORD}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Émetteur des jetons = adresse publique de Keycloak (même valeur que KC_HOSTNAME).
+      # Les clés sont lues en interne sur http://keycloak:8080/auth.
+      KEYCLOAK_EMETTEUR: ${FRONT_URL:-http://localhost}/auth/realms/enervision
     labels:
       - traefik.enable=true
       - traefik.http.routers.api.rule=PathPrefix(`/api`)
@@ -151,6 +154,9 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      # Pas besoin d'attendre qu'il soit prêt : les clés sont lues au premier jeton reçu
+      keycloak:
+        condition: service_started
     networks:
       - postgres_network          # accès à la base
       - proxy_network             # joignable par Traefik
@@ -192,6 +198,23 @@ services:
       - traefik.http.routers.mlflow.rule=PathPrefix(`/mlflow`)
       - traefik.http.routers.mlflow.entrypoints=web
       - traefik.http.services.mlflow.loadbalancer.server.port=5000
+    networks:
+      - proxy_network
+
+  dataset:
+    build:
+      context: .
+      dockerfile: model/Dockerfile
+    profiles: ["jobs"]
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000/mlflow
+      DATASET_RAW_DIR: /data/raw
+      DATASET_OUTPUT_DIR: /data/processed
+    volumes:
+      - ./data/raw:/data/raw:ro
+      - ./data/processed:/data/processed
+    depends_on:
+      - mlflow
     networks:
       - proxy_network
 
