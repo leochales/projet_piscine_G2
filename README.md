@@ -70,10 +70,10 @@ Les actions du dashboard (décisions sur les recommandations, prises en compte d
 
 Chaque minute, l'ETL crée les alertes dans `gold.alerte` (`source = 'etl'`, `db/16_gold_alertes.sql`, appelé par `etl/gold_alerts.py`) :
 
-- **Pic de consommation** (`threshold`) : il commence après 3 mesures consécutives au seuil du site ou plus, et se termine après 3 mesures sous ce seuil. Il passe en `critical` si le maximum atteint vaut 110 % de la capacité ou plus, sinon il reste en `high`. Chaque site a son seuil, en % de sa capacité, dans `app.site.seuil_alerte_pct` : 100 % pour les datacenters, 98 % pour les usines et 90 % pour les autres sites au départ. Un nouveau site créé sans seuil reçoit celui de son type. Un seuil modifié ensuite n'est jamais écrasé par une migration.
+- **Pic de consommation** (`threshold`) : il commence après 3 mesures consécutives au seuil du site ou plus, et se termine après 3 mesures sous ce seuil. Il passe en `critical` si le maximum atteint vaut 110 % de la capacité ou plus, sinon il reste en `high`. Il n'a pas de message : le dashboard affiche la valeur atteinte et le seuil. Chaque site a son seuil, en % de sa capacité, dans `app.site.seuil_alerte_pct` : 100 % pour les datacenters, 98 % pour les usines et 90 % pour les autres sites au départ. Un nouveau site créé sans seuil reçoit celui de son type, et si son type est corrigé, son seuil suit, sauf s'il a été réglé à la main. Un seuil modifié n'est jamais écrasé par une migration.
 - **Capteur en panne** (`sensor`, colonne `capteur`) : même règle des 3 minutes. Une panne du capteur de consommation est en `high`, une panne du capteur électrique en `medium`.
 
-Une minute sans mesure ne compte ni pour le début ni pour la fin d'une alerte. Relancer la détection met à jour l'alerte en cours au lieu d'en créer une nouvelle.
+Une minute sans mesure ne compte ni pour le début ni pour la fin d'une alerte, mais plus de 5 minutes sans mesure coupent la série : trois mesures espacées d'une heure n'ouvrent pas d'alerte. Relancer la détection met à jour l'alerte en cours au lieu d'en créer une nouvelle, même si son début change (seuil modifié, minute réécrite) : elle garde son identifiant, donc sa prise en compte.
 
 Les tests SQL de `db/tests/` (droits des comptes, actions du dashboard) sont lancés par la CI (`images.yml`, sur la base de la stack de test). En local, sur une base qui tourne :
 

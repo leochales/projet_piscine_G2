@@ -139,6 +139,7 @@ BEGIN
     ASSERT a.seuil = 180, format('seuil : %s', a.seuil);
     ASSERT a.severite = 'critical', format('sévérité : %s', a.severite);
     ASSERT a.source = 'etl' AND a.capteur IS null, 'source etl, sans capteur';
+    ASSERT a.message IS null, format('message : %s', a.message);
 
     SELECT count(*) INTO nb FROM gold.alerte
     WHERE id_site = 'SITE-B' AND type = 'threshold';
@@ -165,6 +166,8 @@ BEGIN
     ASSERT a.debut = '2026-01-01 10:03+00', format('début : %s', a.debut);
     ASSERT a.fin IS null, 'panne toujours en cours';
     ASSERT a.valeur IS null AND a.seuil IS null, 'ni valeur ni seuil';
+    ASSERT a.message = 'Capteur électrique en panne',
+    format('message : %s', a.message);
     RAISE NOTICE 'OK 2 : panne de capteur après 3 minutes, en cours';
 END
 $$;
@@ -445,5 +448,186 @@ BEGIN
     RAISE NOTICE 'OK 11 : seuil d''un nouveau site selon son type';
 END
 $$;
+
+-- 12. Type corrigé : le seuil suit le nouveau type, sauf s'il avait été
+--     réglé à la main ou s'il est donné dans la même requête. Un seuil vidé
+--     reprend celui du type.
+UPDATE app.site SET type = 'datacenter' WHERE id_site = 'SITE-BU';
+UPDATE app.site SET type = 'factory' WHERE id_site = 'SITE-DC2';
+UPDATE app.site SET type = 'office', seuil_alerte_pct = 97
+WHERE id_site = 'SITE-US';
+UPDATE app.site SET seuil_alerte_pct = null WHERE id_site = 'SITE-A';
+
+DO $$
+DECLARE
+    s RECORD;
+BEGIN
+    FOR s IN
+        SELECT id_site, seuil_alerte_pct FROM app.site
+        WHERE id_site IN ('SITE-BU', 'SITE-DC2', 'SITE-US', 'SITE-A')
+    LOOP
+        ASSERT s.seuil_alerte_pct = CASE s.id_site
+            WHEN 'SITE-BU' THEN 100
+            WHEN 'SITE-DC2' THEN 95
+            WHEN 'SITE-US' THEN 97
+            WHEN 'SITE-A' THEN 90
+        END, format('%s : seuil %s', s.id_site, s.seuil_alerte_pct);
+    END LOOP;
+    RAISE NOTICE 'OK 12 : le seuil suit le type, sauf réglé à la main';
+END
+$$;
+
+-- 13. Début décalé : l'alerte en cours garde sa ligne (même identifiant,
+--     donc même prise en compte). SITE-D, seuil 180 kW :
+--     11:00-11:03 à 190 kW, alerte dès 11:00 ; puis une minute de 10:59
+--     arrive en retard (190 kW) : début avancé à 10:59 ; puis 10:59 et
+--     11:00 sont réécrites à 100 kW : début reculé à 11:01.
+-- 14. Trou de plus de 5 minutes : SITE-E à 190 kW à 10:00, 10:30 et 11:00,
+--     pas d'alerte ; puis 11:01 et 11:02 : 3 minutes consécutives, alerte
+--     dès 11:00.
+INSERT INTO app.site (id_site, id_client, nom, type, capacite_kw)
+SELECT
+    v.id_site,
+    c.id_client,
+    v.nom,
+    'office' AS type,  -- noqa: RF04
+    200 AS capacite_kw
+FROM app.client AS c
+CROSS JOIN (
+    VALUES
+    ('SITE-D', 'Site test début décalé'),
+    ('SITE-E', 'Site test trou')
+) AS v (id_site, nom)
+WHERE c.nom = 'Client test alertes';
+
+INSERT INTO silver.silver_readings (
+    id_site, horodatage, consumption_kw_raw, consumption_kw_imputed,
+    imputation_method, data_quality, null_reasons
+)
+SELECT
+    v.id_site,
+    v.horodatage,
+    190 AS consumption_kw_raw,
+    190 AS consumption_kw_imputed,
+    'none' AS imputation_method,
+    'good' AS data_quality,
+    '{}'::TEXT[] AS null_reasons
+FROM (
+    VALUES
+    ('SITE-D', '2026-01-01 11:00+00'::TIMESTAMPTZ),
+    ('SITE-D', '2026-01-01 11:01+00'),
+    ('SITE-D', '2026-01-01 11:02+00'),
+    ('SITE-D', '2026-01-01 11:03+00'),
+    ('SITE-E', '2026-01-01 10:00+00'),
+    ('SITE-E', '2026-01-01 10:30+00'),
+    ('SITE-E', '2026-01-01 11:00+00')
+) AS v (id_site, horodatage);
+
+CREATE TEMPORARY TABLE id_test (id_alerte BIGINT) ON COMMIT DROP;
+GRANT SELECT, INSERT ON id_test TO etl;
+SET ROLE etl;
+
+DO $$
+DECLARE
+    nb BIGINT;
+BEGIN
+    PERFORM gold.detecter_alertes();
+
+    INSERT INTO id_test
+    SELECT id_alerte FROM gold.alerte
+    WHERE id_site = 'SITE-D' AND debut = '2026-01-01 11:00+00' AND fin IS null;
+    SELECT count(*) INTO nb FROM id_test;
+    ASSERT nb = 1, format('alerte de SITE-D attendue à 11:00, %s', nb);
+
+    SELECT count(*) INTO nb FROM gold.alerte WHERE id_site = 'SITE-E';
+    ASSERT nb = 0, format('3 minutes espacées : pas d''alerte, %s', nb);
+END
+$$;
+
+RESET ROLE;
+INSERT INTO silver.silver_readings (
+    id_site, horodatage, consumption_kw_raw, consumption_kw_imputed,
+    imputation_method, data_quality, null_reasons
+)
+VALUES (
+    'SITE-D', '2026-01-01 10:59+00', 190, 190, 'none', 'good', '{}'
+);
+SET ROLE etl;
+
+DO $$
+DECLARE
+    a RECORD;
+    nb BIGINT;
+BEGIN
+    PERFORM gold.detecter_alertes();
+
+    SELECT count(*) INTO nb FROM gold.alerte WHERE id_site = 'SITE-D';
+    ASSERT nb = 1, format('une seule alerte pour SITE-D, %s', nb);
+
+    SELECT * INTO a FROM gold.alerte WHERE id_site = 'SITE-D';
+    ASSERT a.id_alerte = (SELECT id_alerte FROM id_test),
+    'même identifiant après un début avancé';
+    ASSERT a.debut = '2026-01-01 10:59+00', format('début : %s', a.debut);
+    ASSERT a.fin IS null, 'toujours en cours';
+END
+$$;
+
+RESET ROLE;
+UPDATE silver.silver_readings
+SET consumption_kw_raw = 100, consumption_kw_imputed = 100
+WHERE
+    id_site = 'SITE-D'
+    AND horodatage IN ('2026-01-01 10:59+00', '2026-01-01 11:00+00');
+SET ROLE etl;
+
+DO $$
+DECLARE
+    a RECORD;
+    nb BIGINT;
+BEGIN
+    PERFORM gold.detecter_alertes();
+
+    SELECT count(*) INTO nb FROM gold.alerte WHERE id_site = 'SITE-D';
+    ASSERT nb = 1, format('une seule alerte pour SITE-D, %s', nb);
+
+    SELECT * INTO a FROM gold.alerte WHERE id_site = 'SITE-D';
+    ASSERT a.id_alerte = (SELECT id_alerte FROM id_test),
+    'même identifiant après un début reculé';
+    ASSERT a.debut = '2026-01-01 11:01+00', format('début : %s', a.debut);
+    ASSERT a.fin IS null, 'toujours en cours';
+    RAISE NOTICE 'OK 13 : début décalé, même alerte (même identifiant)';
+END
+$$;
+
+RESET ROLE;
+INSERT INTO silver.silver_readings (
+    id_site, horodatage, consumption_kw_raw, consumption_kw_imputed,
+    imputation_method, data_quality, null_reasons
+)
+SELECT
+    'SITE-E' AS id_site,
+    '2026-01-01 11:01+00'::TIMESTAMPTZ + n * INTERVAL '1 minute' AS horodatage,
+    190 AS consumption_kw_raw,
+    190 AS consumption_kw_imputed,
+    'none' AS imputation_method,
+    'good' AS data_quality,
+    '{}'::TEXT[] AS null_reasons
+FROM generate_series(0, 1) AS n;
+SET ROLE etl;
+
+DO $$
+DECLARE
+    a RECORD;
+BEGIN
+    PERFORM gold.detecter_alertes();
+
+    SELECT * INTO a FROM gold.alerte WHERE id_site = 'SITE-E';
+    ASSERT a.debut = '2026-01-01 11:00+00', format('début : %s', a.debut);
+    ASSERT a.fin IS null, 'en cours';
+    RAISE NOTICE 'OK 14 : un trou de plus de 5 minutes coupe la série';
+END
+$$;
+
+RESET ROLE;
 
 ROLLBACK;

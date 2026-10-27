@@ -58,12 +58,24 @@ $$;
 ALTER TABLE app.site
 ALTER COLUMN seuil_alerte_pct DROP DEFAULT;
 
+-- Seuil posé par le déclencheur :
+--   - seuil vide (création ou modification) : celui du type ;
+--   - type corrigé (office → datacenter) : le seuil suit le nouveau type,
+--     sauf s'il avait été réglé à la main (différent de celui de l'ancien
+--     type) ou s'il est modifié dans la même requête.
 CREATE OR REPLACE FUNCTION app.poser_seuil_alerte()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $$
 BEGIN
-    IF NEW.seuil_alerte_pct IS null THEN
+    IF NEW.seuil_alerte_pct IS null
+        OR (
+            TG_OP = 'UPDATE'
+            AND NEW.type IS DISTINCT FROM OLD.type
+            AND NEW.seuil_alerte_pct = OLD.seuil_alerte_pct
+            AND OLD.seuil_alerte_pct = app.seuil_alerte_par_defaut(OLD.type)
+        )
+    THEN
         NEW.seuil_alerte_pct := app.seuil_alerte_par_defaut(NEW.type);
     END IF;
     RETURN NEW;
@@ -71,7 +83,7 @@ END;
 $$;
 
 CREATE OR REPLACE TRIGGER trg_site_seuil_alerte
-BEFORE INSERT ON app.site
+BEFORE INSERT OR UPDATE OF type, seuil_alerte_pct ON app.site
 FOR EACH ROW EXECUTE FUNCTION app.poser_seuil_alerte();
 
 COMMENT ON COLUMN app.site.seuil_alerte_pct IS
@@ -135,7 +147,9 @@ WHERE source = 'etl';
 -- première). Une minute sans information est ignorée, elle ne compte ni dans
 -- un sens ni dans l'autre : consommation nulle pour un seuil, minute non
 -- transmise (no_reading, network_loss) pour un capteur. Un site qui ne
--- transmet plus garde donc son alerte en cours.
+-- transmet plus garde donc son alerte en cours. Mais plus de 5 minutes sans
+-- information coupent la série : trois minutes hautes espacées d'une heure
+-- n'ouvrent pas d'alerte.
 -- Les pannes de capteur de l'API Mock durent presque toutes moins d'une
 -- minute : sans la règle des 3 minutes, il y aurait 58 alertes par jour et
 -- par capteur, contre 0,1.
@@ -148,8 +162,10 @@ WHERE source = 'etl';
 -- début des alertes en cours ou récentes, pour retrouver la même alerte à
 -- chaque passage. Le temps de référence est la dernière minute du site, et
 -- non now() : silver en retard ne ferme rien à tort.
--- Une alerte en cours que le calcul ne retrouve plus (seuil modifié, minute
--- réécrite, site désactivé) est fermée à la dernière minute de son site.
+-- Une alerte en cours dont le début change (seuil modifié, minute réécrite)
+-- garde sa ligne et son identifiant. Une alerte en cours que le calcul ne
+-- retrouve plus (défaut disparu, site désactivé) est fermée à la dernière
+-- minute de son site.
 --
 -- Exécutée avec les droits de l'appelant (compte etl).
 -- Retourne les alertes créées ou modifiées.
@@ -240,8 +256,27 @@ BEGIN
             END
     ),
 
+    troncons AS (
+        -- Plus de 5 minutes sans information coupent la série : trois minutes
+        -- espacées d'une heure ne sont pas « 3 minutes consécutives »
+        SELECT
+            *,
+            count(*) FILTER (WHERE coupure) OVER (
+                PARTITION BY id_site, type, capteur ORDER BY horodatage
+            ) AS troncon
+        FROM (
+            SELECT
+                *,
+                horodatage - lag(horodatage) OVER (
+                    PARTITION BY id_site, type, capteur ORDER BY horodatage
+                ) > INTERVAL '5 minutes' AS coupure
+            FROM minutes
+        ) AS t
+    ),
+
     series AS (
-        -- Suites de minutes consécutives dans le même état (îlots)
+        -- Suites de minutes consécutives dans le même état (îlots), sans
+        -- trou de plus de 5 minutes
         SELECT
             id_site,
             type,
@@ -253,15 +288,16 @@ BEGIN
             SELECT
                 *,
                 row_number() OVER (
-                    PARTITION BY id_site, type, capteur ORDER BY horodatage
+                    PARTITION BY id_site, type, capteur, troncon
+                    ORDER BY horodatage
                 )
                 - row_number() OVER (
-                    PARTITION BY id_site, type, capteur, en_defaut
+                    PARTITION BY id_site, type, capteur, troncon, en_defaut
                     ORDER BY horodatage
                 ) AS ilot
-            FROM minutes
+            FROM troncons
         ) AS x
-        GROUP BY id_site, type, capteur, en_defaut, ilot
+        GROUP BY id_site, type, capteur, troncon, en_defaut, ilot
     ),
 
     franches AS (
@@ -311,7 +347,18 @@ BEGIN
                     AND (a.fin IS null OR m.horodatage < a.fin)
             ) AS valeur,
             u.seuil,
-            u.capacite_kw
+            u.capacite_kw,
+            -- Alerte déjà en base avec le même début
+            (
+                SELECT e.id_alerte
+                FROM gold.alerte AS e
+                WHERE
+                    e.source = 'etl'
+                    AND e.id_site = a.id_site
+                    AND e.type = a.type
+                    AND e.capteur IS NOT DISTINCT FROM a.capteur
+                    AND e.debut = a.debut
+            ) AS id_meme_debut
         FROM alertes AS a
         INNER JOIN suivis AS u
             ON
@@ -320,63 +367,126 @@ BEGIN
                 AND a.capteur IS NOT DISTINCT FROM u.capteur
     ),
 
-    ecrites AS (
-        INSERT INTO gold.alerte AS a (
-            id_site, source, type, capteur, severite, message,
-            debut, fin, valeur, seuil
-        )
+    decalees AS (
+        -- Alerte en cours dont le début a changé (seuil modifié, minute de
+        -- silver réécrite) : elle garde sa ligne, donc son identifiant, sa
+        -- prise en compte et sa recommandation. Rattachée à l'alerte
+        -- recalculée sans ligne qui la recouvre, la plus proche en début ;
+        -- une alerte recalculée ne reprend qu'une ligne.
+        SELECT DISTINCT ON (c.id_site, c.type, c.capteur, c.debut) c.*
+        FROM (
+            SELECT DISTINCT ON (x.id_alerte)
+                x.id_alerte,
+                d.id_site,
+                d.type,
+                d.capteur,
+                d.debut,
+                abs(extract(EPOCH FROM d.debut - x.debut)) AS ecart
+            FROM detail AS d
+            INNER JOIN gold.alerte AS x
+                ON
+                    x.source = 'etl'
+                    AND d.id_site = x.id_site
+                    AND d.type = x.type
+                    AND d.capteur IS NOT DISTINCT FROM x.capteur
+                    AND x.fin IS null
+                    AND (d.fin IS null OR d.fin > x.debut)
+            WHERE
+                d.id_meme_debut IS null
+                AND NOT EXISTS (
+                    SELECT 1 FROM detail AS m
+                    WHERE m.id_meme_debut = x.id_alerte
+                )
+            ORDER BY x.id_alerte, ecart
+        ) AS c
+        ORDER BY c.id_site, c.type, c.capteur, c.debut, c.ecart
+    ),
+
+    cibles AS (
+        -- Ligne à mettre à jour (vide : alerte nouvelle) et valeurs à écrire
         SELECT
             d.id_site,
-            'etl',
             d.type,
             d.capteur,
+            d.debut,
+            d.fin,
+            coalesce(d.id_meme_debut, c.id_alerte) AS id_cible,
             CASE
                 WHEN d.capteur = 'electrical' THEN 'medium'
                 WHEN d.type = 'threshold' AND d.valeur >= d.capacite_kw * 1.1
                     THEN 'critical'
                 ELSE 'high'
-            END,
+            END AS severite,
+            -- Pas de message pour un dépassement : le dashboard affiche
+            -- lui-même la valeur et le seuil, au format français
             CASE
-                WHEN d.type = 'threshold'
-                    THEN format(
-                        'Seuil d''alerte dépassé : jusqu''à %s kW pour un '
-                        'seuil de %s kW',
-                        d.valeur, d.seuil
-                    )
                 WHEN d.capteur = 'consumption'
                     THEN 'Capteur de consommation en panne'
-                ELSE 'Capteur électrique en panne'
-            END,
-            d.debut,
-            d.fin,
+                WHEN d.capteur = 'electrical'
+                    THEN 'Capteur électrique en panne'
+            END AS message,
             -- Valeur et seuil n'ont de sens que pour un dépassement
-            CASE WHEN d.type = 'threshold' THEN d.valeur END,
-            CASE WHEN d.type = 'threshold' THEN d.seuil END
+            CASE WHEN d.type = 'threshold' THEN d.valeur END AS valeur,
+            CASE WHEN d.type = 'threshold' THEN d.seuil END AS seuil
         FROM detail AS d
-        ON CONFLICT (id_site, type, capteur, debut) WHERE source = 'etl'
-        DO UPDATE SET
-            severite = excluded.severite,
-            message = excluded.message,
-            fin = excluded.fin,
-            valeur = excluded.valeur,
-            seuil = excluded.seuil
-        -- Une alerte inchangée n'est pas réécrite (ni comptée)
+        LEFT JOIN decalees AS c
+            ON
+                d.id_site = c.id_site
+                AND d.type = c.type
+                AND d.capteur IS NOT DISTINCT FROM c.capteur
+                AND d.debut = c.debut
+    ),
+
+    modifiees AS (
+        UPDATE gold.alerte AS a
+        SET
+            debut = c.debut,
+            fin = c.fin,
+            severite = c.severite,
+            message = c.message,
+            valeur = c.valeur,
+            seuil = c.seuil
+        FROM cibles AS c
         WHERE
-            (a.severite, a.message, a.fin, a.valeur, a.seuil)
+            a.id_alerte = c.id_cible
+            -- Une alerte inchangée n'est pas réécrite (ni comptée)
+            AND (a.debut, a.fin, a.severite, a.message, a.valeur, a.seuil)
             IS DISTINCT FROM
-            (
-                excluded.severite, excluded.message, excluded.fin,
-                excluded.valeur, excluded.seuil
-            )
+            (c.debut, c.fin, c.severite, c.message, c.valeur, c.seuil)
+        RETURNING a.id_site, a.type, a.capteur, a.debut, a.fin IS null
+    ),
+
+    nouvelles AS (
+        INSERT INTO gold.alerte AS a (
+            id_site, source, type, capteur, severite, message,
+            debut, fin, valeur, seuil
+        )
+        SELECT
+            c.id_site,
+            'etl',
+            c.type,
+            c.capteur,
+            c.severite,
+            c.message,
+            c.debut,
+            c.fin,
+            c.valeur,
+            c.seuil
+        FROM cibles AS c
+        WHERE c.id_cible IS null
+        -- Deux passages en même temps : le second n'écrit rien
+        ON CONFLICT (id_site, type, capteur, debut) WHERE source = 'etl'
+        DO NOTHING
         RETURNING a.id_site, a.type, a.capteur, a.debut, a.fin IS null
     ),
 
     fermees AS (
-        -- Alertes en cours que le calcul ne retrouve plus : début décalé
-        -- (seuil modifié, minute de silver réécrite) ou site qui n'est plus
-        -- actif. Fermées à la dernière minute du site : laissées en cours,
-        -- elles resteraient affichées et élargiraient la fenêtre (depart) à
-        -- chaque passage. Jamais les mêmes lignes que ecrites (NOT EXISTS).
+        -- Alertes en cours que le calcul ne retrouve plus : défaut disparu
+        -- (seuil relevé), site qui n'est plus actif, ou alerte absorbée par
+        -- une plus ancienne (seuil abaissé). Fermées à la dernière minute du
+        -- site : laissées en cours, elles resteraient affichées et
+        -- élargiraient la fenêtre (depart) à chaque passage. Jamais les mêmes
+        -- lignes que modifiees (NOT EXISTS).
         UPDATE gold.alerte AS a
         SET fin = greatest(
             a.debut,
@@ -391,18 +501,15 @@ BEGIN
             AND a.type IN ('threshold', 'sensor')
             AND a.fin IS null
             AND NOT EXISTS (
-                SELECT 1
-                FROM detail AS d
-                WHERE
-                    d.id_site = a.id_site
-                    AND d.type = a.type
-                    AND d.capteur IS NOT DISTINCT FROM a.capteur
-                    AND d.debut = a.debut
+                SELECT 1 FROM cibles AS c
+                WHERE c.id_cible = a.id_alerte
             )
         RETURNING a.id_site, a.type, a.capteur, a.debut, false
     )
 
-    SELECT * FROM ecrites
+    SELECT * FROM modifiees
+    UNION ALL
+    SELECT * FROM nouvelles
     UNION ALL
     SELECT * FROM fermees;
 END;
