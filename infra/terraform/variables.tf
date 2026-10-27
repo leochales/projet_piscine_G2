@@ -7,9 +7,15 @@ variable "allowed_ips" {
     error_message = "Au moins une IP est nécessaire : sans elle, la VM ne peut pas envoyer ses sauvegardes."
   }
 
-  # Azure refuse les plages /31 et /32 dans ip_rules : des adresses seules
+  # Azure refuse les plages /31 et /32 dans ip_rules : des adresses seules,
+  # chaque octet entre 0 et 255
   validation {
-    condition     = alltrue([for ip in var.allowed_ips : can(regex("^(\\d{1,3}\\.){3}\\d{1,3}$", ip))])
+    condition = alltrue([
+      for ip in var.allowed_ips : (
+        can(regex("^(\\d{1,3}\\.){3}\\d{1,3}$", ip))
+        && try(alltrue([for octet in split(".", ip) : tonumber(octet) <= 255]), false)
+      )
+    ])
     error_message = "Chaque entrée doit être une adresse IPv4 seule, sans masque (ex. 203.0.113.10)."
   }
 
@@ -86,8 +92,8 @@ variable "tags" {
   default     = {}
 }
 
-variable "version_cleanup_enabled" {
-  description = "Crée la politique de cycle de vie qui supprime les anciennes versions. Nécessite le droit Microsoft.Storage/storageAccounts/managementPolicies/write"
+variable "versioning_enabled" {
+  description = "Active le versioning des blobs et la politique de cycle de vie qui purge les anciennes versions après retention_days. Nécessite le droit Microsoft.Storage/storageAccounts/managementPolicies/write ; sans lui, mettre false (la suppression réversible reste active)"
   type        = bool
   default     = true
 }

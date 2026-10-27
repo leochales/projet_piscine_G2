@@ -23,9 +23,12 @@ resource "azurerm_storage_account" "main" {
   shared_access_key_enabled = true
 
   blob_properties {
-    # Une sauvegarde écrasée ou supprimée (par erreur ou par un attaquant
-    # qui aurait le SAS) reste récupérable pendant retention_days
-    versioning_enabled = true
+    # Versioning seulement si ses anciennes versions sont purgées (politique de
+    # cycle de vie ci-dessous) : sinon chaque prune de restic les accumulerait sans
+    # limite. restic n'écrase presque jamais un fichier (ils sont nommés par leur
+    # contenu) : la suppression réversible suffit alors à rendre récupérable, pendant
+    # retention_days, une sauvegarde supprimée par erreur ou avec un SAS volé.
+    versioning_enabled = var.versioning_enabled
 
     delete_retention_policy {
       days = var.retention_days
@@ -74,7 +77,7 @@ resource "azurerm_storage_container" "restic" {
 # Les anciennes versions gardées par le versioning sont supprimées après
 # retention_days, sinon chaque prune de restic ferait grossir la facture
 resource "azurerm_storage_management_policy" "main" {
-  count = var.version_cleanup_enabled ? 1 : 0
+  count = var.versioning_enabled ? 1 : 0
 
   storage_account_id = azurerm_storage_account.main.id
 

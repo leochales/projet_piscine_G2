@@ -2,13 +2,11 @@ name: Azure storage check
 
 # Vérifie que le runner de la VM peut écrire dans le stockage Azure des sauvegardes
 # (infra/terraform) : il envoie, relit puis supprime un petit fichier de test.
+# Lancement manuel uniquement (Actions → Azure storage check → Run workflow), comme
+# deploy et dataset. Jamais sur pull_request : le dépôt est public, et une PR venant
+# d'un fork exécuterait sa propre version du workflow sur le runner de la VM.
 on:
   workflow_dispatch:
-  # Lancé aussi sur la PR qui modifie ce workflow, pour le tester avant le merge
-  pull_request:
-    branches: [develop]
-    paths:
-      - ".github/workflows/azure-storage-check.yml"
 
 concurrency:
   group: azure-storage-check-${{ github.ref }}
@@ -52,12 +50,13 @@ jobs:
           url="https://${AZURE_ACCOUNT_NAME}.blob.core.windows.net/${CONTAINER}/check/${GITHUB_RUN_ID}.txt"
           body="test du runner $(hostname) le $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-          code=$(curl -sS -o /tmp/azure-check.out -w '%{http_code}' -X PUT \
+          out="$RUNNER_TEMP/azure-check.out"
+          code=$(curl -sS -o "$out" -w '%{http_code}' -X PUT \
             -H "x-ms-blob-type: BlockBlob" -H "Content-Type: text/plain" \
             --data-binary "$body" "${url}?${AZURE_ACCOUNT_SAS}")
           if [ "$code" != "201" ]; then
             echo "::error::Écriture refusée (HTTP $code). 403 : IP de sortie absente de allowed_ips, ou SAS expiré ou d'un autre conteneur."
-            cat /tmp/azure-check.out
+            cat "$out"
             exit 1
           fi
           echo "Écriture : OK"
