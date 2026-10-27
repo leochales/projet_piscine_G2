@@ -1,7 +1,15 @@
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
-from model.baseline import ajouter_baselines, charger, scores
+from model.baseline import (
+    ajouter_baselines,
+    charger,
+    chemin_par_defaut,
+    scores,
+    scores_reference,
+)
 
 
 def faux_jeu():
@@ -51,3 +59,38 @@ def test_scores_sur_les_valeurs_mesurees_seulement():
     assert resultat["MAE"] == pytest.approx(15)
     assert resultat["RMSE"] == pytest.approx((250) ** 0.5)
     assert resultat["WAPE_%"] == pytest.approx(10)
+
+
+def test_baseline_veille_suit_l_heure_meme_avec_un_trou():
+    """En production, gold peut avoir des trous : 24 lignes ne font plus 24 heures."""
+    df = faux_jeu()
+    heures = pd.date_range("2024-01-01", periods=200, freq="h", tz="UTC")
+    trou = heures[76]
+    df = df[~((df["id_site"] == "SITE001") & (df["heure"] == trou))]
+    df = ajouter_baselines(df.sort_values(["id_site", "heure"], ignore_index=True))
+    site1 = df[df["id_site"] == "SITE001"].set_index("heure")
+    # La veille de l'heure 100 est l'heure manquante : pas de prévision
+    assert pd.isna(site1.loc[heures[100], "baseline_veille"])
+    # L'heure 101 prend bien l'heure 77, et non la 78 comme un décalage de 24 lignes
+    assert site1.loc[heures[101], "baseline_veille"] == 77
+    assert site1.loc[heures[180], "baseline_semaine"] == 12
+
+
+def test_chemin_par_defaut_suit_dataset_output_dir(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATASET_OUTPUT_DIR", str(tmp_path))
+    assert chemin_par_defaut() == tmp_path / "dataset.parquet"
+    monkeypatch.delenv("DATASET_OUTPUT_DIR")
+    assert chemin_par_defaut() == Path("data/processed/dataset.parquet")
+
+
+def test_scores_reference_sur_le_jeu_demande():
+    df = faux_jeu()
+    df["consommation_kwh_brute"] = df["moyenne_kw"]
+    df["jeu"] = "entrainement"
+    df.loc[df["heure"] >= df["heure"].min() + pd.Timedelta(hours=190), "jeu"] = "test"
+    resultat = scores_reference(df, jeu="test")
+    # Consommation qui monte d'1 kWh par heure : la veille se trompe de 24 partout,
+    # y compris sur les premières heures du test (valeurs passées prises avant)
+    assert set(resultat) == {"baseline_veille", "baseline_semaine"}
+    assert resultat["baseline_veille"]["MAE"] == pytest.approx(24)
+    assert resultat["baseline_semaine"]["MAE"] == pytest.approx(168)
