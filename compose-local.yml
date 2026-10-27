@@ -256,6 +256,24 @@ services:
     networks:
       - proxy_network
 
+  # Entraînement du modèle et enregistrement dans MLflow (SMARTOPS-32), à lancer à la
+  # main après le service dataset : docker compose -f compose-local.yml run --rm --build entrainement
+  entrainement:
+    build:
+      context: .
+      dockerfile: model/Dockerfile
+    profiles: ["jobs"]
+    command: ["python", "-m", "model.entrainement"]
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000/mlflow
+      DATASET_OUTPUT_DIR: /data/processed
+    volumes:
+      - ./data/processed:/data/processed:ro
+    depends_on:
+      - mlflow
+    networks:
+      - proxy_network
+
   front:
     build:
       context: ./front

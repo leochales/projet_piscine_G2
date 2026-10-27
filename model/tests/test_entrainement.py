@@ -9,7 +9,9 @@ from model.entrainement import (
     ajouter_previsions,
     entrainer,
     entrainer_horizon,
+    entrainer_modele_final,
     garder_sites_connus,
+    lire_empreinte,
     main,
     preparer,
     prevoir_kwh,
@@ -157,10 +159,14 @@ def test_bat_la_reference_sur_un_motif_simple(horizon):
     # Choix fait sur la validation : le modèle retenu y a le plus petit WAPE
     wape_validation = r.validation.loc[["ridge", "random_forest"], "WAPE_%"]
     assert r.meilleur == wape_validation.idxmin()
-    # Sur le test, le modèle retenu fait mieux que la référence, sur chaque site
+    # Règle de SMARTOPS-30, décidée sur la validation
+    assert r.bat_reference
+    assert (
+        r.validation.loc[r.meilleur, "WAPE_%"] < r.validation.loc[REFERENCE, "WAPE_%"]
+    )
+    # Sur le test, le modèle retenu fait aussi mieux que la référence, sur chaque site
     references = ["baseline_veille", REFERENCE] if horizon == 24 else [REFERENCE]
     assert list(r.test.index) == [*references, r.meilleur]
-    assert r.bat_reference
     assert r.test.loc[r.meilleur, "WAPE_%"] < r.test.loc[REFERENCE, "WAPE_%"]
     assert (r.par_site[r.meilleur] < r.par_site[REFERENCE]).all()
     assert list(r.par_site.index) == ["SITE001", "SITE002"]
@@ -196,7 +202,33 @@ def test_main_moyennes_sur_l_entrainement_seulement(monkeypatch, tmp_path):
         return moyennes_par_site(train)
 
     monkeypatch.setattr(entrainement, "moyennes_par_site", moyennes_espion)
-    resultats = main(["--chemin", str(chemin)])
+    resultats = main(["--chemin", str(chemin), "--sans-mlflow"])
     assert jeux_vus == ["entrainement"]
     assert len(resultats) == 2
     assert all(r.bat_reference for r in resultats)
+
+
+def test_main_exige_l_adresse_de_mlflow(monkeypatch, tmp_path):
+    monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+    with pytest.raises(SystemExit):
+        main(["--chemin", str(tmp_path / "dataset.parquet")])
+
+
+def test_modele_final_entraine_sur_toutes_les_donnees(monkeypatch):
+    """Une fois le choix fait, le modèle de production apprend aussi la validation et
+    le test, avec des moyennes par site recalculées sur toutes les données."""
+    espion = ModeleEspion()
+    monkeypatch.setattr(entrainement, "creer_modeles", lambda: {"espion": espion})
+    df = faux_jeu()
+    modele, moyennes = entrainer_modele_final(df, 24, "espion")
+    assert modele is espion
+    jeux_vus = set(df.loc[espion.lignes_vues, "jeu"])
+    assert jeux_vus == {"entrainement", "validation", "test"}
+    pd.testing.assert_series_equal(moyennes, moyennes_par_site(df))
+
+
+def test_lire_empreinte(tmp_path):
+    chemin = tmp_path / "dataset.parquet"
+    assert lire_empreinte(chemin) == "inconnue"
+    (tmp_path / "rapport_qualite.json").write_text('{"empreinte": "abc123"}')
+    assert lire_empreinte(chemin) == "abc123"
