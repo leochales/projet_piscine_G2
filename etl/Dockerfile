@@ -1,6 +1,7 @@
 # ETL : script Python lancé par cron (supercronic, pensé pour les conteneurs)
 # Contexte de build = racine du dépôt, pour embarquer common/ (code partagé)
 
+# --- supercronic : début du bloc commun à etl/Dockerfile et backup/Dockerfile ---
 # supercronic : cron sans démon, lit les variables d'environnement et logue sur stdout.
 # ADD --checksum vérifie l'empreinte du binaire (release v0.2.50) sans apt ni curl.
 # Une étape par architecture : --checksum ne peut pas être conditionnel.
@@ -17,6 +18,7 @@ ADD --checksum=sha256:a1c0af9872e8de89a1ce5c1b596e26c42917d5a2cf914d98faee2e2815
 # DL3006 : faux positif, c'est l'une de nos étapes ci-dessus, pas une image externe
 # hadolint ignore=DL3006
 FROM supercronic-${TARGETARCH:-amd64} AS supercronic
+# --- supercronic : fin du bloc commun (vérifié par infra/pre-commit/check_supercronic.py) ---
 
 FROM python:3.14-slim
 

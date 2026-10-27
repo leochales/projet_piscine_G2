@@ -150,6 +150,33 @@ services:
     networks:
       - postgres_network
 
+  # Sauvegarde nocturne chiffrée des bases enervision et keycloak vers le stockage
+  # Azure (infra/terraform), un conteneur restic-<DEPLOY_ENV> par environnement
+  backup:
+    image: ${IMAGE_REPO:?IMAGE_REPO manquant}/enervision-backup:${IMAGE_TAG:?IMAGE_TAG manquant}
+    build:
+      context: .
+      dockerfile: backup/Dockerfile
+    restart: unless-stopped
+    environment:
+      # Obligatoire : backup.sh en déduit le seul dépôt accepté (azure:restic-<env>:/)
+      DEPLOY_ENV: ${DEPLOY_ENV:?DEPLOY_ENV manquant (dev ou prod)}
+      PGHOST: db
+      PGUSER: backup
+      PGPASSWORD: ${BACKUP_DB_PASSWORD}
+      RESTIC_REPOSITORY: azure:restic-${DEPLOY_ENV}:/
+      RESTIC_PASSWORD: ${RESTIC_PASSWORD}
+      AZURE_ACCOUNT_NAME: ${AZURE_ACCOUNT_NAME}
+      AZURE_ACCOUNT_SAS: ${AZURE_ACCOUNT_SAS}
+    volumes:
+      # Cache des index restic : évite de les retélécharger depuis Azure à chaque nuit
+      - backup_cache:/home/backup/.cache/restic
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - postgres_network
+
   mlflow:
     image: ghcr.io/mlflow/mlflow:v3.17.0
     restart: unless-stopped
@@ -212,6 +239,7 @@ volumes:
   postgresql_data:
   mlflow_data:
   dataset_data:
+  backup_cache:
 
 networks:
   postgres_network:

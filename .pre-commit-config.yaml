@@ -67,6 +67,15 @@ repos:
   # ---------------------------------------------------------------
   - repo: local
     hooks:
+      # supercronic est téléchargé dans chaque Dockerfile qui l'utilise (etl, backup…) :
+      # les blocs (version, empreintes) doivent rester identiques
+      - id: supercronic-identique
+        name: bloc supercronic identique (Dockerfiles)
+        entry: python infra/pre-commit/check_supercronic.py
+        language: python
+        files: (^|/)Dockerfile[^/]*$|^infra/pre-commit/check_supercronic\.py$
+        pass_filenames: false
+
       # Front Vue 3 : scripts définis dans front/package.json
       # (générés par "npm create vue" : lint, format, type-check, test:unit)
       - id: front-lint

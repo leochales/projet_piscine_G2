@@ -1,0 +1,10 @@
+# Planning de la sauvegarde (format cron : minute heure jour mois jour-de-semaine commande)
+# L'heure est celle du conteneur : UTC (2 h UTC = 3 h ou 4 h à Paris).
+#
+# Du lundi au samedi : dump des bases, envoi chiffré par restic, puis forget
+0 2 * * 1-6 /app/backup.sh
+#
+# Le dimanche : la même chose, puis prune et restic check, à la suite dans le même job
+# (jamais deux commandes restic en même temps sur le dépôt). supercronic ne relance pas
+# un job encore en cours.
+0 2 * * 0 /app/backup.sh hebdo

@@ -1,6 +1,6 @@
 name: Images
 
-# Construit api, etl, front et model une seule fois, teste la stack de prod complète avec ces
+# Construit api, etl, front, model et backup une seule fois, teste la stack de prod complète avec ces
 # images (Traefik + compose-prod.yml, scripts db/ compris), les scanne avec Trivy, puis,
 # appelé par deploy.yml avec push: true, les publie sur GHCR taguées par le SHA du commit.
 # La VM déploie ensuite exactement ces images (docker compose pull), sans les reconstruire.
@@ -47,6 +47,8 @@ jobs:
       KEYCLOAK_ADMIN_PASSWORD: ci-keycloak-admin
       KEYCLOAK_DB_PASSWORD: ci-keycloak
       KEYCLOAK_ADMIN_CLIENT_SECRET: ci-keycloak-client
+      # Sauvegarde : testée dans un dépôt local du conteneur, pas sur Azure
+      RESTIC_PASSWORD: ci-restic
       FRONT_URL: https://localhost:8443
     steps:
       # Pas de jeton dans .git/config : le job a packages: write et exécute le code de la PR
@@ -69,7 +71,7 @@ jobs:
         with:
           source: .
           files: compose-prod.yml
-          targets: api,etl,front,dataset
+          targets: api,etl,front,dataset,backup
           load: true
           set: |
             *.pull=true
@@ -83,6 +85,8 @@ jobs:
             front.cache-to=type=gha,scope=front,mode=max
             dataset.cache-from=type=gha,scope=model
             dataset.cache-to=type=gha,scope=model,mode=max
+            backup.cache-from=type=gha,scope=backup
+            backup.cache-to=type=gha,scope=backup,mode=max
             front.args.MAJ_SECURITE=${{ github.run_id }}-${{ github.run_attempt }}
 
       - uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
@@ -101,7 +105,7 @@ jobs:
           echo "TRIVY_DIR=$dir" >> "$GITHUB_ENV"
           (
             failed=""
-            for service in api etl front model; do
+            for service in api etl front model backup; do
               trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 \
                 --format table --ignorefile .trivyignore --skip-version-check \
                 "$IMAGE_REPO/enervision-$service:$IMAGE_TAG" > "$dir/$service.log" 2>&1 \
@@ -173,6 +177,40 @@ jobs:
           docker compose -f compose-prod.yml exec -T etl supercronic -test etl/crontab
           [ -n "$(docker compose -f compose-prod.yml ps etl --status running -q)" ] \
             || { echo "::error::Le conteneur etl n'est pas démarré"; exit 1; }
+          # Sauvegarde : planning valide, puis une sauvegarde complète dans un dépôt local
+          # du conteneur (le compte backup doit pouvoir lire les bases enervision et keycloak)
+          docker compose -f compose-prod.yml exec -T backup supercronic -test /app/crontab
+          # Environnement ci : hors de dev et prod, le script accepte un dépôt local (/tmp du
+          # conteneur). Mode hebdo : prune et restic check sont testés aussi.
+          docker compose -f compose-prod.yml exec -T -e DEPLOY_ENV=ci -e RESTIC_REPOSITORY=/tmp/repo \
+            backup /app/backup.sh hebdo
+          snapshots=$(docker compose -f compose-prod.yml exec -T -e RESTIC_REPOSITORY=/tmp/repo backup \
+            restic snapshots --json | jq -r '[.[].tags[]] | sort | join(" ")')
+          [ "$snapshots" = "enervision keycloak" ] \
+            || { echo "::error::Snapshots inattendus : '$snapshots'"; exit 1; }
+          # Garde-fou de backup.sh, dans la configuration de la VM (DEPLOY_ENV=dev). Sans
+          # compte Azure en CI, backup.sh échoue toujours : on vérifie qu'il échoue à la
+          # bonne étape, d'après son message.
+          echec_attendu() {
+            message=$1
+            shift
+            if output=$(docker compose -f compose-prod.yml exec -T "$@" backup /app/backup.sh 2>&1); then
+              echo "::error::backup.sh aurait dû échouer ($*)"
+              exit 1
+            fi
+            echo "$output" | grep -qF "$message" \
+              || { echo "::error::Échec à une autre étape que prévu ($*) : $output"; exit 1; }
+          }
+          # Refusés par le garde-fou : tout dépôt autre que azure:restic-dev:/
+          echec_attendu "Dépôt restic refusé" -e RESTIC_REPOSITORY=/tmp/repo
+          echec_attendu "Dépôt restic refusé" -e RESTIC_REPOSITORY=azure:restic-prod:/
+          echec_attendu "DEPLOY_ENV manquant" -e DEPLOY_ENV=
+          # Accepté : le dépôt de compose-prod.yml (azure:restic-dev:/) passe le garde-fou,
+          # et la sauvegarde ne s'arrête qu'à l'ouverture du dépôt, faute de compte Azure
+          # (aucune requête réseau). Un motif trop strict bloquerait sinon toutes les nuits.
+          # Message de backup.sh, écrit seulement après le garde-fou : une nouvelle version
+          # de restic qui reformule ses erreurs ne fait pas échouer ce test.
+          echec_attendu "Dépôt restic injoignable" -e AZURE_ACCOUNT_NAME=
 
       # Job du jeu d'entraînement (profil jobs), sur un petit CSV généré : image du modèle,
       # montage des données brutes et enregistrement dans le MLflow de la stack
@@ -307,7 +345,7 @@ jobs:
             echo "::error::Les scans Trivy n'ont pas fini en 5 minutes"
             exit 1
           fi
-          for service in api etl front model; do
+          for service in api etl front model backup; do
             echo "::group::Trivy - $service"
             cat "$TRIVY_DIR/$service.log"
             echo "::endgroup::"
@@ -326,41 +364,4 @@ jobs:
         run: |
           echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           trap 'docker logout ghcr.io >/dev/null' EXIT
-          docker compose -f compose-prod.yml push api etl front dataset
-
-      # GHCR est gratuit « pour l'instant » : on ne garde que les 20 dernières versions
-      - name: Purger les anciennes versions (api)
-        if: inputs.push
-        continue-on-error: true
-        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
-        with:
-          package-name: enervision-api
-          package-type: container
-          min-versions-to-keep: 20
-
-      - name: Purger les anciennes versions (etl)
-        if: inputs.push
-        continue-on-error: true
-        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
-        with:
-          package-name: enervision-etl
-          package-type: container
-          min-versions-to-keep: 20
-
-      - name: Purger les anciennes versions (front)
-        if: inputs.push
-        continue-on-error: true
-        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
-        with:
-          package-name: enervision-front
-          package-type: container
-          min-versions-to-keep: 20
-
-      - name: Purger les anciennes versions (model)
-        if: inputs.push
-        continue-on-error: true
-        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
-        with:
-          package-name: enervision-model
-          package-type: container
-          min-versions-to-keep: 20
+          docker compose -f compose-prod.yml push api etl front dataset backup
