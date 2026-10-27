@@ -411,7 +411,11 @@ BEGIN
     EXCEPTION WHEN check_violation THEN
         NULL;  -- refus attendu
     END;
-    RAISE NOTICE 'OK 10 : capteur obligatoire pour sensor, interdit sinon';
+    -- Les autres sources ne donnent pas de capteur
+    INSERT INTO gold.alerte (id_site, source, type, severite, debut)
+    VALUES ('SITE-A', 'modele', 'sensor', 'high', now());
+    DELETE FROM gold.alerte WHERE source = 'modele';
+    RAISE NOTICE 'OK 10 : capteur obligatoire pour sensor (ETL), interdit sinon';
 END
 $$;
 
@@ -846,6 +850,139 @@ BEGIN
     ASSERT a.valeur = 210, format('valeur : %s', a.valeur);
     ASSERT a.seuil = 180, format('seuil : %s', a.seuil);
     RAISE NOTICE 'OK 18 : seuil relevé, l''alerte garde le seuil qui l''a ouverte';
+END
+$$;
+
+RESET ROLE;
+
+-- 19. Mesures refusées (rejected_reading) : ne disent rien du capteur.
+--     SITE-F, capteur de consommation en panne à 10:00, 10:01, 10:05 ;
+--     10:02-10:04 refusées : ignorées, alerte dès 10:00.
+-- 20. Lignes qui se chevauchent et seuil relevé : SITE-F en cours depuis
+--     10:00 (L), et une ligne terminée de 10:10 à 10:15 (L2). Le calcul
+--     donne une alerte de 10:10 à 10:15 et une de 10:20, en cours. L préfère
+--     l'alerte de 10:10 (la plus proche), déjà reprise par L2 : au second
+--     tour, L reprend l'alerte de 10:20 et garde son identifiant (et son
+--     début, L2 commençant entre les deux).
+-- 21. Site sans plus aucune minute dans silver : son alerte en cours est
+--     fermée maintenant, et non avec une durée nulle.
+INSERT INTO app.site (id_site, id_client, nom, type, capacite_kw)
+SELECT 'SITE-F', c.id_client, 'Site test rattachement', 'office', 200
+FROM app.client AS c
+WHERE c.nom = 'Client test alertes';
+
+INSERT INTO silver.silver_readings (
+    id_site, horodatage, consumption_kw_raw, consumption_kw_imputed,
+    imputation_method, data_quality, null_reasons
+)
+SELECT
+    'SITE-F' AS id_site,
+    '2026-01-01 10:00+00'::TIMESTAMPTZ + n * INTERVAL '1 minute' AS horodatage,
+    null AS consumption_kw_raw,
+    190 AS consumption_kw_imputed,
+    'none' AS imputation_method,
+    'partial' AS data_quality,
+    CASE
+        WHEN n BETWEEN 2 AND 4 THEN '{rejected_reading}'
+        ELSE '{consumption_sensor_failure}'
+    END::TEXT[] AS null_reasons
+FROM generate_series(0, 5) AS n;
+SET ROLE etl;
+
+DO $$
+DECLARE
+    a RECORD;
+BEGIN
+    PERFORM gold.detecter_alertes();
+
+    SELECT * INTO a FROM gold.alerte
+    WHERE id_site = 'SITE-F' AND capteur = 'consumption';
+    ASSERT a.debut = '2026-01-01 10:00+00', format('début : %s', a.debut);
+    ASSERT a.fin IS null, 'panne en cours';
+    RAISE NOTICE 'OK 19 : mesures refusées ignorées pour un capteur';
+END
+$$;
+
+RESET ROLE;
+DELETE FROM gold.alerte WHERE id_site = 'SITE-F';
+DELETE FROM silver.silver_readings WHERE id_site = 'SITE-F';
+
+-- Seuil de SITE-F : 180 kW. 10:00-10:09 à 100 kW, 10:10-10:14 à 190 kW,
+-- 10:15-10:19 à 100 kW, 10:20-10:25 à 190 kW
+INSERT INTO silver.silver_readings (
+    id_site, horodatage, consumption_kw_raw, consumption_kw_imputed,
+    imputation_method, data_quality, null_reasons
+)
+SELECT
+    'SITE-F' AS id_site,
+    '2026-01-01 10:00+00'::TIMESTAMPTZ + n * INTERVAL '1 minute' AS horodatage,
+    v.kw AS consumption_kw_raw,
+    v.kw AS consumption_kw_imputed,
+    'none' AS imputation_method,
+    'good' AS data_quality,
+    '{}'::TEXT[] AS null_reasons
+FROM generate_series(0, 25) AS n
+CROSS JOIN LATERAL (
+    SELECT
+        CASE
+            WHEN n BETWEEN 10 AND 14 OR n >= 20 THEN 190 ELSE 100
+        END AS kw
+) AS v;
+
+INSERT INTO gold.alerte (
+    id_site, source, type, severite, debut, fin, valeur, seuil
+)
+VALUES
+('SITE-F', 'etl', 'threshold', 'high', '2026-01-01 10:00+00', null, 190, 90),
+(
+    'SITE-F', 'etl', 'threshold', 'high',
+    '2026-01-01 10:10+00', '2026-01-01 10:15+00', 190, 180
+);
+
+DELETE FROM id_test;
+INSERT INTO id_test
+SELECT id_alerte FROM gold.alerte
+WHERE id_site = 'SITE-F' AND fin IS null;
+SET ROLE etl;
+
+DO $$
+DECLARE
+    a RECORD;
+    nb BIGINT;
+BEGIN
+    PERFORM gold.detecter_alertes();
+
+    SELECT count(*) INTO nb FROM gold.alerte WHERE id_site = 'SITE-F';
+    ASSERT nb = 2, format('deux alertes pour SITE-F, %s', nb);
+
+    SELECT * INTO a FROM gold.alerte
+    WHERE id_site = 'SITE-F' AND fin IS null;
+    ASSERT a.id_alerte = (SELECT id_alerte FROM id_test), 'même identifiant';
+    ASSERT a.debut = '2026-01-01 10:00+00', format('début : %s', a.debut);
+
+    SELECT * INTO a FROM gold.alerte
+    WHERE id_site = 'SITE-F' AND fin IS NOT null;
+    ASSERT a.debut = '2026-01-01 10:10+00'
+    AND a.fin = '2026-01-01 10:15+00',
+    format('alerte terminée : %s - %s', a.debut, a.fin);
+    RAISE NOTICE 'OK 20 : second tour, la ligne en cours garde son identifiant';
+END
+$$;
+
+RESET ROLE;
+DELETE FROM silver.silver_readings WHERE id_site = 'SITE-F';
+SET ROLE etl;
+
+DO $$
+DECLARE
+    a RECORD;
+BEGIN
+    PERFORM gold.detecter_alertes();
+
+    SELECT * INTO a FROM gold.alerte
+    WHERE id_site = 'SITE-F' AND debut = '2026-01-01 10:00+00';
+    ASSERT a.fin = now(), format('fin : %s', a.fin);
+    RAISE NOTICE 'OK 21 : site sans silver, alerte fermée maintenant';
 END
 $$;
 

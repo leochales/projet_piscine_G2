@@ -28,8 +28,9 @@ from common.logs import configure_logging
 logger = logging.getLogger(__name__)
 
 
-def upsert_alerts(conn: Connection) -> list[Any]:
-    """Crée ou met à jour les alertes. Retourne les alertes écrites."""
+def run_detection(conn: Connection) -> list[Any]:
+    """Lance gold.detecter_alertes(), qui écrit les alertes en SQL. Retourne
+    les alertes créées, modifiées ou fermées."""
     sql = text(
         "SELECT id_site, type, capteur, debut, en_cours FROM gold.detecter_alertes()"
     )
@@ -39,7 +40,7 @@ def upsert_alerts(conn: Connection) -> list[Any]:
 def detect() -> dict[str, int]:
     """Met à jour gold.alerte pour tous les sites actifs."""
     with get_engine().begin() as conn:
-        alerts = upsert_alerts(conn)
+        alerts = run_detection(conn)
     for a in alerts:
         logger.info(
             "site=%s : alerte %s du %s %s",

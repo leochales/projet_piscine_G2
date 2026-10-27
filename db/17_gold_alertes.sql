@@ -101,28 +101,26 @@ ADD COLUMN IF NOT EXISTS capteur VARCHAR(20);
 COMMENT ON COLUMN gold.alerte.capteur IS
 'Capteur en panne (alertes sensor seulement) : consumption ou electrical';
 
--- Un capteur pour toute alerte sensor, et seulement pour elles.
--- alerte_capteur_check, la première version, acceptait une alerte sensor
--- sans capteur : elle est remplacée sur les bases déjà migrées.
+-- Pour les alertes de l'ETL : un capteur pour toute alerte sensor, et
+-- seulement pour elles. Les autres sources (API Mock, modèle) ne donnent pas
+-- de capteur. Supprimée puis recréée à chaque migration, pour que les bases
+-- déjà migrées aient la dernière version (alerte_capteur_check, la première,
+-- acceptait une alerte sensor sans capteur ; la deuxième valait pour toutes
+-- les sources).
 ALTER TABLE gold.alerte
 DROP CONSTRAINT IF EXISTS alerte_capteur_check;
 
--- ADD CONSTRAINT n'a pas de IF NOT EXISTS : on vérifie avant de l'ajouter
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'alerte_capteur_type_check'
-          AND conrelid = 'gold.alerte'::regclass
-    ) THEN
-        ALTER TABLE gold.alerte
-        ADD CONSTRAINT alerte_capteur_type_check CHECK (
-            (type = 'sensor') = (capteur IS NOT null)
-            AND (capteur IS null OR capteur IN ('consumption', 'electrical'))
-        );
-    END IF;
-END
-$$;
+ALTER TABLE gold.alerte
+DROP CONSTRAINT IF EXISTS alerte_capteur_type_check;
+
+ALTER TABLE gold.alerte
+ADD CONSTRAINT alerte_capteur_type_check CHECK (
+    source <> 'etl'
+    OR (
+        (type = 'sensor') = (capteur IS NOT null)
+        AND (capteur IS null OR capteur IN ('consumption', 'electrical'))
+    )
+);
 
 -- Une alerte de l'ETL par site, type, capteur et début : chaque passage met à
 -- jour l'alerte en cours au lieu d'en créer une nouvelle
@@ -155,7 +153,8 @@ COMMENT ON COLUMN gold.alerte.valeur_le IS
 -- première) et se termine après 3 minutes sans défaut consécutives (fin = la
 -- première). Une minute sans information est ignorée, elle ne compte ni dans
 -- un sens ni dans l'autre : consommation nulle pour un seuil, minute non
--- transmise (no_reading, network_loss) pour un capteur. Un site qui ne
+-- transmise ou refusée (no_reading, network_loss, rejected_reading) pour un
+-- capteur. Un site qui ne
 -- transmet plus garde donc son alerte en cours. Mais plus de 5 minutes sans
 -- information coupent la série : trois minutes hautes espacées d'une heure
 -- n'ouvrent pas d'alerte.
@@ -184,6 +183,9 @@ COMMENT ON COLUMN gold.alerte.valeur_le IS
 --      ancienne, qui reste dans l'historique telle quelle) ;
 --   3. la ligne terminée de même début ;
 --   4. la ligne, en cours ou terminée, qui la chevauche (minute réécrite).
+-- Chaque ligne et chaque alerte gardent leur meilleur choix, s'il est
+-- réciproque ; un second tour rattache celles dont le meilleur choix a été
+-- pris par une autre.
 -- Le début d'une ligne rattachée prend celui de l'alerte recalculée, sauf
 -- si une autre ligne commence entre les deux : il reste alors le même.
 -- Une ligne en cours que le calcul ne retrouve plus (défaut disparu, site
@@ -280,7 +282,8 @@ BEGIN
             CASE
                 WHEN d.type = 'threshold'
                     THEN sr.consumption_kw_raw IS NOT null
-                ELSE NOT sr.null_reasons && ARRAY['no_reading', 'network_loss']
+                ELSE NOT sr.null_reasons
+                && ARRAY['no_reading', 'network_loss', 'rejected_reading']
             END
     ),
 
@@ -510,7 +513,7 @@ BEGIN
                 AND d.capteur IS NOT DISTINCT FROM e.capteur
     ),
 
-    retenues AS (
+    retenues_1 AS (
         -- Chaque alerte recalculée et chaque ligne gardent leur meilleur
         -- rattachement ; seuls les choix réciproques sont retenus : une ligne
         -- n'est reprise qu'une fois, une alerte ne reprend qu'une ligne
@@ -525,6 +528,53 @@ BEGIN
             SELECT DISTINCT ON (id_alerte) *
             FROM paires
             WHERE rang IS NOT null
+            ORDER BY id_alerte, rang, ecart
+        ) AS q
+            ON
+                p.id_alerte = q.id_alerte
+                AND p.id_site = q.id_site
+                AND p.type = q.type
+                AND p.capteur IS NOT DISTINCT FROM q.capteur
+                AND p.debut = q.debut
+    ),
+
+    restantes AS (
+        -- Rattachements encore possibles : ni l'alerte ni la ligne ne sont
+        -- prises au premier tour. Sans ce second tour, une ligne dont le
+        -- meilleur choix est pris ailleurs serait fermée, et son alerte
+        -- recréée sous un autre identifiant (alertes qui se chevauchent,
+        -- seuil modifié)
+        SELECT p.*
+        FROM paires AS p
+        WHERE
+            p.rang IS NOT null
+            AND NOT EXISTS (
+                SELECT 1 FROM retenues_1 AS r
+                WHERE r.id_alerte = p.id_alerte
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM retenues_1 AS r
+                WHERE
+                    r.id_site = p.id_site
+                    AND r.type = p.type
+                    AND r.capteur IS NOT DISTINCT FROM p.capteur
+                    AND r.debut = p.debut
+            )
+    ),
+
+    retenues AS (
+        -- Choix réciproques du premier tour, puis du second
+        SELECT * FROM retenues_1
+        UNION ALL
+        SELECT p.*
+        FROM (
+            SELECT DISTINCT ON (id_site, type, capteur, debut) *
+            FROM restantes
+            ORDER BY id_site, type, capteur, debut, rang, ecart
+        ) AS p
+        INNER JOIN (
+            SELECT DISTINCT ON (id_alerte) *
+            FROM restantes
             ORDER BY id_alerte, rang, ecart
         ) AS q
             ON
@@ -653,14 +703,19 @@ BEGIN
         -- Lignes en cours que le calcul ne retrouve plus : défaut disparu
         -- (seuil relevé) ou site qui n'est plus actif. Fermées à la dernière
         -- minute du site : laissées en cours, elles resteraient affichées.
+        -- Site sans plus aucune minute dans silver (purgé) : fermées
+        -- maintenant, et non avec une durée nulle.
         -- Jamais les mêmes lignes que modifiees (NOT EXISTS).
         UPDATE gold.alerte AS a
         SET fin = greatest(
             a.debut,
-            (
-                SELECT max(sr.horodatage)
-                FROM silver.silver_readings AS sr
-                WHERE sr.id_site = a.id_site
+            coalesce(
+                (
+                    SELECT max(sr.horodatage)
+                    FROM silver.silver_readings AS sr
+                    WHERE sr.id_site = a.id_site
+                ),
+                now()
             )
         )
         WHERE

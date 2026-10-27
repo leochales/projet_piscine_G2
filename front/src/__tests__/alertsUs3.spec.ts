@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 
@@ -37,8 +37,12 @@ const depassement: AlerteApi = {
   prise_le: null,
 }
 
-afterEach(() => {
+beforeEach(() => {
   SOURCES.alertes = 'mock'
+})
+
+afterEach(() => {
+  SOURCES.alertes = 'api'
   SOURCES.recommandations = 'mock'
   vi.unstubAllGlobals()
 })

@@ -42,9 +42,9 @@ export const SOURCES: Record<'recommandations' | 'alertes' | 'mesures' | 'etat',
   // GET /api/recommandations (SMARTOPS-39). À passer à 'api' une fois gold.recommandation
   // rempli par l'ETL (SMARTOPS-40)
   recommandations: 'mock',
-  // GET /api/alertes (SMARTOPS-39). À passer à 'api' une fois gold.alerte rempli par l'ETL
-  // (dépassements de seuil et pics, SMARTOPS-26)
-  alertes: 'mock',
+  // GET /api/alertes (SMARTOPS-39) : gold.alerte, rempli par l'ETL (dépassements de seuil
+  // et pannes de capteur, SMARTOPS-26)
+  alertes: 'api',
   // GET /api/sites/derniere-mesure et /api/sites/{id}/consommation (SMARTOPS-42)
   mesures: 'api',
   // GET /api/sites/etat : transmission et capteurs (US4, vue gold.etat_site de SMARTOPS-23)

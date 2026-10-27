@@ -4,6 +4,7 @@ import { createPinia, setActivePinia, type Pinia } from 'pinia'
 
 import App from '../App.vue'
 import router from '../router'
+import { SOURCES } from '../services/dashboard'
 import { useUserStore } from '../stores/user'
 
 let pinia: Pinia
@@ -13,6 +14,7 @@ const mountApp = () => (wrapper = mount(App, { global: { plugins: [pinia, router
 
 describe('App', () => {
   beforeEach(async () => {
+    SOURCES.alertes = 'mock'
     pinia = createPinia()
     setActivePinia(pinia)
     useUserStore(pinia).setFromToken({
@@ -26,7 +28,10 @@ describe('App', () => {
   })
 
   // Une application restée montée suivrait le routeur partagé avec le store d'un ancien test
-  afterEach(() => wrapper?.unmount())
+  afterEach(() => {
+    wrapper?.unmount()
+    SOURCES.alertes = 'api'
+  })
 
   it("affiche la navigation, la vue d'ensemble et l'utilisateur connecté", async () => {
     await router.push('/')

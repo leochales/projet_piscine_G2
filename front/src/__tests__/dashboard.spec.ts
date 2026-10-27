@@ -26,10 +26,12 @@ vi.mock('@/lib/auth', () => ({
 describe('services/dashboard', () => {
   beforeEach(() => {
     SOURCES.mesures = 'mock'
+    SOURCES.alertes = 'mock'
   })
 
   afterEach(() => {
     SOURCES.mesures = 'api'
+    SOURCES.alertes = 'api'
   })
 
   it('charge 24 h ou 7 jours d’historique selon la période', async () => {
@@ -90,12 +92,14 @@ describe('services/dashboard', () => {
 describe('simulation des cas réels (?simulation=…)', () => {
   beforeEach(() => {
     SOURCES.mesures = 'mock'
+    SOURCES.alertes = 'mock'
   })
 
   const simulate = (value: string) => window.history.replaceState(null, '', `/?simulation=${value}`)
 
   afterEach(() => {
     SOURCES.mesures = 'api'
+    SOURCES.alertes = 'api'
     window.history.replaceState(null, '', '/')
     vi.useRealTimers()
   })
