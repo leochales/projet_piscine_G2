@@ -12,7 +12,7 @@
 # non démarré par défaut (~1 Go de mémoire). L'activer avec :
 #   docker compose -f compose-local.yml --profile monitoring up -d
 #
-# Sauvegarde (restic) : profil « backup », dans un dépôt local (volume backup_repo).
+# Sauvegarde (restic) : profil « backup », dans un dépôt local (volume backup_home).
 # Lancer une sauvegarde tout de suite :
 #   docker compose -f compose-local.yml --profile backup run --rm backup /app/backup.sh
 services:
@@ -184,26 +184,30 @@ services:
       - postgres_network
 
   # Sauvegarde nocturne (backup/crontab). En local, dépôt restic dans le volume
-  # backup_repo ; RESTIC_REPOSITORY=azure:... pour viser le stockage Azure.
+  # backup_home ; RESTIC_REPOSITORY=azure:... pour viser le stockage Azure.
   backup:
     build:
       context: .
       dockerfile: backup/Dockerfile
+      # supercronic est repris de l'image de l'ETL (voir backup/Dockerfile)
+      additional_contexts:
+        supercronic: service:etl
     profiles: [backup]
     environment:
       DEPLOY_ENV: local
       PGHOST: db
       PGUSER: backup
       PGPASSWORD: ${BACKUP_DB_PASSWORD}
-      RESTIC_REPOSITORY: ${RESTIC_REPOSITORY:-/repo}
+      RESTIC_REPOSITORY: ${RESTIC_REPOSITORY:-/home/backup/repo}
       # Vide : backup.sh s'arrête avec un message. Pas de :? ici, il bloquerait tout
       # « docker compose up », même sans le profil backup
       RESTIC_PASSWORD: ${RESTIC_PASSWORD:-}
       AZURE_ACCOUNT_NAME: ${AZURE_ACCOUNT_NAME:-}
       AZURE_ACCOUNT_SAS: ${AZURE_ACCOUNT_SAS:-}
     volumes:
-      - backup_repo:/repo
-      - backup_cache:/home/backup/.cache/restic
+      # Dossier personnel de l'utilisateur backup (dépôt local et cache restic) : il existe
+      # dans l'image, le volume en reprend donc le propriétaire et reste accessible en écriture
+      - backup_home:/home/backup
     depends_on:
       db:
         condition: service_healthy
@@ -361,8 +365,7 @@ volumes:
   loki_data:
   grafana_data:
   mlflow_data:
-  backup_repo:
-  backup_cache:
+  backup_home:
 
 networks:
   postgres_network:

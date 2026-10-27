@@ -85,12 +85,15 @@ Grafana : http://localhost/grafana (compte `admin`, mot de passe `GRAFANA_ADMIN_
 
 ## Sauvegarde (restic)
 
-Chaque nuit à 2 h UTC, le conteneur `backup` ([`backup/`](backup/)) sauvegarde les bases `enervision` et `keycloak` **ensemble** (les comptes de l'application sont liés à Keycloak) :
+Chaque nuit à 2 h UTC, le conteneur `backup` ([`backup/`](backup/)) sauvegarde les bases `enervision` puis `keycloak`, dans la même exécution (les comptes de l'application sont liés à Keycloak) :
 
 - `pg_dump` (format custom) avec le compte `backup`, en lecture seule, envoyé directement à restic, sans fichier sur le disque ;
 - chiffré par restic avec `RESTIC_PASSWORD` avant l'envoi : **sans cette clé, les sauvegardes sont illisibles**, la conserver aussi hors de GitHub ;
-- sur la VM, dans le stockage Azure (`azure:restic-<env>:/`, voir `infra/terraform`) ; en local, dans le volume `backup_repo` ;
-- conservation : 7 sauvegardes quotidiennes, 4 hebdomadaires et 6 mensuelles par base. Chaque dimanche, `restic check` relit 5 % des données pour détecter une corruption.
+- sur la VM, dans le stockage Azure (`azure:restic-<env>:/`, voir `infra/terraform`) ; le script refuse tout autre dépôt en dev et en prod. En local, dans le volume `backup_home` ;
+- conservation : 7 sauvegardes quotidiennes, 4 hebdomadaires et 6 mensuelles par base. Chaque nuit, `forget` oublie les snapshots en trop (rien si aucune base n'a été sauvegardée) ; le dimanche seulement, `prune` libère la place sur Azure puis `restic check` relit 5 % des données, à la suite dans le même job ;
+- logs JSON au format commun ; un échec (base, `prune`, `check`) est un log `error` et le job se termine en erreur.
+
+Les deux bases ne sont pas figées au même instant (`pg_dump` ne sait pas faire un instantané commun à deux bases). L'ordre fait qu'une ligne de `app.utilisateur` a toujours son compte Keycloak dans la sauvegarde : au pire, un compte créé pendant les quelques secondes entre les deux dumps n'a pas encore sa ligne, à recréer après une restauration.
 
 En local, le service est dans le profil `backup`. Avec `RESTIC_PASSWORD` dans le `.env` :
 

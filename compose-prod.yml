@@ -157,6 +157,9 @@ services:
     build:
       context: .
       dockerfile: backup/Dockerfile
+      # supercronic est repris de l'image de l'ETL (voir backup/Dockerfile)
+      additional_contexts:
+        supercronic: service:etl
     restart: unless-stopped
     environment:
       DEPLOY_ENV: ${DEPLOY_ENV}

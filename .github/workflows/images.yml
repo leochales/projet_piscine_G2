@@ -180,8 +180,11 @@ jobs:
           # Sauvegarde : planning valide, puis une sauvegarde complète dans un dépôt local
           # du conteneur (le compte backup doit pouvoir lire les bases enervision et keycloak)
           docker compose -f compose-prod.yml exec -T backup supercronic -test /app/crontab
-          docker compose -f compose-prod.yml exec -T -e RESTIC_REPOSITORY=/repo backup /app/backup.sh
-          snapshots=$(docker compose -f compose-prod.yml exec -T -e RESTIC_REPOSITORY=/repo backup \
+          # Environnement ci : hors de dev et prod, le script accepte un dépôt local (/tmp du
+          # conteneur). Mode hebdo : prune et restic check sont testés aussi.
+          docker compose -f compose-prod.yml exec -T -e DEPLOY_ENV=ci -e RESTIC_REPOSITORY=/tmp/repo \
+            backup /app/backup.sh hebdo
+          snapshots=$(docker compose -f compose-prod.yml exec -T -e RESTIC_REPOSITORY=/tmp/repo backup \
             restic snapshots --json | jq -r '[.[].tags[]] | sort | join(" ")')
           [ "$snapshots" = "enervision keycloak" ] \
             || { echo "::error::Snapshots inattendus : '$snapshots'"; exit 1; }
@@ -340,48 +343,22 @@ jobs:
           trap 'docker logout ghcr.io >/dev/null' EXIT
           docker compose -f compose-prod.yml push api etl front dataset backup
 
-      # GHCR est gratuit « pour l'instant » : on ne garde que les 20 dernières versions
-      - name: Purger les anciennes versions (api)
-        if: inputs.push
-        continue-on-error: true
-        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
+  # GHCR est gratuit « pour l'instant » : on ne garde que les 20 dernières versions de
+  # chaque image. Une seule définition pour toutes les images (matrice).
+  purge:
+    name: Purger les anciennes versions (${{ matrix.image }})
+    needs: images
+    if: inputs.push
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      packages: write
+    strategy:
+      matrix:
+        image: [api, etl, front, model, backup]
+    steps:
+      - uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
         with:
-          package-name: enervision-api
-          package-type: container
-          min-versions-to-keep: 20
-
-      - name: Purger les anciennes versions (etl)
-        if: inputs.push
-        continue-on-error: true
-        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
-        with:
-          package-name: enervision-etl
-          package-type: container
-          min-versions-to-keep: 20
-
-      - name: Purger les anciennes versions (front)
-        if: inputs.push
-        continue-on-error: true
-        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
-        with:
-          package-name: enervision-front
-          package-type: container
-          min-versions-to-keep: 20
-
-      - name: Purger les anciennes versions (model)
-        if: inputs.push
-        continue-on-error: true
-        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
-        with:
-          package-name: enervision-model
-          package-type: container
-          min-versions-to-keep: 20
-
-      - name: Purger les anciennes versions (backup)
-        if: inputs.push
-        continue-on-error: true
-        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
-        with:
-          package-name: enervision-backup
+          package-name: enervision-${{ matrix.image }}
           package-type: container
           min-versions-to-keep: 20
