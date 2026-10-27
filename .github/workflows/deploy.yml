@@ -75,6 +75,11 @@ jobs:
       KEYCLOAK_ADMIN_PASSWORD: ${{ secrets[format('{0}_KEYCLOAK_ADMIN_PASSWORD', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
       KEYCLOAK_DB_PASSWORD: ${{ secrets[format('{0}_KEYCLOAK_DB_PASSWORD', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
       KEYCLOAK_ADMIN_CLIENT_SECRET: ${{ secrets[format('{0}_KEYCLOAK_ADMIN_CLIENT_SECRET', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
+      # Sauvegarde : clé de chiffrement restic et SAS du conteneur restic-<env> ; le compte
+      # de stockage (infra/terraform) est commun à dev et prod
+      RESTIC_PASSWORD: ${{ secrets[format('{0}_RESTIC_PASSWORD', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
+      AZURE_ACCOUNT_SAS: ${{ secrets[format('{0}_AZURE_ACCOUNT_SAS', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
+      AZURE_ACCOUNT_NAME: ${{ vars.AZURE_ACCOUNT_NAME }}
       # Adresse publique du front (redirectUris de Keycloak) : https://<VM_IP> en prod,
       # https://<VM_IP>:8443 en dev. Le port 443 est omis, comme dans l'adresse du navigateur.
       FRONT_URL: ${{ format('https://{0}{1}', vars.VM_IP, github.ref_name != 'main' && ':8443' || '') }}
@@ -138,12 +143,17 @@ jobs:
           for key in POSTGRES_USER POSTGRES_DB POSTGRES_PASSWORD ETL_DB_PASSWORD \
                      MODEL_DB_PASSWORD API_DB_PASSWORD BACKUP_DB_PASSWORD \
                      KEYCLOAK_ADMIN KEYCLOAK_ADMIN_PASSWORD KEYCLOAK_DB_PASSWORD \
-                     KEYCLOAK_ADMIN_CLIENT_SECRET; do
+                     KEYCLOAK_ADMIN_CLIENT_SECRET RESTIC_PASSWORD AZURE_ACCOUNT_SAS; do
             if [ -z "${!key}" ]; then
               echo "::error::${ENV_PREFIX}_${key} manquant (Settings → Secrets and variables → Actions)"
               missing=1
             fi
           done
+          # Variable commune à dev et prod (sans préfixe)
+          if [ -z "$AZURE_ACCOUNT_NAME" ]; then
+            echo "::error::Variable AZURE_ACCOUNT_NAME manquante (Settings → Secrets and variables → Actions → Variables)"
+            missing=1
+          fi
           exit "$missing"
 
       # Images testées et scannées par images.yml : aucune reconstruction sur la VM.

@@ -12,6 +12,7 @@ Plateforme MVP d'optimisation énergétique : collecte des mesures de 7 sites, p
 | `common/` | Code Python partagé (schémas, accès base, config) |
 | `front/`  | Tableau de bord (Vue 3)                         |
 | `db/`     | Scripts SQL d'initialisation                    |
+| `backup/` | Sauvegarde nocturne chiffrée des bases (restic) |
 | `infra/`  | Docker, CI, déploiement, stockage Azure des sauvegardes (`infra/terraform/`) |
 
 ## Lancer le projet
@@ -82,6 +83,33 @@ Grafana : http://localhost/grafana (compte `admin`, mot de passe `GRAFANA_ADMIN_
 - Le compte `monitoring` n'existe que dans une base créée ou migrée après l'ajout de la supervision. Si PostgreSQL apparaît « injoignable » dans Grafana, lancer la migration (voir **Base de données** ci-dessus).
 - Un tableau de bord modifié dans Grafana n'est pas sauvegardé : exporter son JSON dans `infra/monitoring/grafana/dashboards/`.
 
+## Sauvegarde (restic)
+
+Chaque nuit à 2 h UTC, le conteneur `backup` ([`backup/`](backup/)) sauvegarde les bases `enervision` et `keycloak` **ensemble** (les comptes de l'application sont liés à Keycloak) :
+
+- `pg_dump` (format custom) avec le compte `backup`, en lecture seule, envoyé directement à restic, sans fichier sur le disque ;
+- chiffré par restic avec `RESTIC_PASSWORD` avant l'envoi : **sans cette clé, les sauvegardes sont illisibles**, la conserver aussi hors de GitHub ;
+- sur la VM, dans le stockage Azure (`azure:restic-<env>:/`, voir `infra/terraform`) ; en local, dans le volume `backup_repo` ;
+- conservation : 7 sauvegardes quotidiennes, 4 hebdomadaires et 6 mensuelles par base. Chaque dimanche, `restic check` relit 5 % des données pour détecter une corruption.
+
+En local, le service est dans le profil `backup`. Avec `RESTIC_PASSWORD` dans le `.env` :
+
+```bash
+docker compose -f compose-local.yml --profile backup run --rm backup /app/backup.sh
+```
+
+```bash
+docker compose -f compose-local.yml --profile backup run --rm backup restic snapshots
+```
+
+Pour récupérer un dump (ici le dernier de `enervision`) et l'inspecter avec `pg_restore` :
+
+```bash
+docker compose -f compose-local.yml --profile backup run --rm backup sh -c "restic dump latest enervision.dump --tag enervision | pg_restore --list"
+```
+
+La procédure de restauration complète est l'objet de SMARTOPS-54.
+
 ## Hooks pre-commit
 
 Les vérifications (ruff, sqlfluff, hadolint, prettier, eslint, gitleaks…) tournent avant chaque commit ; les tests avec couverture (pytest, vitest), le typage (mypy, vue-tsc) et Trivy avant chaque push. Configuration : `.pre-commit-config.yaml`.
@@ -123,7 +151,7 @@ Chaque pull request vers `develop` ou `main` lance :
 | `pre-commit.yml` | lint et format (ruff, dont les règles de sécurité `S` de Bandit, eslint, prettier, sqlfluff, hadolint, gitleaks), tests et typage, **couverture sous 80 %** |
 | `security.yml` | vulnérabilité HIGH ou CRITICAL dans les fichiers du dépôt, ou dans la configuration Terraform |
 | `terraform.yml` | code Terraform mal formaté, invalide ou signalé par tflint (seulement si `infra/terraform/` change) |
-| `images.yml` | image qui ne se construit pas ; stack de prod (Traefik, base, api, etl, front) qui ne démarre pas ou échoue aux tests ; réponse de l'API qui ne respecte pas son contrat OpenAPI (Schemathesis, sur le conteneur) ; image qui contient une vulnérabilité corrigeable |
+| `images.yml` | image qui ne se construit pas ; stack de prod (Traefik, base, api, etl, front, backup) qui ne démarre pas ou échoue aux tests (dont une sauvegarde complète dans un dépôt restic local) ; réponse de l'API qui ne respecte pas son contrat OpenAPI (Schemathesis, sur le conteneur) ; image qui contient une vulnérabilité corrigeable |
 
 La couverture porte sur la logique métier : `api/` et `common/` côté Python (`pyproject.toml`), `src/stores`, `src/lib` et `src/services` côté front (`front/vitest.config.ts`).
 

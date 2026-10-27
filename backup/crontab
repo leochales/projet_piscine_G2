@@ -1,0 +1,10 @@
+# Planning de la sauvegarde (format cron : minute heure jour mois jour-de-semaine commande)
+# L'heure est celle du conteneur : UTC (2 h UTC = 3 h ou 4 h à Paris).
+#
+# Chaque nuit : dump des bases, envoi chiffré par restic, puis application de la
+# politique de conservation (backup/backup.sh)
+0 2 * * * /app/backup.sh
+#
+# Chaque dimanche : vérification du dépôt, en relisant 5 % des données envoyées
+# (une partie différente à chaque fois) pour détecter une corruption sans tout télécharger
+0 4 * * 0 restic check --quiet --read-data-subset=5%

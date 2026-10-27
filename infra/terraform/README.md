@@ -93,7 +93,7 @@ Sous Windows PowerShell, les guillemets doubles imbriqués sont retirés : lance
 | `AZURE_ACCOUNT_SAS` | le SAS généré ci-dessus | secrets `DEV_AZURE_ACCOUNT_SAS` / `PROD_AZURE_ACCOUNT_SAS` |
 | `RESTIC_REPOSITORY` | `terraform output restic_repositories` | pas un secret |
 
-Le branchement de ces secrets dans le déploiement relève de SMARTOPS-53.
+`deploy.yml` les transmet au conteneur `backup` (SMARTOPS-53, voir la section « Sauvegarde » du README) et refuse de déployer s'il en manque un.
 
 ## Vérifier que la VM peut écrire
 

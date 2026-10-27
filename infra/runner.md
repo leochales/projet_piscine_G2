@@ -56,7 +56,8 @@ Le dépôt est **public**, et le déploiement n'utilise pas (encore) les *GitHub
 | `DEV_KEYCLOAK_DB_PASSWORD` / `PROD_KEYCLOAK_DB_PASSWORD` | Compte `keycloak` (base `keycloak`) |
 | `DEV_KEYCLOAK_ADMIN_PASSWORD` / `PROD_KEYCLOAK_ADMIN_PASSWORD` | Administrateur initial de Keycloak |
 | `DEV_KEYCLOAK_ADMIN_CLIENT_SECRET` / `PROD_KEYCLOAK_ADMIN_CLIENT_SECRET` | Secret du client `enervision-admin` (création des comptes par l'API) |
-| `DEV_AZURE_ACCOUNT_SAS` / `PROD_AZURE_ACCOUNT_SAS` | SAS du conteneur `restic-dev` / `restic-prod` du stockage des sauvegardes ([`infra/terraform`](terraform/README.md)). Pas encore lu par le déploiement |
+| `DEV_RESTIC_PASSWORD` / `PROD_RESTIC_PASSWORD` | Clé de chiffrement des sauvegardes restic. **Ne jamais la changer** une fois le dépôt créé (il ne s'ouvrirait plus), et la conserver aussi hors de GitHub |
+| `DEV_AZURE_ACCOUNT_SAS` / `PROD_AZURE_ACCOUNT_SAS` | SAS du conteneur `restic-dev` / `restic-prod` du stockage des sauvegardes ([`infra/terraform`](terraform/README.md), politique d'accès `restic`). À prolonger avant son expiration |
 
 | Variables                                    | Obligatoire | Rôle                                          |
 |----------------------------------------------|-------------|-----------------------------------------------|
@@ -65,7 +66,7 @@ Le dépôt est **public**, et le déploiement n'utilise pas (encore) les *GitHub
 | `DEV_ETL_ENABLED` / `PROD_ETL_ENABLED`       | non         | `false` pour désactiver l'ETL (défaut `true`) |
 | `DEV_KEYCLOAK_ADMIN` / `PROD_KEYCLOAK_ADMIN` | oui         | Identifiant de l'administrateur initial de Keycloak |
 | `VM_IP`                                      | oui         | IP de la VM, inscrite dans le certificat et dans l'adresse de retour de connexion de Keycloak (`FRONT_URL`) |
-| `AZURE_ACCOUNT_NAME`                         | non         | Compte de stockage des sauvegardes (`terraform output storage_account_name`), commun à dev et prod |
+| `AZURE_ACCOUNT_NAME`                         | oui         | Compte de stockage des sauvegardes (`terraform output storage_account_name`), commun à dev et prod |
 | `DVC_STORE`                                  | non         | Dossier du stockage DVC sur la VM (défaut `/srv/enervision-dvc`) |
 
 Utiliser des mots de passe différents entre dev et prod. Les mots de passe des comptes des services (`ETL_`, `MODEL_`, `API_`, `BACKUP_`, `KEYCLOAK_DB_PASSWORD`) sont **réappliqués à chaque déploiement** par la migration de la base : pour en changer un, modifier le secret puis redéployer. Exceptions :
@@ -77,7 +78,7 @@ Utiliser des mots de passe différents entre dev et prod. Les mots de passe des 
 
 ## Déroulement d'un déploiement
 
-1. **Contrôles**, en parallèle sur des runners GitHub : `pre-commit.yml` (lint, tests), `security.yml` (Trivy sur le code) et `images.yml`. Ce dernier construit api, etl, front et model **une seule fois**, démarre la stack de prod complète avec ces images (Traefik, scripts `db/`, comptes PostgreSQL, ETL, front), rejoue la migration de la base, lance le job du jeu d'entraînement sur un petit CSV, les tests SQL et Schemathesis sur le conteneur de l'API, scanne les images avec Trivy, puis les publie sur GHCR (`ghcr.io/<owner>/enervision-<service>:<sha du commit>`). Le déploiement ne démarre que si tout réussit.
+1. **Contrôles**, en parallèle sur des runners GitHub : `pre-commit.yml` (lint, tests), `security.yml` (Trivy sur le code) et `images.yml`. Ce dernier construit api, etl, front, model et backup **une seule fois**, démarre la stack de prod complète avec ces images (Traefik, scripts `db/`, comptes PostgreSQL, ETL, front, sauvegarde dans un dépôt local), rejoue la migration de la base, lance le job du jeu d'entraînement sur un petit CSV, les tests SQL et Schemathesis sur le conteneur de l'API, scanne les images avec Trivy, puis les publie sur GHCR (`ghcr.io/<owner>/enervision-<service>:<sha du commit>`). Le déploiement ne démarre que si tout réussit.
 2. **Certificat HTTPS** : auto-signé pour `VM_IP`, stocké dans `~/traefik-certs`, régénéré s'il expire sous 30 jours ou si `VM_IP` change.
 3. **Traefik** : démarré s'il ne tourne pas. Il lit Docker via `docker-socket-proxy` (lecture seule, réseau interne), sans accès direct au socket.
 4. **Vérifier les secrets** : toutes les variables et tous les secrets obligatoires, avant de toucher à la VM. Le job liste ceux qui manquent et s'arrête.
@@ -149,6 +150,9 @@ Commandes à lancer depuis un compte administrateur, dans `/home/github-runner/a
 | Logs du service           | `sudo journalctl -u 'actions.runner.*' -f`       |
 | Logs des jobs             | `_diag/Worker_*.log`                             |
 | État des conteneurs       | `docker compose -p <traefik\|enervision-dev\|enervision-prod> ps` |
+| Logs de la sauvegarde     | `docker compose -p enervision-<env> logs backup` |
+| Sauvegarder tout de suite | `docker compose -p enervision-<env> exec backup /app/backup.sh` |
+| Lister les sauvegardes    | `docker compose -p enervision-<env> exec backup restic snapshots` |
 
 Le runner **se met à jour tout seul**. Pour le réenregistrer (runner supprimé côté GitHub, changement de nom) : `./svc.sh stop`, `./svc.sh uninstall`, `./config.sh remove --token <TOKEN>`, puis reprendre l'étape 2 de l'installation. Après un redémarrage de la VM, le service et les conteneurs repartent seuls.
 
