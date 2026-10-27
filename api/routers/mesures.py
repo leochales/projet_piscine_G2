@@ -9,7 +9,7 @@ from pydantic import AwareDatetime, BaseModel, BeforeValidator
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from api.auth import ClientCourant
+from api.auth import PerimetreCourant
 from api.routers.parametres import IdSite
 from common.config import Settings, get_settings
 from common.db import get_session
@@ -40,7 +40,7 @@ class DerniereMesure(BaseModel):
 @router.get("/derniere-mesure", summary="Dernière mesure de chaque site")
 def lister_dernieres_mesures(
     session: Annotated[Session, Depends(get_session)],
-    id_client: ClientCourant,
+    perimetre: PerimetreCourant,
 ) -> list[DerniereMesure]:
     requete = text(
         """
@@ -49,10 +49,15 @@ def lister_dernieres_mesures(
         FROM gold.derniere_mesure AS m
         JOIN app.site AS s ON s.id_site = m.id_site
         WHERE (CAST(:id_client AS BIGINT) IS NULL OR s.id_client = :id_client)
+          AND (CAST(:id_utilisateur_sites AS UUID) IS NULL OR EXISTS (
+              SELECT 1 FROM app.utilisateur_site AS us
+              WHERE us.id_utilisateur = :id_utilisateur_sites
+                AND us.id_site = s.id_site
+          ))
         ORDER BY m.id_site
         """
     )
-    lignes = session.execute(requete, {"id_client": id_client}).mappings().all()
+    lignes = session.execute(requete, perimetre.parametres).mappings().all()
     return [DerniereMesure(**ligne) for ligne in lignes]
 
 
@@ -104,7 +109,7 @@ def lister_consommation_horaire(
     id_site: IdSite,
     session: Annotated[Session, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
-    id_client: ClientCourant,
+    perimetre: PerimetreCourant,
     debut: DateIso | None = None,
     fin: DateIso | None = None,
 ) -> list[ConsommationHoraire]:
@@ -120,6 +125,11 @@ def lister_consommation_horaire(
               SELECT 1 FROM app.site AS s
               WHERE s.id_site = :id_site
                 AND (CAST(:id_client AS BIGINT) IS NULL OR s.id_client = :id_client)
+                AND (CAST(:id_utilisateur_sites AS UUID) IS NULL OR EXISTS (
+                    SELECT 1 FROM app.utilisateur_site AS us
+                    WHERE us.id_utilisateur = :id_utilisateur_sites
+                      AND us.id_site = s.id_site
+                ))
           )
         ORDER BY heure
         """
@@ -128,7 +138,7 @@ def lister_consommation_horaire(
         "id_site": id_site,
         "debut": debut,
         "fin": fin,
-        "id_client": id_client,
+        **perimetre.parametres,
     }
     lignes = session.execute(requete, parametres).mappings().all()
 

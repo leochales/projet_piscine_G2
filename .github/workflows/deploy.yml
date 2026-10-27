@@ -75,6 +75,9 @@ jobs:
       KEYCLOAK_ADMIN_PASSWORD: ${{ secrets[format('{0}_KEYCLOAK_ADMIN_PASSWORD', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
       KEYCLOAK_DB_PASSWORD: ${{ secrets[format('{0}_KEYCLOAK_DB_PASSWORD', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
       KEYCLOAK_ADMIN_CLIENT_SECRET: ${{ secrets[format('{0}_KEYCLOAK_ADMIN_CLIENT_SECRET', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
+      # Mot de passe des comptes de démonstration, créés par l'API à son démarrage
+      # (api/seed.py). Facultatif : sans lui, l'API n'en crée pas
+      SEED_PASSWORD: ${{ secrets[format('{0}_SEED_PASSWORD', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
       # Sauvegarde : clé de chiffrement restic et SAS du conteneur restic-<env> ; le compte
       # de stockage (infra/terraform) est commun à dev et prod
       RESTIC_PASSWORD: ${{ secrets[format('{0}_RESTIC_PASSWORD', github.ref_name == 'main' && 'PROD' || 'DEV')] }}

@@ -56,6 +56,7 @@ Le dépôt est **public**, et le déploiement n'utilise pas (encore) les *GitHub
 | `DEV_KEYCLOAK_DB_PASSWORD` / `PROD_KEYCLOAK_DB_PASSWORD` | Compte `keycloak` (base `keycloak`) |
 | `DEV_KEYCLOAK_ADMIN_PASSWORD` / `PROD_KEYCLOAK_ADMIN_PASSWORD` | Administrateur initial de Keycloak |
 | `DEV_KEYCLOAK_ADMIN_CLIENT_SECRET` / `PROD_KEYCLOAK_ADMIN_CLIENT_SECRET` | Secret du client `enervision-admin` (création des comptes par l'API) |
+| `DEV_SEED_PASSWORD` / `PROD_SEED_PASSWORD` | Mot de passe des comptes de démonstration (12 caractères au moins), créés par l'API à son démarrage ; facultatif, sans lui ils ne sont pas créés |
 | `DEV_RESTIC_PASSWORD` / `PROD_RESTIC_PASSWORD` | Clé de chiffrement des sauvegardes restic. **Ne jamais la changer** une fois le dépôt créé (il ne s'ouvrirait plus), et la conserver aussi hors de GitHub |
 | `DEV_AZURE_ACCOUNT_SAS` / `PROD_AZURE_ACCOUNT_SAS` | SAS du conteneur `restic-dev` / `restic-prod` du stockage des sauvegardes ([`infra/terraform`](terraform/README.md), politique d'accès `restic`). À prolonger avant son expiration |
 
@@ -190,6 +191,8 @@ kcadm update clients/<id> -r enervision -s 'redirectUris=["https://<VM_IP>/*"]'
 ### Créer un compte (premier administrateur, comptes de test)
 
 Les comptes se créent dans Keycloak. En temps normal, ce sont les gestionnaires qui les créent depuis le dashboard (`POST /api/utilisateurs`, SMARTOPS-84). À la main, on passe par l'administration de Keycloak : la console (`http://localhost/auth/admin` en local, `https://<VM_IP>[:8443]/auth/admin` sur la VM) ou `kcadm.sh`.
+
+**Comptes de démonstration** : un compte par rôle (liste dans le README, section « Comptes de démonstration »), créés par l'API à chaque démarrage (`api/seed.py`), en dev comme en prod, avec le mot de passe du secret `<ENV>_SEED_PASSWORD`. En prod, `admin@enervision.test`, qui voit tous les clients, n'est pas créé. Sans ce secret, l'API n'en crée pas. Un compte déjà enregistré n'est jamais modifié. Résultat dans les logs de l'API : `docker compose -p enervision-<env> logs api | grep -i seed`.
 
 **Attention** : l'API n'accepte que les utilisateurs enregistrés dans `app.utilisateur`, car c'est là qu'elle trouve leur entreprise. Un compte créé dans Keycloak sans cette ligne reçoit un 403.
 
