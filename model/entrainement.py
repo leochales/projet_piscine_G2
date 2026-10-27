@@ -220,14 +220,15 @@ def entrainer_modele_final(
     return modele, moyennes
 
 
-def lire_empreinte(chemin: Path) -> str:
+def lire_empreinte(chemin: Path) -> str | None:
     """Empreinte du jeu, écrite par model.dataset dans rapport_qualite.json, à côté du
-    jeu. Elle relie le run MLflow au jeu d'entraînement utilisé."""
+    jeu. Elle relie le run MLflow au jeu d'entraînement utilisé. None si le rapport
+    manque ou est illisible."""
     rapport = chemin.parent / "rapport_qualite.json"
     try:
         return str(json.loads(rapport.read_text(encoding="utf-8"))["empreinte"])
     except (OSError, KeyError, ValueError):
-        return "inconnue"
+        return None
 
 
 def afficher(horizon: int, r: Resultat) -> None:
@@ -264,10 +265,17 @@ def main(argv: list[str] | None = None) -> list[Resultat]:
         # Importé ici : sans MLflow, le reste du module n'en a pas besoin
         from model import registre
 
+        # Sans empreinte, le modèle enregistré ne serait relié à aucun jeu
+        empreinte = lire_empreinte(args.chemin)
+        if empreinte is None:
+            parser.error(
+                "empreinte du jeu introuvable (rapport_qualite.json absent ou "
+                "illisible à côté du jeu) : relancer model.dataset, ou --sans-mlflow"
+            )
+
     df = ajouter_baselines(charger(args.chemin))
     moyennes = moyennes_par_site(df[df["jeu"] == "entrainement"])
     df = garder_sites_connus(df, moyennes)
-    empreinte = lire_empreinte(args.chemin)
     resultats = []
     for horizon in HORIZONS:
         r = entrainer_horizon(df, moyennes, horizon)

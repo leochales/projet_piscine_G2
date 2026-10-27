@@ -229,6 +229,14 @@ def test_modele_final_entraine_sur_toutes_les_donnees(monkeypatch):
 
 def test_lire_empreinte(tmp_path):
     chemin = tmp_path / "dataset.parquet"
-    assert lire_empreinte(chemin) == "inconnue"
+    assert lire_empreinte(chemin) is None
     (tmp_path / "rapport_qualite.json").write_text('{"empreinte": "abc123"}')
     assert lire_empreinte(chemin) == "abc123"
+
+
+def test_main_refuse_d_enregistrer_sans_empreinte(monkeypatch, tmp_path):
+    """Un modèle enregistré doit être relié à son jeu d'entraînement : sans
+    rapport_qualite.json, la commande s'arrête avant d'entraîner."""
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow-inutile")
+    with pytest.raises(SystemExit):
+        main(["--chemin", str(tmp_path / "dataset.parquet")])

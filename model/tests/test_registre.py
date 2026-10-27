@@ -109,6 +109,7 @@ def test_modele_refuse_garde_le_run_sans_version(client):
 def test_main_enregistre_les_deux_horizons(client, tmp_path):
     chemin = tmp_path / "dataset.parquet"
     faux_jeu().drop(columns=["baseline_veille", REFERENCE]).to_parquet(chemin)
+    (tmp_path / "rapport_qualite.json").write_text('{"empreinte": "abc123"}')
     main(["--chemin", str(chemin)])
     for horizon in (24, 168):
         modele, moyennes = registre.charger(horizon)
