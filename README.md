@@ -101,10 +101,10 @@ Trivy doit aussi être installé sur la machine (`brew install trivy` sous macOS
 
 ### Après un `git pull`
 
-Si `requirements*.txt` ou `front/package-lock.json` ont changé, réinstaller les dépendances, sinon les hooks du push échouent (par exemple `pytest-cov` ou `@vitest/coverage-v8` manquants) :
+Si `requirements*.txt` ou `front/package-lock.json` ont changé, réinstaller les dépendances, sinon les hooks du push échouent (par exemple `pytest-cov` ou `@vitest/coverage-v8` manquants, ou `pytest (model)` qui ne trouve pas scikit-learn) :
 
 ```bash
-.venv/bin/pip install -r api/requirements-dev.txt
+.venv/bin/pip install -r api/requirements-dev.txt -r model/requirements-dev.txt
 npm --prefix front ci
 ```
 
