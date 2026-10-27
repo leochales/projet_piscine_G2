@@ -69,6 +69,9 @@ RECOMMANDATIONS_DU_PERIMETRE = """
 """
 
 REPONSES_DECISION: dict[int | str, dict[str, Any]] = {
+    # Réponse de FastAPI quand le corps ne peut pas être lu (octets quelconques, comme
+    # ceux de Schemathesis) ; un JSON mal formé donne 422
+    400: {"description": "Corps de la requête illisible"},
     404: {
         "description": "Recommandation inconnue, ou d'un site que l'utilisateur ne voit pas"
     },

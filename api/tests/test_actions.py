@@ -396,3 +396,24 @@ def test_statut_invalide_422(client: TestClient, base: FausseBase, corps: Any) -
 
     assert response.status_code == 422
     assert base.decisions == {}
+
+
+def test_corps_illisible_400(client: TestClient, base: FausseBase) -> None:
+    """Octets quelconques, comme ceux de Schemathesis : FastAPI ne peut pas lire le corps
+    et répond 400 (un JSON mal formé, lui, donne 422), documenté dans le contrat."""
+    connecter("GESTION-CLIENT")
+
+    response = client.post(
+        "/api/recommandations/1/decision",
+        content=b"\xff\xfe.\xc3[",
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 400
+    assert base.decisions == {}
+
+
+def test_corps_illisible_400_documente(client: TestClient) -> None:
+    chemins = client.get("/api/openapi.json").json()["paths"]
+    route = chemins["/api/recommandations/{id_recommandation}/decision"]["post"]
+    assert "400" in route["responses"]
