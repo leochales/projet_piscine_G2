@@ -53,6 +53,16 @@ run() {
     return "$status"
 }
 
+# Un mode mal écrit (« hebdomadaire ») lancerait sinon une sauvegarde quotidienne sans
+# prune ni restic check, sans aucune erreur
+case "$mode" in
+    quotidien | hebdo) ;;
+    *)
+        log error "Mode inconnu : $mode (quotidien ou hebdo)"
+        exit 1
+        ;;
+esac
+
 [ -n "${RESTIC_REPOSITORY:-}" ] || { log error "RESTIC_REPOSITORY manquant"; exit 1; }
 [ -n "${RESTIC_PASSWORD:-}" ] || { log error "RESTIC_PASSWORD manquant"; exit 1; }
 [ -n "${PGPASSWORD:-}" ] || { log error "PGPASSWORD manquant (mot de passe du compte backup)"; exit 1; }
@@ -71,7 +81,18 @@ case "$env" in
                 ;;
         esac
         ;;
-    local | ci) ;;
+    local | ci)
+        # Hors de la VM, jamais dans les vrais dépôts : ni restic-prod, ni la racine de
+        # restic-dev. Le premier lancement y créerait le dépôt avec le mot de passe local,
+        # et toutes les sauvegardes de la VM échoueraient ensuite (« wrong password »).
+        # Un sous-dossier personnel de restic-dev reste possible pour tester Azure.
+        case "$RESTIC_REPOSITORY" in
+            azure:restic-prod:* | azure:restic-dev | azure:restic-dev: | azure:restic-dev:/)
+                log error "Dépôt restic refusé pour l'environnement $env : utiliser un sous-dossier, par exemple azure:restic-dev:/local-<nom>"
+                exit 1
+                ;;
+        esac
+        ;;
     "")
         log error "DEPLOY_ENV manquant (dev, prod, local ou ci)"
         exit 1

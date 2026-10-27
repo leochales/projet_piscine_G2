@@ -208,7 +208,9 @@ jobs:
           # Accepté : le dépôt de compose-prod.yml (azure:restic-dev:/) passe le garde-fou,
           # et la sauvegarde ne s'arrête qu'à l'ouverture du dépôt, faute de compte Azure
           # (aucune requête réseau). Un motif trop strict bloquerait sinon toutes les nuits.
-          echec_attendu "Account name (\$AZURE_ACCOUNT_NAME) is empty" -e AZURE_ACCOUNT_NAME=
+          # Message de backup.sh, écrit seulement après le garde-fou : une nouvelle version
+          # de restic qui reformule ses erreurs ne fait pas échouer ce test.
+          echec_attendu "Dépôt restic injoignable" -e AZURE_ACCOUNT_NAME=
 
       # Job du jeu d'entraînement (profil jobs), sur un petit CSV généré : image du modèle,
       # montage des données brutes et enregistrement dans le MLflow de la stack
