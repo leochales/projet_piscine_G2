@@ -79,3 +79,35 @@ Chaque construction crée un run dans l'expérience `jeu-entrainement` : les tro
 ```bash
 python -m pytest -q model
 ```
+
+## Prévision de référence (SMARTOPS-30)
+
+Deux prévisions naïves servent de seuil au modèle : la consommation de la veille et celle de la semaine précédente, à la même heure, site par site. Une version du modèle n'est gardée que si elle fait mieux.
+
+Depuis la racine du dépôt, après avoir construit le jeu (`python -m model.dataset`) :
+
+```bash
+python -m model.baseline              # scores sur le jeu de test
+python -m model.baseline --jeu validation
+```
+
+Le jeu est lu dans `DATASET_OUTPUT_DIR` (`data/processed` par défaut), comme `model.dataset` l'écrit. `--chemin` donne un autre fichier.
+
+### Règles
+
+- La valeur passée est cherchée à l'heure exacte (24 h ou 168 h avant), pas 24 lignes plus haut : si cette heure manque, par exemple un trou dans `gold.consommation_horaire`, la prévision reste vide et l'heure est exclue du score. Le script affiche combien d'heures sont exclues.
+- Les décalages sont calculés sur tout le jeu avant de garder le jeu évalué : les premières heures du test utilisent les vraies valeurs de la validation.
+- L'erreur n'est mesurée que sur les valeurs réellement mesurées (`consommation_kwh_brute`), jamais sur les valeurs interpolées.
+- MAE et RMSE en kWh (`moyenne_kw` sur une heure vaut des kWh). WAPE = `Σ|erreur| / Σ réel`.
+- `scores_reference(df, jeu)` renvoie ces scores pour un jeu donné : l'entraînement compare ses modèles à la référence sur le même découpage.
+
+### Seuil retenu
+
+Jeu de test (2024-09-12 12:00 → 2024-12-31), jeu d'empreinte `f2ee5c19efdb` (voir `rapport_qualite.json`) :
+
+| Prévision | MAE | RMSE | WAPE |
+|---|---|---|---|
+| Semaine précédente (retenue) | 115,3 kWh | 255,2 kWh | **23,31 %** |
+| Veille | 137,1 kWh | 282,7 kWh | 27,74 % |
+
+La veille se trompe à chaque passage entre semaine et week-end. Les anomalies du jeu (pics, chutes, coupures) causent environ les deux tiers de l'erreur. Si les données changent (nouvelle version DVC, autre empreinte), relancer la commande et mettre ce tableau à jour.
