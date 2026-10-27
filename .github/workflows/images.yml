@@ -37,7 +37,9 @@ jobs:
       # Stack de test : environnement dev (Traefik sur 8443), mots de passe jetables
       DEPLOY_ENV: dev
       POSTGRES_USER: enervision
-      POSTGRES_DB: enervision
+      # Nom différent de « enervision » : rien ne doit supposer le nom de la base (la
+      # sauvegarde lit POSTGRES_DB, comme sur la VM où chaque environnement a le sien)
+      POSTGRES_DB: enervision_ci
       POSTGRES_PASSWORD: ci-postgres
       ETL_DB_PASSWORD: ci-etl
       MODEL_DB_PASSWORD: ci-model
@@ -186,7 +188,7 @@ jobs:
             backup /app/backup.sh hebdo
           snapshots=$(docker compose -f compose-prod.yml exec -T -e RESTIC_REPOSITORY=/tmp/repo backup \
             restic snapshots --json | jq -r '[.[].tags[]] | sort | join(" ")')
-          [ "$snapshots" = "enervision keycloak" ] \
+          [ "$snapshots" = "$POSTGRES_DB keycloak" ] \
             || { echo "::error::Snapshots inattendus : '$snapshots'"; exit 1; }
           # Garde-fou de backup.sh, dans la configuration de la VM (DEPLOY_ENV=dev). Sans
           # compte Azure en CI, backup.sh échoue toujours : on vérifie qu'il échoue à la
