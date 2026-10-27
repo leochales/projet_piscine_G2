@@ -1,7 +1,9 @@
 import pandas as pd
+import pytest
 
 from model.features import (
     SITES,
+    ajouter_heures_a_prevoir,
     construire_variables,
     moyennes_par_site,
     noms_variables,
@@ -95,3 +97,46 @@ def test_normalisation_par_la_moyenne_du_site():
     site1 = df.loc[df["id_site"] == "SITE001", "conso_norm"].to_numpy()
     site2 = df.loc[df["id_site"] == "SITE002", "conso_norm"].to_numpy()
     assert list(site1) == list(site2) == [0.0, 1.0, 2.0]
+
+
+def test_site_inconnu_refuse():
+    with pytest.raises(ValueError, match="SITE999"):
+        construire_variables(faux_site("SITE999"), SANS_NORMALISATION, 24)
+
+
+def test_site_sans_moyenne_d_entrainement_refuse():
+    moyennes = pd.Series({"SITE001": 1.0})
+    with pytest.raises(ValueError, match="SITE002"):
+        construire_variables(faux_site("SITE002"), moyennes, 24)
+
+
+def test_moyenne_nulle_refusee():
+    moyennes = pd.Series({"SITE001": 0.0})
+    with pytest.raises(ValueError, match="SITE001"):
+        construire_variables(faux_site(), moyennes, 24)
+
+
+def test_entree_vide_refusee_avec_un_message_clair():
+    with pytest.raises(ValueError, match="Aucune ligne"):
+        construire_variables(faux_site().iloc[0:0], SANS_NORMALISATION, 24)
+
+
+def test_heures_a_prevoir_avec_les_variables_de_l_historique():
+    historique = faux_site(nb_heures=100)
+    debut = historique["heure"].max() + pd.Timedelta(hours=1)
+    df = ajouter_heures_a_prevoir(historique, debut, 24)
+    assert len(df) == 124
+    df = construire_variables(df, SANS_NORMALISATION, 24)
+    futur = df[df["heure"] >= debut].reset_index(drop=True)
+    # Pas de consommation à prévoir, mais des lags pris dans l'historique
+    assert futur["moyenne_kw"].isna().all()
+    assert futur.loc[0, "lag_24h"] == 76
+    assert futur.loc[23, "lag_24h"] == 99
+
+
+def test_heures_a_prevoir_deja_connues_pas_en_double():
+    historique = faux_site(nb_heures=100)
+    debut = historique["heure"].max() - pd.Timedelta(hours=1)
+    df = ajouter_heures_a_prevoir(historique, debut, 3)
+    # Les 2 premières heures existent déjà : seule la 3e est ajoutée
+    assert len(df) == 101
