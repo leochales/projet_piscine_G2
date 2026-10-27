@@ -269,5 +269,140 @@ BEGIN
 END
 $$;
 
+-- 7. Seuil abaissé à 50 % (100 kW) : toute la série de SITE-C est en défaut,
+--    l'alerte commence à 10:00. L'alerte en cours de 10:12 n'est plus
+--    retrouvée : elle est fermée à la dernière minute (10:14), une seule
+--    alerte reste en cours.
 RESET ROLE;
+UPDATE app.site SET seuil_alerte_pct = 50
+WHERE id_site = 'SITE-C';
+SET ROLE etl;
+
+DO $$
+DECLARE
+    a RECORD;
+    nb BIGINT;
+BEGIN
+    PERFORM gold.detecter_alertes();
+
+    SELECT count(*) INTO nb FROM gold.alerte
+    WHERE id_site = 'SITE-C' AND type = 'threshold' AND fin IS null;
+    ASSERT nb = 1, format('une seule alerte en cours pour SITE-C, %s', nb);
+
+    SELECT * INTO a FROM gold.alerte
+    WHERE id_site = 'SITE-C' AND type = 'threshold' AND fin IS null;
+    ASSERT a.debut = '2026-01-01 10:00+00', format('début : %s', a.debut);
+
+    SELECT * INTO a FROM gold.alerte
+    WHERE id_site = 'SITE-C' AND debut = '2026-01-01 10:12+00';
+    ASSERT a.fin = '2026-01-01 10:14+00', format('fin : %s', a.fin);
+    RAISE NOTICE 'OK 7 : seuil abaissé, l''ancienne alerte en cours est fermée';
+END
+$$;
+
+-- 8. Seuil relevé à 100 % (200 kW) : seul le pic de 10:06 reste, déjà
+--    terminé. L'alerte de 10:00 n'est plus retrouvée : fermée à 10:14.
+RESET ROLE;
+UPDATE app.site SET seuil_alerte_pct = 100
+WHERE id_site = 'SITE-C';
+SET ROLE etl;
+
+DO $$
+DECLARE
+    a RECORD;
+    nb BIGINT;
+BEGIN
+    PERFORM gold.detecter_alertes();
+
+    SELECT count(*) INTO nb FROM gold.alerte
+    WHERE id_site = 'SITE-C' AND type = 'threshold' AND fin IS null;
+    ASSERT nb = 0, format('aucune alerte en cours pour SITE-C, %s', nb);
+
+    SELECT * INTO a FROM gold.alerte
+    WHERE id_site = 'SITE-C' AND debut = '2026-01-01 10:00+00';
+    ASSERT a.fin = '2026-01-01 10:14+00', format('fin : %s', a.fin);
+
+    SELECT count(*) INTO nb FROM gold.detecter_alertes()
+    WHERE id_site = 'SITE-C';
+    ASSERT nb = 0, format('rien à réécrire attendu, %s', nb);
+    RAISE NOTICE 'OK 8 : seuil relevé, l''alerte sans défaut est fermée';
+END
+$$;
+
+-- 9. Site désactivé pendant une panne : capteur de consommation de SITE-B
+--    en panne de 10:10 à 10:12, puis site inactive. L'alerte n'est plus
+--    calculée : elle est fermée à la dernière minute du site (10:12).
+RESET ROLE;
+INSERT INTO silver.silver_readings (
+    id_site, horodatage, consumption_kw_raw, consumption_kw_imputed,
+    imputation_method, data_quality, null_reasons
+)
+SELECT
+    'SITE-B' AS id_site,
+    '2026-01-01 10:10+00'::TIMESTAMPTZ + n * INTERVAL '1 minute' AS horodatage,
+    null AS consumption_kw_raw,
+    190 AS consumption_kw_imputed,
+    'none' AS imputation_method,
+    'partial' AS data_quality,
+    '{consumption_sensor_failure}'::TEXT[] AS null_reasons
+FROM generate_series(0, 2) AS n;
+SET ROLE etl;
+
+DO $$
+DECLARE
+    a RECORD;
+BEGIN
+    PERFORM gold.detecter_alertes();
+
+    SELECT * INTO a FROM gold.alerte
+    WHERE id_site = 'SITE-B' AND capteur = 'consumption';
+    ASSERT a.debut = '2026-01-01 10:10+00', format('début : %s', a.debut);
+    ASSERT a.fin IS null, 'panne en cours';
+END
+$$;
+
+RESET ROLE;
+UPDATE app.site SET statut = 'inactive'
+WHERE id_site = 'SITE-B';
+SET ROLE etl;
+
+DO $$
+DECLARE
+    a RECORD;
+BEGIN
+    PERFORM gold.detecter_alertes();
+
+    SELECT * INTO a FROM gold.alerte
+    WHERE id_site = 'SITE-B' AND capteur = 'consumption';
+    ASSERT a.fin = '2026-01-01 10:12+00', format('fin : %s', a.fin);
+    RAISE NOTICE 'OK 9 : site désactivé, son alerte en cours est fermée';
+END
+$$;
+
+-- 10. Un capteur pour toute alerte sensor, et seulement pour elles
+RESET ROLE;
+
+DO $$
+BEGIN
+    BEGIN
+        INSERT INTO gold.alerte (id_site, source, type, severite, debut)
+        VALUES ('SITE-A', 'etl', 'sensor', 'high', now());
+        RAISE EXCEPTION 'alerte sensor sans capteur acceptée';
+    EXCEPTION WHEN check_violation THEN
+        NULL;  -- refus attendu
+    END;
+
+    BEGIN
+        INSERT INTO gold.alerte (
+            id_site, source, type, capteur, severite, debut
+        )
+        VALUES ('SITE-A', 'etl', 'threshold', 'consumption', 'high', now());
+        RAISE EXCEPTION 'alerte threshold avec capteur acceptée';
+    EXCEPTION WHEN check_violation THEN
+        NULL;  -- refus attendu
+    END;
+    RAISE NOTICE 'OK 10 : capteur obligatoire pour sensor, interdit sinon';
+END
+$$;
+
 ROLLBACK;

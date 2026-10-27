@@ -55,18 +55,24 @@ ADD COLUMN IF NOT EXISTS capteur VARCHAR(20);
 COMMENT ON COLUMN gold.alerte.capteur IS
 'Capteur en panne (alertes sensor seulement) : consumption ou electrical';
 
+-- Un capteur pour toute alerte sensor, et seulement pour elles.
+-- alerte_capteur_check, la première version, acceptait une alerte sensor
+-- sans capteur : elle est remplacée sur les bases déjà migrées.
+ALTER TABLE gold.alerte
+DROP CONSTRAINT IF EXISTS alerte_capteur_check;
+
 -- ADD CONSTRAINT n'a pas de IF NOT EXISTS : on vérifie avant de l'ajouter
 DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint
-        WHERE conname = 'alerte_capteur_check'
+        WHERE conname = 'alerte_capteur_type_check'
           AND conrelid = 'gold.alerte'::regclass
     ) THEN
         ALTER TABLE gold.alerte
-        ADD CONSTRAINT alerte_capteur_check CHECK (
-            capteur IS null
-            OR (type = 'sensor' AND capteur IN ('consumption', 'electrical'))
+        ADD CONSTRAINT alerte_capteur_type_check CHECK (
+            (type = 'sensor') = (capteur IS NOT null)
+            AND (capteur IS null OR capteur IN ('consumption', 'electrical'))
         );
     END IF;
 END
@@ -104,6 +110,8 @@ WHERE source = 'etl';
 -- début des alertes en cours ou récentes, pour retrouver la même alerte à
 -- chaque passage. Le temps de référence est la dernière minute du site, et
 -- non now() : silver en retard ne ferme rien à tort.
+-- Une alerte en cours que le calcul ne retrouve plus (seuil modifié, minute
+-- réécrite, site désactivé) est fermée à la dernière minute de son site.
 --
 -- Exécutée avec les droits de l'appelant (compte etl).
 -- Retourne les alertes créées ou modifiées.
@@ -323,9 +331,42 @@ BEGIN
                 excluded.valeur, excluded.seuil
             )
         RETURNING a.id_site, a.type, a.capteur, a.debut, a.fin IS null
+    ),
+
+    fermees AS (
+        -- Alertes en cours que le calcul ne retrouve plus : début décalé
+        -- (seuil modifié, minute de silver réécrite) ou site qui n'est plus
+        -- actif. Fermées à la dernière minute du site : laissées en cours,
+        -- elles resteraient affichées et élargiraient la fenêtre (depart) à
+        -- chaque passage. Jamais les mêmes lignes que ecrites (NOT EXISTS).
+        UPDATE gold.alerte AS a
+        SET fin = greatest(
+            a.debut,
+            (
+                SELECT max(sr.horodatage)
+                FROM silver.silver_readings AS sr
+                WHERE sr.id_site = a.id_site
+            )
+        )
+        WHERE
+            a.source = 'etl'
+            AND a.type IN ('threshold', 'sensor')
+            AND a.fin IS null
+            AND NOT EXISTS (
+                SELECT 1
+                FROM detail AS d
+                WHERE
+                    d.id_site = a.id_site
+                    AND d.type = a.type
+                    AND d.capteur IS NOT DISTINCT FROM a.capteur
+                    AND d.debut = a.debut
+            )
+        RETURNING a.id_site, a.type, a.capteur, a.debut, false
     )
 
-    SELECT * FROM ecrites;
+    SELECT * FROM ecrites
+    UNION ALL
+    SELECT * FROM fermees;
 END;
 $$;
 
