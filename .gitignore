@@ -25,7 +25,6 @@ mlruns/
 # --- Données ---
 data/raw/
 data/processed/
-model/data/
 
 # --- Front (Vue 3 / Node) ---
 node_modules/

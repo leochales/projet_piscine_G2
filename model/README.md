@@ -111,3 +111,20 @@ Jeu de test (2024-09-12 12:00 → 2024-12-31), jeu d'empreinte `f2ee5c19efdb` (v
 | Veille | 137,1 kWh | 282,7 kWh | 27,74 % |
 
 La veille se trompe à chaque passage entre semaine et week-end. Les anomalies du jeu (pics, chutes, coupures) causent environ les deux tiers de l'erreur. Si les données changent (nouvelle version DVC, autre empreinte), relancer la commande et mettre ce tableau à jour.
+
+## Variables du modèle (SMARTOPS-29)
+
+`model/features.py` construit les variables à partir de lignes au format de `gold.consommation_horaire`. Le même code sert à l'entraînement et à la prévision :
+
+```python
+from model.features import construire_variables, moyennes_par_site, noms_variables
+
+moyennes = moyennes_par_site(train)  # sur l'entraînement seulement
+df = construire_variables(df, moyennes, 24)  # horizon 24 (24 h) ou 168 (7 jours)
+X = df[noms_variables(24)]
+```
+
+- Consommation de l'heure : `moyenne_kw`, divisée par la moyenne du site sur l'entraînement (`conso_norm`), pour qu'un seul modèle serve aux 7 sites.
+- Lags (24 h, 7, 14 et 28 jours) et moyennes glissantes (24 h, 7 jours) : seulement ceux qui sont connus au moment de prévoir, donc pris au moins `horizon` heures avant. À 7 jours, pas de lag de 24 h. Une moyenne glissante demande au moins 80 % d'heures connues, sinon elle reste vide.
+- Calendrier et site : heure du jour, jour de la semaine et site en colonnes 0/1, toujours les mêmes colonnes, même si une valeur est absente des données.
+- Décalages dans le temps : les heures absentes de gold sont ajoutées vides avant de décaler, puis retirées. Un lag de 24 h prend donc toujours l'heure d'il y a 24 h, ou reste vide.
