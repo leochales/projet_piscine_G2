@@ -19,6 +19,9 @@ export const SENSOR_LABELS: Record<Sensor, string> = {
   reseau: 'réseau',
 }
 
+/** Minutes reconstituées à partir desquelles une heure est marquée sur la courbe (¼ d'heure) */
+export const MINUTES_RECONSTITUEES_MARQUEES = 15
+
 const ETATS: Record<NonNullable<EtatSiteApi['etat_capteurs']>, SiteStatus['etatCapteurs']> = {
   ok: 'ok',
   degraded: 'degrade',
@@ -46,6 +49,15 @@ export function transmissionSummary(statuses: readonly SiteStatus[]) {
     collecteArretee: statuses.length > 0 && statuses.every((s) => s.transmission === 'inconnu'),
     sitesMuets: statuses.filter((s) => s.transmission === 'muet'),
   }
+}
+
+/**
+ * Rétablissement annoncé, s'il est encore à venir. Un rétablissement passé est celui du dernier
+ * état lu des capteurs : l'annoncer comme « prévu » serait faux.
+ */
+export function upcomingRecovery(status: SiteStatus, now: Date = new Date()): string | null {
+  const iso = status.retablissementPrevu
+  return iso !== null && new Date(iso).getTime() > now.getTime() ? iso : null
 }
 
 /** « réseau, température » : capteurs en panne d'un site */

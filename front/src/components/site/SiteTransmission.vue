@@ -1,13 +1,17 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { WifiOff, TriangleAlert } from '@lucide/vue'
 
-import { describeSensors } from '@/lib/etat'
+import { describeSensors, upcomingRecovery } from '@/lib/etat'
 import { formatRelativeDateTime } from '@/lib/format'
 import type { SiteStatus } from '@/types/energy'
 
 // US4 : le site ne transmet plus, ou un de ses capteurs est en panne. Rien n'est affiché
 // quand tout fonctionne. Si notre collecte est arrêtée, on le dit sans mettre le site en cause.
-defineProps<{ status: SiteStatus }>()
+const props = defineProps<{ status: SiteStatus }>()
+
+// Recalculé à chaque rafraîchissement (nouvel état chaque minute) : une heure passée disparaît
+const recovery = computed(() => upcomingRecovery(props.status))
 </script>
 
 <template>
@@ -40,8 +44,9 @@ defineProps<{ status: SiteStatus }>()
     </p>
   </div>
 
+  <!-- Collecte arrêtée : l'état des capteurs n'est plus lu, on ne montre pas un état périmé -->
   <div
-    v-if="status.capteursEnPanne.length"
+    v-if="status.transmission !== 'inconnu' && status.capteursEnPanne.length"
     role="status"
     class="flex items-start gap-3 rounded-lg border border-warning bg-card p-4 text-sm"
   >
@@ -51,8 +56,8 @@ defineProps<{ status: SiteStatus }>()
         {{ status.capteursEnPanne.length > 1 ? 'Capteurs en panne' : 'Capteur en panne' }} :
         {{ describeSensors(status.capteursEnPanne) }}.
       </strong>
-      <template v-if="status.retablissementPrevu">
-        Rétablissement prévu {{ formatRelativeDateTime(status.retablissementPrevu) }}.
+      <template v-if="recovery">
+        Rétablissement prévu {{ formatRelativeDateTime(recovery) }}.
       </template>
     </p>
   </div>

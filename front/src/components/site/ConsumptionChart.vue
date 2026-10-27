@@ -15,6 +15,7 @@ import {
   type Plugin,
 } from 'chart.js'
 
+import { MINUTES_RECONSTITUEES_MARQUEES } from '@/lib/etat'
 import { formatAxisHour, formatEurCents, formatKwh, formatKw } from '@/lib/format'
 import type { SiteSeries } from '@/types/energy'
 
@@ -89,10 +90,12 @@ const points = computed(() => {
   ]
 })
 
-// US4 : heures dont une partie des minutes a été reconstituée après une panne. Marquées d'un
-// point creux sur la courbe : la valeur est en partie estimée, pas mesurée.
+// US4 : heures dont une part notable des minutes a été reconstituée après une panne. Marquées
+// d'un point creux sur la courbe : la valeur est en partie estimée, pas mesurée. Les quelques
+// minutes isolées interpolées presque chaque heure ne sont pas marquées (la courbe serait
+// couverte de points) ; l'infobulle donne toujours le nombre exact.
 const isImputed = (p: { mesure: number | null; imputees: number }) =>
-  p.mesure !== null && p.imputees > 0
+  p.mesure !== null && p.imputees >= MINUTES_RECONSTITUEES_MARQUEES
 const hasImputed = computed(() => points.value.some(isImputed))
 
 const nowIndex = computed(() => props.series.mesures.length - 1)

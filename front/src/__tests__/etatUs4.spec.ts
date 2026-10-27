@@ -4,7 +4,7 @@ import { mount } from '@vue/test-utils'
 import TransmissionBanner from '@/components/overview/TransmissionBanner.vue'
 import ConsumptionChart from '@/components/site/ConsumptionChart.vue'
 import SiteTransmission from '@/components/site/SiteTransmission.vue'
-import { describeSensors, toSiteStatus, transmissionSummary } from '@/lib/etat'
+import { describeSensors, toSiteStatus, transmissionSummary, upcomingRecovery } from '@/lib/etat'
 import type { EtatSiteApi } from '@/types/api'
 import type { SiteStatus } from '@/types/energy'
 
@@ -61,6 +61,17 @@ describe('état des sites', () => {
 
   it('ne signale rien sans site', () => {
     expect(transmissionSummary([])).toEqual({ collecteArretee: false, sitesMuets: [] })
+  })
+
+  it('n’annonce que les rétablissements encore à venir', () => {
+    const now = new Date('2026-10-27T10:00:00Z')
+    expect(upcomingRecovery(statut({ retablissement_prevu: '2026-10-27T10:30:00Z' }), now)).toBe(
+      '2026-10-27T10:30:00Z',
+    )
+    expect(
+      upcomingRecovery(statut({ retablissement_prevu: '2026-10-27T09:30:00Z' }), now),
+    ).toBeNull()
+    expect(upcomingRecovery(statut(), now)).toBeNull()
   })
 
   it('nomme les capteurs en panne', () => {
@@ -121,7 +132,7 @@ describe('page du site', () => {
         status: statut({
           etat_capteurs: 'degraded',
           capteurs_en_panne: ['temperature'],
-          retablissement_prevu: '2026-10-27T10:00:00Z',
+          retablissement_prevu: new Date(Date.now() + 3600_000).toISOString(),
         }),
       },
     })
@@ -135,6 +146,33 @@ describe('page du site', () => {
     })
     expect(wrapper.text()).toContain('La collecte des mesures est interrompue')
     expect(wrapper.text()).not.toContain('Le site ne transmet plus')
+  })
+
+  it('tait un rétablissement déjà passé', () => {
+    const wrapper = mount(SiteTransmission, {
+      props: {
+        status: statut({
+          capteurs_en_panne: ['temperature'],
+          retablissement_prevu: new Date(Date.now() - 60_000).toISOString(),
+        }),
+      },
+    })
+    expect(wrapper.text()).toContain('Capteur en panne : température.')
+    expect(wrapper.text()).not.toContain('Rétablissement prévu')
+  })
+
+  it('ne montre pas un état des capteurs périmé quand la collecte est arrêtée', () => {
+    const wrapper = mount(SiteTransmission, {
+      props: {
+        status: statut({
+          transmet: null,
+          collecte_a_jour: false,
+          capteurs_en_panne: ['temperature'],
+        }),
+      },
+    })
+    expect(wrapper.text()).toContain('La collecte des mesures est interrompue')
+    expect(wrapper.text()).not.toContain('en panne')
   })
 
   it('n’affiche rien quand tout fonctionne', () => {
@@ -152,8 +190,13 @@ describe('courbe de consommation', () => {
   })
 
   it('légende les heures reconstituées après une panne', () => {
-    const wrapper = mount(ConsumptionChart, { props: { series: series(12), capaciteKw: 1000 } })
+    const wrapper = mount(ConsumptionChart, { props: { series: series(15), capaciteKw: 1000 } })
     expect(wrapper.text()).toContain('heure en partie reconstituée après une panne')
+  })
+
+  it('ne marque pas quelques minutes isolées reconstituées', () => {
+    const wrapper = mount(ConsumptionChart, { props: { series: series(14), capaciteKw: 1000 } })
+    expect(wrapper.text()).not.toContain('reconstituée')
   })
 
   it('ne légende rien sans valeur reconstituée', () => {
