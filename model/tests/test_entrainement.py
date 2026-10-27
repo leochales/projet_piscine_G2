@@ -9,6 +9,8 @@ from model.entrainement import (
     ajouter_previsions,
     entrainer,
     entrainer_horizon,
+    garder_sites_connus,
+    main,
     preparer,
     prevoir_kwh,
 )
@@ -124,10 +126,26 @@ def test_modeles_et_reference_notes_sur_les_memes_heures():
     lignes = preparer(df, moyennes, 24)
     noms = noms_variables(24, moyennes)
     modeles = entrainer(lignes, noms)
-    d = ajouter_previsions(lignes, modeles, noms, moyennes, "validation")
+    d = ajouter_previsions(lignes, modeles, noms, moyennes, "validation", 24)
     assert (d["jeu"] == "validation").all()
     colonnes = [REFERENCE, "baseline_veille", *modeles]
     assert d[colonnes].notna().all().all()
+
+
+def test_a_7_jours_la_veille_ne_compte_pas():
+    """À 7 jours, la veille n'est pas connue au moment de prévoir : elle n'est ni
+    affichée, ni utilisée pour écarter des heures."""
+    df = faux_jeu()
+    moyennes = moyennes_entrainement(df)
+    veille_manquante = (df["jeu"] == "validation") & (df["id_site"] == "SITE001")
+    df.loc[veille_manquante, "baseline_veille"] = np.nan
+    lignes = preparer(df, moyennes, 168)
+    noms = noms_variables(168, moyennes)
+    d = ajouter_previsions(lignes, {}, noms, moyennes, "validation", 168)
+    assert (d["id_site"] == "SITE001").any()
+    r = entrainer_horizon(df, moyennes, 168)
+    assert "baseline_veille" not in r.test.index
+    assert "baseline_veille" not in r.validation.index
 
 
 @pytest.mark.parametrize("horizon", [24, 168])
@@ -140,7 +158,45 @@ def test_bat_la_reference_sur_un_motif_simple(horizon):
     wape_validation = r.validation.loc[["ridge", "random_forest"], "WAPE_%"]
     assert r.meilleur == wape_validation.idxmin()
     # Sur le test, le modèle retenu fait mieux que la référence, sur chaque site
-    assert list(r.test.index) == ["baseline_veille", REFERENCE, r.meilleur]
+    references = ["baseline_veille", REFERENCE] if horizon == 24 else [REFERENCE]
+    assert list(r.test.index) == [*references, r.meilleur]
+    assert r.bat_reference
     assert r.test.loc[r.meilleur, "WAPE_%"] < r.test.loc[REFERENCE, "WAPE_%"]
     assert (r.par_site[r.meilleur] < r.par_site[REFERENCE]).all()
     assert list(r.par_site.index) == ["SITE001", "SITE002"]
+
+
+def test_modele_qui_ne_bat_pas_la_reference_signale():
+    """Consommation qui se répète à l'identique chaque semaine : la référence est
+    parfaite, le modèle ne peut pas faire mieux. La règle de SMARTOPS-30 le signale."""
+    df = faux_jeu(bruit=0.0)
+    r = entrainer_horizon(df, moyennes_entrainement(df), 24)
+    assert not r.bat_reference
+
+
+def test_site_sans_heure_d_entrainement_ecarte_sans_bloquer():
+    df = faux_jeu()
+    # SITE002 mis en service après la date de coupure : rien dans l'entraînement
+    df = df[~((df["id_site"] == "SITE002") & (df["jeu"] == "entrainement"))]
+    moyennes = moyennes_entrainement(df)
+    gardes = garder_sites_connus(df, moyennes)
+    assert set(gardes["id_site"]) == {"SITE001"}
+    entrainer_horizon(gardes, moyennes, 24)
+
+
+def test_main_moyennes_sur_l_entrainement_seulement(monkeypatch, tmp_path):
+    """Le script complet, sur un faux jeu : les moyennes par site ne voient que
+    l'entraînement, sinon le test serait faussé (fuite de données)."""
+    chemin = tmp_path / "dataset.parquet"
+    faux_jeu().drop(columns=["baseline_veille", REFERENCE]).to_parquet(chemin)
+    jeux_vus = []
+
+    def moyennes_espion(train):
+        jeux_vus.extend(train["jeu"].unique())
+        return moyennes_par_site(train)
+
+    monkeypatch.setattr(entrainement, "moyennes_par_site", moyennes_espion)
+    resultats = main(["--chemin", str(chemin)])
+    assert jeux_vus == ["entrainement"]
+    assert len(resultats) == 2
+    assert all(r.bat_reference for r in resultats)

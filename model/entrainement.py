@@ -38,9 +38,25 @@ from model.features import (
 # Les deux sortes de modèles comparés
 Modele: TypeAlias = Pipeline | RandomForestRegressor
 
-# Référence retenue : la seule valable aux deux horizons (à 7 jours, la veille
-# n'est pas encore connue)
+# Référence retenue : la seule valable aux deux horizons. Une version du modèle
+# n'est gardée que si elle fait mieux qu'elle (SMARTOPS-30)
 REFERENCE = "baseline_semaine"
+
+
+def references(horizon: int) -> list[str]:
+    """Prévisions de référence valables pour un horizon : celles connues au moment de
+    prévoir. À 7 jours, la veille n'est pas encore connue."""
+    return [nom for nom, decalage in BASELINES.items() if decalage >= horizon]
+
+
+def garder_sites_connus(df: pd.DataFrame, moyennes: pd.Series) -> pd.DataFrame:
+    """Écarte, en le signalant, les sites sans moyenne d'entraînement (aucune heure
+    mesurée avant la date de coupure, par exemple un site mis en service après) :
+    le modèle ne peut pas les prévoir, mais ils ne doivent pas bloquer les autres."""
+    inconnus = sorted(set(df["id_site"]) - set(moyennes.index))
+    if inconnus:
+        print(f"Sites sans heure mesurée dans l'entraînement, écartés : {inconnus}")
+    return df[df["id_site"].isin(moyennes.index)]
 
 
 def preparer(df: pd.DataFrame, moyennes: pd.Series, horizon: int) -> pd.DataFrame:
@@ -95,46 +111,28 @@ def ajouter_previsions(
     noms: list[str],
     moyennes: pd.Series,
     jeu: str,
+    horizon: int,
 ) -> pd.DataFrame:
     """Lignes d'un jeu, avec une colonne de prévision par modèle. On ne garde que les
-    heures où la référence existe : modèles et référence sont notés sur les mêmes
-    heures."""
-    d = lignes[lignes["jeu"] == jeu].dropna(subset=list(BASELINES)).copy()
+    heures où les références valables pour l'horizon existent : modèles et
+    références sont notés sur les mêmes heures."""
+    d = lignes[lignes["jeu"] == jeu].dropna(subset=references(horizon)).copy()
     for nom, modele in modeles.items():
         d[nom] = prevoir_kwh(modele, d, noms, moyennes)
     return d
 
 
-def comparer(
-    lignes: pd.DataFrame,
-    modeles: dict[str, Modele],
-    noms: list[str],
-    moyennes: pd.Series,
-    jeu: str = "validation",
-) -> pd.DataFrame:
-    """Scores des modèles et des prévisions de référence sur un jeu, une ligne par
-    prévision, sur les mêmes heures."""
-    d = ajouter_previsions(lignes, modeles, noms, moyennes, jeu)
-    previsions = [*BASELINES, *modeles]
+def comparer(d: pd.DataFrame, previsions: list[str]) -> pd.DataFrame:
+    """Scores de chaque prévision, une ligne par prévision."""
     return pd.DataFrame({nom: scores(d, nom) for nom in previsions}).T
 
 
-def wape_par_site(
-    lignes: pd.DataFrame,
-    modeles: dict[str, Modele],
-    noms: list[str],
-    moyennes: pd.Series,
-    jeu: str = "test",
-) -> pd.DataFrame:
-    """WAPE de la référence retenue et de chaque modèle, site par site : le modèle
-    doit faire mieux sur chaque site, pas seulement en moyenne."""
-    d = ajouter_previsions(lignes, modeles, noms, moyennes, jeu)
-    sites = dict(list(d.groupby("id_site")))
+def wape_par_site(d: pd.DataFrame, previsions: list[str]) -> pd.DataFrame:
+    """WAPE de chaque prévision, site par site, avec le même calcul que la prévision
+    de référence (model.baseline) : le modèle doit faire mieux sur chaque site, pas
+    seulement en moyenne."""
     return pd.DataFrame(
-        {
-            nom: {site: scores(g, nom)["WAPE_%"] for site, g in sites.items()}
-            for nom in [REFERENCE, *modeles]
-        }
+        {nom: d.groupby("id_site").apply(scores, nom)["WAPE_%"] for nom in previsions}
     )
 
 
@@ -146,6 +144,9 @@ class Resultat:
     validation: pd.DataFrame
     test: pd.DataFrame
     par_site: pd.DataFrame
+    # Règle de SMARTOPS-30 : le modèle retenu fait mieux que la référence sur le test.
+    # SMARTOPS-32 n'enregistre le modèle que si c'est vrai.
+    bat_reference: bool
     # Heures mesurées du test : toutes, avec au moins une variable manquante
     # (prévues quand même), et sans référence (exclues de la comparaison)
     heures_test: int
@@ -158,32 +159,43 @@ def entrainer_horizon(df: pd.DataFrame, moyennes: pd.Series, horizon: int) -> Re
     validation, puis le mesure une seule fois sur le test."""
     lignes = preparer(df, moyennes, horizon)
     noms = noms_variables(horizon, moyennes)
+    refs = references(horizon)
     modeles = entrainer(lignes, noms)
-    validation = comparer(lignes, modeles, noms, moyennes, "validation")
+    d = ajouter_previsions(lignes, modeles, noms, moyennes, "validation", horizon)
+    validation = comparer(d, [*refs, *modeles])
     # Choix sur la validation seulement, d'après le WAPE (comme le seuil de la 30)
     meilleur = str(validation.loc[list(modeles), "WAPE_%"].idxmin())
     retenu = {meilleur: modeles[meilleur]}
-    test = lignes[lignes["jeu"] == "test"]
+    # Prévisions du test calculées une fois, pour les scores globaux et par site
+    d = ajouter_previsions(lignes, retenu, noms, moyennes, "test", horizon)
+    test = comparer(d, [*refs, meilleur])
+    heures_test = lignes[lignes["jeu"] == "test"]
     return Resultat(
         meilleur=meilleur,
         validation=validation,
-        test=comparer(lignes, retenu, noms, moyennes, "test"),
-        par_site=wape_par_site(lignes, retenu, noms, moyennes, "test"),
-        heures_test=len(test),
-        variables_incompletes=int(test[noms].isna().any(axis=1).sum()),
-        sans_reference=int(test[list(BASELINES)].isna().any(axis=1).sum()),
+        test=test,
+        par_site=wape_par_site(d, [REFERENCE, meilleur]),
+        bat_reference=bool(
+            test.loc[meilleur, "WAPE_%"] < test.loc[REFERENCE, "WAPE_%"]
+        ),
+        heures_test=len(heures_test),
+        variables_incompletes=int(heures_test[noms].isna().any(axis=1).sum()),
+        sans_reference=int(heures_test[refs].isna().any(axis=1).sum()),
     )
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv: list[str] | None = None) -> list[Resultat]:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--chemin", type=Path, default=chemin_par_defaut())
     args = parser.parse_args(argv)
 
     df = ajouter_baselines(charger(args.chemin))
     moyennes = moyennes_par_site(df[df["jeu"] == "entrainement"])
+    df = garder_sites_connus(df, moyennes)
+    resultats = []
     for horizon in HORIZONS:
         r = entrainer_horizon(df, moyennes, horizon)
+        resultats.append(r)
         print(f"===== horizon {horizon} h")
         print("validation :")
         print(r.validation.round(2))
@@ -196,6 +208,12 @@ def main(argv: list[str] | None = None) -> None:
         print(r.test.round(2))
         print("WAPE % par site sur le test :")
         print(r.par_site.round(2))
+        if not r.bat_reference:
+            print(
+                f"ATTENTION : {r.meilleur} ne fait pas mieux que {REFERENCE} sur le "
+                "test. Ce modèle ne doit pas être enregistré."
+            )
+    return resultats
 
 
 if __name__ == "__main__":
