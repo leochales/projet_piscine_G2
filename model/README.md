@@ -114,16 +114,18 @@ La veille se trompe à chaque passage entre semaine et week-end. Les anomalies d
 
 ## Variables du modèle (SMARTOPS-29)
 
-`model/features.py` construit les variables à partir de lignes au format de `gold.consommation_horaire`. Le même code sert à l'entraînement et à la prévision.
+`model/features.py` construit les variables à partir de lignes au format de `gold.consommation_horaire` (colonnes utilisées : `id_site`, `heure`, `moyenne_kw`, `taux_couverture`). Le même code sert à l'entraînement et à la prévision.
 
 Entraînement :
 
 ```python
 from model.features import construire_variables, moyennes_par_site, noms_variables
 
-moyennes = moyennes_par_site(train)  # sur l'entraînement seulement
+moyennes = moyennes_par_site(
+    train
+)  # sur l'entraînement seulement, à enregistrer avec le modèle
 df = construire_variables(df, moyennes, 24)  # horizon 24 (24 h) ou 168 (7 jours)
-X = df[noms_variables(24)]
+X = df[noms_variables(24, moyennes)]
 ```
 
 Prévision : les heures à prévoir n'existent pas encore dans gold. Il faut d'abord les ajouter, vides, à la suite de l'historique. Leurs variables sont ensuite calculées à partir de l'historique :
@@ -133,12 +135,16 @@ from model.features import ajouter_heures_a_prevoir
 
 df = ajouter_heures_a_prevoir(historique, debut=prochaine_heure, nb_heures=24)
 df = construire_variables(df, moyennes, 24)  # moyennes enregistrées avec le modèle
-X = df.loc[df["heure"] >= prochaine_heure, noms_variables(24)]
+X = df.loc[df["heure"] >= prochaine_heure, noms_variables(24, moyennes)]
 ```
 
-- Consommation de l'heure : `moyenne_kw`, divisée par la moyenne du site sur l'entraînement (`conso_norm`), pour qu'un seul modèle serve aux 7 sites.
+`prochaine_heure` doit avoir un fuseau horaire et tomber sur une heure pile (`10:00`, pas `10:37`). Seuls les 28 jours avant elle sont gardés (`HISTORIQUE_UTILE`) : c'est le plus long retour en arrière des variables. Il suffit donc de lire ces 28 jours dans gold.
+
+- Horizons : 24 et 168 seulement. Un horizon plus court ferait entrer dans les variables des heures inconnues au moment de prévoir.
+- Consommation de l'heure : `moyenne_kw` des heures mesurées (`taux_couverture` > 0), divisée par la moyenne du site sur l'entraînement (`conso_norm`), pour qu'un seul modèle serve à tous les sites. Une heure interpolée du jeu d'entraînement est traitée comme absente : en production, l'ETL ne comble jamais une heure entière, et elle serait absente de gold.
+- Sites : ceux qui ont une moyenne d'entraînement. Les moyennes, enregistrées avec le modèle, servent de liste des sites. Un nouveau site est refusé tant que le modèle n'est pas réentraîné avec lui.
 - Lags (24 h, 7, 14 et 28 jours) et moyennes glissantes (24 h, 7 jours) : seulement ceux qui sont connus au moment de prévoir, donc pris au moins `horizon` heures avant. À 7 jours, pas de lag de 24 h. Une moyenne glissante demande au moins 80 % d'heures connues, sinon elle reste vide.
 - Calendrier et site : heure du jour, jour de la semaine et site en colonnes 0/1, toujours les mêmes colonnes, même si une valeur est absente des données.
 - Heure du jour et jour de la semaine lus sur `heure` sans conversion en heure de Paris. Les horodatages du CSV et de l'API Mock sont l'heure du simulateur, sans changement d'heure, enregistrée comme de l'UTC (voir les règles du jeu d'entraînement). Le CSV n'a ni heure manquante en mars ni heure en double en octobre, et les bureaux y commencent à 8 h été comme hiver. Convertir en heure de Paris décalerait ce profil d'une heure l'été. Avec de vraies données en UTC, il faudra convertir en heure locale du site.
 - Décalages dans le temps : les heures absentes de gold sont ajoutées vides avant de décaler, puis retirées. Un lag de 24 h prend donc toujours l'heure d'il y a 24 h, ou reste vide. La prévision de référence utilise le même calcul (`valeurs_passees`).
-- Entrée refusée avec un message clair : aucune ligne, site absent de la liste du modèle, ou site sans moyenne d'entraînement (absente ou nulle).
+- Entrée refusée avec un message clair : colonne manquante, aucune ligne, même heure en double pour un site, site sans moyenne d'entraînement (absente ou nulle).

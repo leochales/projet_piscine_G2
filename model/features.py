@@ -4,14 +4,19 @@ prévision.
 Entrée : une ligne par site et par heure, au format de ``gold.consommation_horaire``
 (le jeu du ticket 93 en a les colonnes). La consommation de l'heure est
 ``moyenne_kw`` : elle reste juste quand des minutes manquent, contrairement à
-``consommation_kwh``.
+``consommation_kwh``. Seules les heures mesurées (``taux_couverture`` > 0) comptent :
+une heure interpolée du jeu d'entraînement est traitée comme absente, comme elle le
+serait en production, où l'ETL ne comble jamais une heure entière.
 
-Variables, pour un horizon donné (24 h ou 7 jours) :
+Variables, pour un horizon de 24 h ou de 7 jours (168 h) :
   - consommation divisée par la moyenne du site sur l'entraînement (``conso_norm``),
-    pour qu'un modèle unique serve aux 7 sites ;
+    pour qu'un modèle unique serve à tous les sites ;
   - valeurs passées (lags) et moyennes glissantes, prises au moins ``horizon`` heures
     avant : au moment de prévoir, les heures plus récentes ne sont pas encore connues ;
   - heure du jour, jour de la semaine et site, en colonnes 0/1.
+
+Les sites du modèle sont ceux qui ont une moyenne d'entraînement : la série
+``moyennes`` est enregistrée avec le modèle et sert de liste des sites.
 
 Les décalages se font dans le temps, pas en lignes : gold peut avoir des heures
 absentes, qui sont ajoutées vides avant de décaler. ``valeurs_passees`` sert aussi à la
@@ -29,43 +34,68 @@ from collections.abc import Callable
 import pandas as pd
 
 COLONNE_CONSO = "moyenne_kw"
+COLONNES_ENTREE = ["id_site", "heure", COLONNE_CONSO, "taux_couverture"]
 
+HORIZONS = (24, 168)
 LAGS = {"lag_24h": 24, "lag_7j": 168, "lag_14j": 336, "lag_28j": 672}
 MOYENNES = {"moyenne_24h": 24, "moyenne_7j": 168}
 # Part minimale d'heures connues dans une moyenne glissante
 COUVERTURE_MIN_MOYENNE = 0.8
 HEURES = list(range(24))
 JOURS = list(range(7))
-SITES = ["SITE001", "SITE002", "SITE003", "SITE004", "SITE005", "SITE006", "SITE007"]
+# Historique utile pour prévoir : le plus long retour en arrière des variables
+# (lag de 28 jours, ou moyenne de 7 jours prise 7 jours avant)
+HISTORIQUE_UTILE = pd.Timedelta(
+    hours=max(*LAGS.values(), max(HORIZONS) + max(MOYENNES.values()))
+)
 
 
-def moyennes_par_site(train: pd.DataFrame, colonne: str = COLONNE_CONSO) -> pd.Series:
-    """Consommation moyenne de chaque site, calculée sur l'entraînement seulement."""
-    return train.groupby("id_site")[colonne].mean()
+def conso_mesuree(df: pd.DataFrame) -> pd.Series:
+    """``moyenne_kw`` des heures mesurées, vide pour une heure sans aucune mesure."""
+    return df[COLONNE_CONSO].where(df["taux_couverture"] > 0)
+
+
+def moyennes_par_site(train: pd.DataFrame) -> pd.Series:
+    """Consommation moyenne de chaque site sur l'entraînement, heures mesurées
+    seulement. À enregistrer avec le modèle : elle sert aussi de liste des sites."""
+    return conso_mesuree(train).groupby(train["id_site"]).mean()
+
+
+def verifier_horizon(horizon: int) -> None:
+    # Un horizon plus court ferait entrer dans les variables des heures inconnues au
+    # moment de prévoir (à 0, la consommation à prévoir elle-même)
+    if horizon not in HORIZONS:
+        raise ValueError(f"Horizon {horizon} h non prévu : {HORIZONS} seulement")
 
 
 def verifier_entree(df: pd.DataFrame, moyennes: pd.Series) -> None:
     """Arrête avec un message clair plutôt que de produire des variables vides ou
     infinies sans prévenir."""
+    manquantes = [c for c in COLONNES_ENTREE if c not in df.columns]
+    if manquantes:
+        raise ValueError(f"Colonnes manquantes : {manquantes}")
     if df.empty:
         raise ValueError("Aucune ligne de consommation : pas de variables à construire")
-    sites = df["id_site"].unique()
-    inconnus = sorted(set(sites) - set(SITES))
-    if inconnus:
-        raise ValueError(f"Sites inconnus du modèle : {inconnus}")
-    sans_moyenne = sorted(s for s in sites if not moyennes.get(s, 0) > 0)
+    doublons = df[df.duplicated(["id_site", "heure"], keep=False)]
+    if not doublons.empty:
+        exemple = doublons.iloc[0]
+        raise ValueError(
+            f"{len(doublons)} lignes en double (même site, même heure), par exemple "
+            f"{exemple['id_site']} à {exemple['heure']}"
+        )
+    sans_moyenne = sorted(
+        s for s in df["id_site"].unique() if not moyennes.get(s, 0) > 0
+    )
     if sans_moyenne:
         raise ValueError(
-            f"Moyenne d'entraînement absente ou nulle pour {sans_moyenne} : "
-            "impossible de normaliser la consommation"
+            f"Sites inconnus du modèle, ou de moyenne d'entraînement nulle : "
+            f"{sans_moyenne}. Il faut réentraîner le modèle avec ces sites."
         )
 
 
-def normaliser(
-    df: pd.DataFrame, moyennes: pd.Series, colonne: str = COLONNE_CONSO
-) -> pd.DataFrame:
+def normaliser(df: pd.DataFrame, moyennes: pd.Series) -> pd.DataFrame:
     df = df.copy()
-    df["conso_norm"] = df[colonne] / df["id_site"].map(moyennes)
+    df["conso_norm"] = conso_mesuree(df) / df["id_site"].map(moyennes)
     return df
 
 
@@ -152,7 +182,15 @@ def ajouter_heures_a_prevoir(
 ) -> pd.DataFrame:
     """Ajoute, pour chaque site de l'historique, les ``nb_heures`` heures à partir de
     ``debut``, sans consommation. ``construire_variables`` calcule ensuite leurs
-    variables à partir de l'historique, et le modèle prédit ces lignes."""
+    variables à partir de l'historique, et le modèle prédit ces lignes.
+
+    Seul l'historique utile est gardé (``HISTORIQUE_UTILE`` avant ``debut``) : le
+    calcul ne porte pas sur des années de données à chaque prévision."""
+    if debut.tzinfo is None:
+        raise ValueError(f"Début des prévisions sans fuseau horaire : {debut}")
+    if debut != debut.floor("h"):
+        raise ValueError(f"Début des prévisions pas sur une heure pile : {debut}")
+    historique = historique[historique["heure"] >= debut - HISTORIQUE_UTILE]
     heures = pd.date_range(debut, periods=nb_heures, freq="h")
     a_prevoir = pd.MultiIndex.from_product(
         [historique["id_site"].unique(), heures], names=["id_site", "heure"]
@@ -170,7 +208,7 @@ def encoder(serie: pd.Series, valeurs: list, prefixe: str) -> pd.DataFrame:
     return pd.get_dummies(categories, prefix=prefixe, dtype=int)
 
 
-def ajouter_calendrier(df: pd.DataFrame) -> pd.DataFrame:
+def ajouter_calendrier(df: pd.DataFrame, sites: list[str]) -> pd.DataFrame:
     """Heure du jour et jour de la semaine lus sur ``heure`` telle quelle, sans
     conversion en heure de Paris : les horodatages de l'API Mock et du CSV sont l'heure
     du simulateur, sans changement d'heure, enregistrée comme de l'UTC (ticket 93).
@@ -178,25 +216,31 @@ def ajouter_calendrier(df: pd.DataFrame) -> pd.DataFrame:
     ce profil d'une heure l'été."""
     heures = encoder(df["heure"].dt.hour, HEURES, "heure")
     jours = encoder(df["heure"].dt.dayofweek, JOURS, "jour")
-    sites = encoder(df["id_site"], SITES, "site")
-    return pd.concat([df, heures, jours, sites], axis=1)
+    colonnes_sites = encoder(df["id_site"], sites, "site")
+    return pd.concat([df, heures, jours, colonnes_sites], axis=1)
 
 
-def noms_variables(horizon: int) -> list[str]:
+def sites_du_modele(moyennes: pd.Series) -> list[str]:
+    return sorted(moyennes.index)
+
+
+def noms_variables(horizon: int, moyennes: pd.Series) -> list[str]:
     """Colonnes données au modèle, dans l'ordre."""
+    verifier_horizon(horizon)
     return (
         list(lags_utilisables(horizon))
         + list(MOYENNES)
         + [f"heure_{h}" for h in HEURES]
         + [f"jour_{j}" for j in JOURS]
-        + [f"site_{s}" for s in SITES]
+        + [f"site_{s}" for s in sites_du_modele(moyennes)]
     )
 
 
 def construire_variables(
     df: pd.DataFrame, moyennes: pd.Series, horizon: int
 ) -> pd.DataFrame:
+    verifier_horizon(horizon)
     verifier_entree(df, moyennes)
     df = normaliser(df, moyennes)
     df = ajouter_lags(df, horizon)
-    return ajouter_calendrier(df)
+    return ajouter_calendrier(df, sites_du_modele(moyennes))

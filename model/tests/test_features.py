@@ -2,13 +2,14 @@ import pandas as pd
 import pytest
 
 from model.features import (
-    SITES,
     ajouter_heures_a_prevoir,
     construire_variables,
     moyennes_par_site,
     noms_variables,
 )
 
+SITES = ["SITE001", "SITE002", "SITE003", "SITE004", "SITE005", "SITE006", "SITE007"]
+# Moyenne de 1 pour chaque site : conso_norm vaut la consommation
 SANS_NORMALISATION = pd.Series({site: 1.0 for site in SITES})
 
 
@@ -18,6 +19,7 @@ def faux_site(site="SITE001", nb_heures=200):
             "heure": pd.date_range("2024-01-01", periods=nb_heures, freq="h", tz="UTC"),
             "id_site": site,
             "moyenne_kw": [float(i) for i in range(nb_heures)],
+            "taux_couverture": 1.0,
         }
     )
 
@@ -53,14 +55,14 @@ def test_toutes_les_colonnes_meme_pour_un_seul_site():
     df = construire_variables(
         faux_site("SITE005", nb_heures=30), SANS_NORMALISATION, 24
     )
-    assert all(nom in df.columns for nom in noms_variables(24))
+    assert all(nom in df.columns for nom in noms_variables(24, SANS_NORMALISATION))
     assert df.loc[0, "site_SITE005"] == 1
     assert df.loc[0, "site_SITE001"] == 0
 
 
 def test_horizon_7_jours_sans_lag_trop_court():
-    assert "lag_24h" not in noms_variables(168)
-    assert "lag_7j" in noms_variables(168)
+    assert "lag_24h" not in noms_variables(168, SANS_NORMALISATION)
+    assert "lag_7j" in noms_variables(168, SANS_NORMALISATION)
 
 
 def test_moyenne_glissante_horizon_7_jours():
@@ -100,7 +102,7 @@ def test_normalisation_par_la_moyenne_du_site():
 
 
 def test_site_inconnu_refuse():
-    with pytest.raises(ValueError, match="SITE999"):
+    with pytest.raises(ValueError, match="SITE999.*réentraîner"):
         construire_variables(faux_site("SITE999"), SANS_NORMALISATION, 24)
 
 
@@ -140,3 +142,72 @@ def test_heures_a_prevoir_deja_connues_pas_en_double():
     df = ajouter_heures_a_prevoir(historique, debut, 3)
     # Les 2 premières heures existent déjà : seule la 3e est ajoutée
     assert len(df) == 101
+
+
+@pytest.mark.parametrize("horizon", [0, 12, 48])
+def test_horizon_non_prevu_refuse(horizon):
+    # À 0, les moyennes glissantes contiendraient la consommation à prévoir
+    with pytest.raises(ValueError, match="Horizon"):
+        construire_variables(faux_site(), SANS_NORMALISATION, horizon)
+
+
+def test_heure_en_double_refusee():
+    site = faux_site()
+    with pytest.raises(ValueError, match="double"):
+        construire_variables(pd.concat([site, site.head(1)]), SANS_NORMALISATION, 24)
+
+
+def test_colonne_manquante_refusee():
+    with pytest.raises(ValueError, match="taux_couverture"):
+        construire_variables(
+            faux_site().drop(columns="taux_couverture"), SANS_NORMALISATION, 24
+        )
+
+
+def test_heure_interpolee_traitee_comme_absente():
+    """Une heure comblée par interpolation dans le jeu d'entraînement n'a aucune mesure
+    (taux_couverture = 0) : en production, elle serait absente de gold."""
+    site = faux_site()
+    site.loc[76, "taux_couverture"] = 0.0
+    df = construire_variables(site, SANS_NORMALISATION, 24)
+    assert pd.isna(df.loc[100, "lag_24h"])
+    assert df.loc[100, "moyenne_24h"] == sum(range(53, 76)) / 23
+
+
+def test_moyennes_par_site_sur_les_heures_mesurees():
+    site = faux_site(nb_heures=4)
+    site.loc[3, "taux_couverture"] = 0.0
+    assert moyennes_par_site(site)["SITE001"] == 1.0
+
+
+def test_sites_du_modele_pris_dans_les_moyennes():
+    """La liste des sites est enregistrée avec le modèle (ses moyennes), pas recopiée
+    dans le code."""
+    moyennes = pd.Series({"SITE001": 1.0, "SITE042": 1.0})
+    df = construire_variables(faux_site("SITE042"), moyennes, 24)
+    assert noms_variables(24, moyennes)[-2:] == ["site_SITE001", "site_SITE042"]
+    assert df.loc[0, "site_SITE042"] == 1
+    assert "site_SITE002" not in df.columns
+
+
+@pytest.mark.parametrize(
+    "debut",
+    [
+        pd.Timestamp("2024-01-05 10:37", tz="UTC"),
+        pd.Timestamp("2024-01-05 10:00"),
+    ],
+)
+def test_debut_des_previsions_controle(debut):
+    with pytest.raises(ValueError, match="Début des prévisions"):
+        ajouter_heures_a_prevoir(faux_site(), debut, 24)
+
+
+def test_heures_a_prevoir_avec_l_historique_utile_seulement():
+    historique = faux_site(nb_heures=1000)
+    debut = historique["heure"].max() + pd.Timedelta(hours=1)
+    df = ajouter_heures_a_prevoir(historique, debut, 24)
+    # 28 jours d'historique (672 h) + 24 heures à prévoir
+    assert len(df) == 672 + 24
+    df = construire_variables(df, SANS_NORMALISATION, 24)
+    futur = df[df["heure"] >= debut].reset_index(drop=True)
+    assert futur.loc[0, "lag_28j"] == 1000 - 672
