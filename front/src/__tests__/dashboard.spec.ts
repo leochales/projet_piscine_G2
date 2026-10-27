@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { ApiError } from '@/services/http'
 import {
   acknowledgeAlert,
   decideRecommendation,
@@ -13,9 +14,23 @@ import {
   fetchSiteSeries,
   readSimulation,
   SLOW_DELAY_MS,
+  SOURCES,
 } from '@/services/dashboard'
 
+vi.mock('@/lib/auth', () => ({
+  getToken: vi.fn<() => Promise<string>>(() => Promise.resolve('jeton-de-test')),
+  login: vi.fn<() => Promise<void>>(() => Promise.resolve()),
+}))
+
 describe('services/dashboard', () => {
+  beforeEach(() => {
+    SOURCES.mesures = 'mock'
+  })
+
+  afterEach(() => {
+    SOURCES.mesures = 'api'
+  })
+
   it('charge 24 h ou 7 jours d’historique selon la période', async () => {
     const day = await fetchSiteSeries('SITE002', '24h')
     const week = await fetchSiteSeries('SITE002', '7j')
@@ -40,7 +55,7 @@ describe('services/dashboard', () => {
     const { consommationKw24h, coutEurJours7 } = await fetchFleetTrend()
     expect(consommationKw24h).toHaveLength(24 + 1) // le point « maintenant » est inclus
     expect(coutEurJours7).toHaveLength(7)
-    expect([...consommationKw24h, ...coutEurJours7].every((v) => v > 0)).toBe(true)
+    expect([...consommationKw24h, ...coutEurJours7].every((v) => v !== null && v > 0)).toBe(true)
   })
 
   it('finit les mini-courbes sur les valeurs des KPI, et respecte la variation « vs hier »', async () => {
@@ -72,9 +87,14 @@ describe('services/dashboard', () => {
 })
 
 describe('simulation des cas réels (?simulation=…)', () => {
+  beforeEach(() => {
+    SOURCES.mesures = 'mock'
+  })
+
   const simulate = (value: string) => window.history.replaceState(null, '', `/?simulation=${value}`)
 
   afterEach(() => {
+    SOURCES.mesures = 'api'
     window.history.replaceState(null, '', '/')
     vi.useRealTimers()
   })
@@ -120,5 +140,124 @@ describe('simulation des cas réels (?simulation=…)', () => {
     await vi.advanceTimersByTimeAsync(1)
     await call
     expect(done).toBe(true)
+  })
+})
+
+describe('mesures : source API', () => {
+  const derniere = {
+    id_site: 'SITE001',
+    nom: 'Bureau Paris La Défense',
+    type: 'office',
+    capacite_kw: 200,
+    horodatage: '2026-10-27T09:05:00Z',
+    consommation_kw: 120,
+    data_quality: 'good',
+  }
+
+  function stubFetch(reponse: (url: string) => { status: number; body: unknown }) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const { status, body } = reponse(String(url))
+        return new Response(JSON.stringify(body), {
+          status,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }),
+    )
+  }
+
+  beforeEach(() => {
+    SOURCES.mesures = 'api'
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+    window.history.replaceState(null, '', '/')
+  })
+
+  it('lit la dernière mesure de chaque site', async () => {
+    stubFetch((url) => {
+      expect(url).toBe('/api/sites/derniere-mesure')
+      return { status: 200, body: [derniere] }
+    })
+
+    const sites = await fetchOverview()
+
+    expect(sites).toHaveLength(1)
+    expect(sites[0]).toMatchObject({
+      site: { id: 'SITE001', nom: 'Bureau Paris La Défense', type: 'bureaux' },
+      consommationKw: 120,
+      mesureLe: '2026-10-27T09:05:00Z',
+    })
+  })
+
+  it('remonte l’erreur de la route', async () => {
+    stubFetch(() => ({ status: 503, body: { detail: 'indisponible' } }))
+
+    await expect(fetchOverview()).rejects.toBeInstanceOf(ApiError)
+  })
+
+  it('garde une heure sans kWh dans la courbe', async () => {
+    stubFetch((url) => {
+      if (!url.includes('/consommation')) return { status: 200, body: [] }
+      return {
+        status: 200,
+        body: [
+          { heure: '2026-10-27T08:00:00Z', consommation_kwh: 10, cout_eur: 1.4 },
+          { heure: '2026-10-27T09:00:00Z', consommation_kwh: null, cout_eur: null },
+        ],
+      }
+    })
+
+    const series = await fetchSiteSeries('SITE001', '24h')
+
+    expect(series.mesures.map((point) => point.kw)).toEqual([10, null])
+  })
+
+  it('ne demande la dernière mesure et la consommation du parc qu’une fois', async () => {
+    const urls: string[] = []
+    stubFetch((url) => {
+      urls.push(url)
+      if (url.includes('derniere-mesure')) return { status: 200, body: [derniere] }
+      return { status: 200, body: [] }
+    })
+
+    await Promise.all([fetchKpis(), fetchOverview(), fetchFleetTrend()])
+
+    expect(urls.filter((url) => url.includes('derniere-mesure'))).toHaveLength(1)
+    expect(urls.filter((url) => url.includes('/consommation'))).toHaveLength(1)
+  })
+
+  it('demande des heures pleines : 24 h en font 24, et 7 jours en font 168', async () => {
+    vi.setSystemTime(new Date('2026-10-27T10:30:00Z'))
+    const urls: string[] = []
+    stubFetch((url) => {
+      urls.push(url)
+      return { status: 200, body: [] }
+    })
+
+    await fetchSiteSeries('SITE001', '24h')
+    await fetchSiteCosts('SITE001')
+
+    const debut = (url: string) => new URL(url, 'http://localhost').searchParams.get('debut')
+    expect(debut(urls[0]!)).toBe('2026-10-26T10:00:00.000Z')
+    expect(debut(urls[1]!)).toBe('2026-10-20T10:00:00.000Z')
+  })
+
+  it('applique ?simulation= sans appeler l’API', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+    vi.stubGlobal('fetch', fetchMock)
+    window.history.replaceState(null, '', '/?simulation=vide')
+
+    expect(await fetchOverview()).toEqual([])
+    expect(await fetchFleetTrend()).toEqual({ consommationKw24h: [], coutEurJours7: [] })
+    expect(await fetchSiteSeries('SITE001', '24h')).toEqual({ mesures: [], predictions: [] })
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    window.history.replaceState(null, '', '/?simulation=erreur')
+    await expect(fetchKpis()).rejects.toThrow('API simulée en erreur')
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })

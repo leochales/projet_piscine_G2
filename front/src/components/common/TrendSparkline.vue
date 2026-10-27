@@ -6,7 +6,7 @@ import { sparklinePath, sparklinePoints } from '@/lib/sparkline'
 
 const props = withDefaults(
   defineProps<{
-    values: readonly number[]
+    values: readonly (number | null)[]
     /** Largeur maximale ; la courbe se réduit pour tenir dans la place disponible */
     maxWidth?: number
     height?: number
@@ -25,7 +25,13 @@ const width = computed(() => Math.min(props.maxWidth, Math.floor(available.value
 const points = computed(() => sparklinePoints(props.values, width.value, props.height))
 const path = computed(() => sparklinePath(points.value))
 // Dernier point marqué : la valeur actuelle, à droite
-const last = computed(() => points.value[points.value.length - 1])
+const last = computed(() => {
+  for (let i = points.value.length - 1; i >= 0; i--) {
+    const point = points.value[i]
+    if (point) return point
+  }
+  return undefined
+})
 </script>
 
 <template>
