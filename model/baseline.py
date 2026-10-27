@@ -21,7 +21,7 @@ import pandas as pd
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 from model.dataset import DEFAULT_OUTPUT_DIR, SPLITS
-from model.features import valeurs_passees
+from model.features import conso_mesuree, valeurs_passees
 
 DATASET_NAME = "dataset.parquet"
 # Décalage de chaque prévision, en heures
@@ -40,11 +40,13 @@ def charger(chemin: Path | None = None) -> pd.DataFrame:
 
 
 def ajouter_baselines(df: pd.DataFrame) -> pd.DataFrame:
-    """Ajoute la valeur de la veille et de la semaine précédente, dans le temps (même
-    calcul que les lags du modèle) : si l'heure passée manque, la prévision est vide."""
+    """Ajoute la valeur de la veille et de la semaine précédente, dans le temps et
+    sur les heures mesurées seulement, comme les lags du modèle : si l'heure passée
+    manque ou a été interpolée, la prévision est vide."""
     df = df.copy()
-    df[list(BASELINES)] = valeurs_passees(df, "moyenne_kw", BASELINES)
-    return df
+    df["conso_mesuree"] = conso_mesuree(df)
+    df[list(BASELINES)] = valeurs_passees(df, "conso_mesuree", BASELINES)
+    return df.drop(columns="conso_mesuree")
 
 
 def scores(d: pd.DataFrame, colonne: str) -> pd.Series:

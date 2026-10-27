@@ -139,9 +139,9 @@ def test_heures_a_prevoir_avec_les_variables_de_l_historique():
 def test_heures_a_prevoir_deja_connues_pas_en_double():
     historique = faux_site(nb_heures=100)
     debut = historique["heure"].max() - pd.Timedelta(hours=1)
-    df = ajouter_heures_a_prevoir(historique, debut, 3)
-    # Les 2 premières heures existent déjà : seule la 3e est ajoutée
-    assert len(df) == 101
+    df = ajouter_heures_a_prevoir(historique, debut, 24)
+    # Les 2 premières heures existent déjà : seules les 22 suivantes sont ajoutées
+    assert len(df) == 122
 
 
 @pytest.mark.parametrize("horizon", [0, 12, 48])
@@ -211,3 +211,47 @@ def test_heures_a_prevoir_avec_l_historique_utile_seulement():
     df = construire_variables(df, SANS_NORMALISATION, 24)
     futur = df[df["heure"] >= debut].reset_index(drop=True)
     assert futur.loc[0, "lag_28j"] == 1000 - 672
+
+
+def test_pas_plus_d_heures_a_prevoir_que_l_horizon():
+    historique = faux_site()
+    debut = historique["heure"].max() + pd.Timedelta(hours=1)
+    # 48 heures avec le modèle à 24 h : les 24 dernières n'auraient pas de lag connu
+    with pytest.raises(ValueError, match="Horizon"):
+        ajouter_heures_a_prevoir(historique, debut, 48)
+
+
+def test_historique_en_retard_refuse():
+    historique = faux_site()
+    debut = historique["heure"].max() + pd.Timedelta(hours=4)
+    with pytest.raises(ValueError, match="en retard.*SITE001"):
+        ajouter_heures_a_prevoir(historique, debut, 24)
+
+
+def test_site_sans_donnee_recente_ne_disparait_pas():
+    """Un site muet depuis plus de 28 jours est nommé dans l'erreur, au lieu de
+    disparaître des prévisions."""
+    a_jour = faux_site("SITE001", nb_heures=1000)
+    muet = faux_site("SITE002", nb_heures=100)
+    debut = a_jour["heure"].max() + pd.Timedelta(hours=1)
+    with pytest.raises(ValueError, match="SITE002") as erreur:
+        ajouter_heures_a_prevoir(pd.concat([a_jour, muet]), debut, 24)
+    assert "SITE001" not in str(erreur.value)
+
+
+def test_derniere_heure_sans_mesure_compte_comme_retard():
+    historique = faux_site()
+    historique.loc[199, "taux_couverture"] = 0.0
+    debut = historique["heure"].max() + pd.Timedelta(hours=1)
+    with pytest.raises(ValueError, match="en retard"):
+        ajouter_heures_a_prevoir(historique, debut, 24)
+
+
+def test_site_sans_moyenne_valable_ecarte_des_le_depart():
+    """Sans moyenne valable, le site ne peut pas être prévu : il n'a pas de colonne
+    site_… dans le modèle."""
+    deux_sites = pd.concat([faux_site("SITE001"), faux_site("SITE002")])
+    deux_sites.loc[deux_sites["id_site"] == "SITE002", "moyenne_kw"] = 0.0
+    moyennes = moyennes_par_site(deux_sites)
+    assert list(moyennes.index) == ["SITE001"]
+    assert "site_SITE002" not in noms_variables(24, moyennes)

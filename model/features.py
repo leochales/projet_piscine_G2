@@ -25,6 +25,8 @@ définition de « la veille ».
 
 Pour prévoir, ajouter d'abord les heures à prévoir avec ``ajouter_heures_a_prevoir`` :
 leurs variables sont calculées à partir de l'historique, leur consommation reste vide.
+On prévoit ``horizon`` heures, avec un historique mesuré jusqu'à l'heure qui précède
+la première heure à prévoir.
 """
 
 from __future__ import annotations
@@ -57,8 +59,12 @@ def conso_mesuree(df: pd.DataFrame) -> pd.Series:
 
 def moyennes_par_site(train: pd.DataFrame) -> pd.Series:
     """Consommation moyenne de chaque site sur l'entraînement, heures mesurées
-    seulement. À enregistrer avec le modèle : elle sert aussi de liste des sites."""
-    return conso_mesuree(train).groupby(train["id_site"]).mean()
+    seulement. À enregistrer avec le modèle : elle sert aussi de liste des sites.
+
+    Un site sans moyenne valable (aucune heure mesurée, ou moyenne nulle) est écarté :
+    il ne peut pas être normalisé, donc pas prévu."""
+    moyennes = conso_mesuree(train).groupby(train["id_site"]).mean()
+    return moyennes[moyennes > 0]
 
 
 def verifier_horizon(horizon: int) -> None:
@@ -178,22 +184,46 @@ def ajouter_lags(df: pd.DataFrame, horizon: int) -> pd.DataFrame:
 
 
 def ajouter_heures_a_prevoir(
-    historique: pd.DataFrame, debut: pd.Timestamp, nb_heures: int
+    historique: pd.DataFrame, debut: pd.Timestamp, horizon: int
 ) -> pd.DataFrame:
-    """Ajoute, pour chaque site de l'historique, les ``nb_heures`` heures à partir de
+    """Ajoute, pour chaque site de l'historique, les ``horizon`` heures à partir de
     ``debut``, sans consommation. ``construire_variables`` calcule ensuite leurs
     variables à partir de l'historique, et le modèle prédit ces lignes.
 
+    Refuse un historique en retard : chaque site doit avoir une mesure à l'heure qui
+    précède ``debut``, sinon les variables des dernières heures à prévoir porteraient
+    sur des heures inconnues. Un site en retard est nommé dans l'erreur, plutôt que
+    d'être prévu à moitié ou de disparaître sans rien dire. On peut le retirer de
+    l'historique pour prévoir les autres.
+
     Seul l'historique utile est gardé (``HISTORIQUE_UTILE`` avant ``debut``) : le
     calcul ne porte pas sur des années de données à chaque prévision."""
+    verifier_horizon(horizon)
     if debut.tzinfo is None:
         raise ValueError(f"Début des prévisions sans fuseau horaire : {debut}")
     if debut != debut.floor("h"):
         raise ValueError(f"Début des prévisions pas sur une heure pile : {debut}")
+    derniere_mesure = (
+        historique["heure"]
+        .where(conso_mesuree(historique).notna())
+        .groupby(historique["id_site"])
+        .max()
+    )
+    en_retard = derniere_mesure[~(derniere_mesure >= debut - pd.Timedelta(hours=1))]
+    if not en_retard.empty:
+        detail = ", ".join(
+            f"{site} ({'aucune mesure' if pd.isna(h) else f'dernière mesure {h}'})"
+            for site, h in en_retard.items()
+        )
+        raise ValueError(
+            f"Historique en retard : pas de mesure à {debut - pd.Timedelta(hours=1)} "
+            f"pour {detail}"
+        )
+
     historique = historique[historique["heure"] >= debut - HISTORIQUE_UTILE]
-    heures = pd.date_range(debut, periods=nb_heures, freq="h")
+    heures = pd.date_range(debut, periods=horizon, freq="h")
     a_prevoir = pd.MultiIndex.from_product(
-        [historique["id_site"].unique(), heures], names=["id_site", "heure"]
+        [derniere_mesure.index, heures], names=["id_site", "heure"]
     ).to_frame(index=False)
     connues = historique.set_index(["id_site", "heure"]).index
     a_prevoir = a_prevoir[
