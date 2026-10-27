@@ -25,7 +25,9 @@ from api.auth import (
     ENTETE_ERREUR,
     _derniers_signalements,
     exiger_role,
+    Utilisateur,
     get_client_cles,
+    perimetre_courant,
     retrouver_id_client,
 )
 from api.main import app
@@ -462,3 +464,43 @@ def test_moi_ne_renvoie_que_les_roles_de_l_application(client: TestClient) -> No
 
 def test_moi_sans_jeton_401_meme_avec_un_parametre_inconnu(client: TestClient) -> None:
     assert client.get("/api/moi?inconnu=1").status_code == 401
+
+
+# --- Périmètre : quels sites un utilisateur voit selon ses rôles ---
+
+ID_UTILISATEUR = UUID(SUB)
+
+
+@pytest.mark.parametrize(
+    ("roles", "limite_a_ses_sites"),
+    [
+        ({"CONSULT-SITE"}, True),
+        ({"GESTION-SITE"}, True),
+        ({"CONSULT-SITE", "GESTION-SITE"}, True),
+        ({"CONSULT-CLIENT"}, False),
+        ({"GESTION-CLIENT"}, False),
+        # Un rôle *-CLIENT l'emporte sur un rôle *-SITE cumulé
+        ({"GESTION-SITE", "CONSULT-CLIENT"}, False),
+        ({"CONSULT-SITE", "GESTION-CLIENT"}, False),
+        # Rôle hors métier : pas de limite par site (les routes de données exigent déjà
+        # un rôle métier, exiger_role)
+        ({"MONITORING"}, False),
+    ],
+)
+def test_perimetre_selon_les_roles(roles: set[str], limite_a_ses_sites: bool) -> None:
+    utilisateur = Utilisateur(ID_UTILISATEUR, 1, frozenset(roles))
+
+    perimetre = perimetre_courant(utilisateur)
+
+    assert perimetre.id_client == 1
+    attendu = ID_UTILISATEUR if limite_a_ses_sites else None
+    assert perimetre.id_utilisateur_sites == attendu
+
+
+def test_perimetre_administrateur_enervision() -> None:
+    """Sans client : tous les clients, et pas de limite par site avec un rôle *-CLIENT."""
+    utilisateur = Utilisateur(ID_UTILISATEUR, None, frozenset({"CONSULT-CLIENT"}))
+
+    perimetre = perimetre_courant(utilisateur)
+
+    assert perimetre.parametres == {"id_client": None, "id_utilisateur_sites": None}

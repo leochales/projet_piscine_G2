@@ -234,6 +234,19 @@ Les comptes se créent dans Keycloak. En temps normal, ce sont les gestionnaires
 
     En local : `docker compose -f compose-local.yml exec db ...`, ou pgAdmin.
 
+3. Compte `CONSULT-SITE` ou `GESTION-SITE` seulement : le rattacher à ses sites dans `app.utilisateur_site`. Sans rattachement, le compte se connecte mais ne voit aucun site. Les comptes `*-CLIENT` et l'administrateur n'en ont pas besoin. Les comptes de démonstration sont rattachés par le seeding.
+
+    ```sql
+    -- Un INSERT par site. id_client est celui de l'utilisateur : la base refuse
+    -- un site qui n'appartient pas à ce client (clés étrangères composées)
+    INSERT INTO app.utilisateur_site (id_utilisateur, id_site, id_client)
+    SELECT u.id, 'SITE003', u.id_client
+    FROM app.utilisateur AS u
+    WHERE u.id = '<sub>';
+    ```
+
+    Rattachements existants : `SELECT * FROM app.utilisateur_site;`
+
 ### Changer le secret de `enervision-admin`
 
 Le secret est injecté dans le realm à l'import : modifier `<ENV>_KEYCLOAK_ADMIN_CLIENT_SECRET` dans GitHub ne suffit pas.
