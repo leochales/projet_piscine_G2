@@ -20,7 +20,12 @@ def faux_jeu():
     """
     heures = pd.date_range("2024-01-01", periods=200, freq="h", tz="UTC")
     lignes = [
-        {"id_site": site, "heure": heure, "moyenne_kw": float(i) + ajout}
+        {
+            "id_site": site,
+            "heure": heure,
+            "moyenne_kw": float(i) + ajout,
+            "taux_couverture": 1.0,
+        }
         for site, ajout in [("SITE001", 0), ("SITE002", 1000)]
         for i, heure in enumerate(heures)
     ]
@@ -94,3 +99,16 @@ def test_scores_reference_sur_le_jeu_demande():
     assert set(resultat) == {"baseline_veille", "baseline_semaine"}
     assert resultat["baseline_veille"]["MAE"] == pytest.approx(24)
     assert resultat["baseline_semaine"]["MAE"] == pytest.approx(168)
+
+
+def test_baselines_ignorent_les_heures_interpolees():
+    """Comme le modèle : une heure sans mesure (interpolée dans le jeu du ticket 93)
+    ne sert pas de valeur passée."""
+    df = faux_jeu()
+    heures = pd.date_range("2024-01-01", periods=200, freq="h", tz="UTC")
+    interpolee = (df["id_site"] == "SITE001") & (df["heure"] == heures[76])
+    df.loc[interpolee, "taux_couverture"] = 0.0
+    df = ajouter_baselines(df.sort_values(["id_site", "heure"], ignore_index=True))
+    site1 = df[df["id_site"] == "SITE001"].set_index("heure")
+    assert pd.isna(site1.loc[heures[100], "baseline_veille"])
+    assert site1.loc[heures[101], "baseline_veille"] == 77

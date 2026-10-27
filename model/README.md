@@ -96,6 +96,7 @@ Le jeu est lu dans `DATASET_OUTPUT_DIR` (`data/processed` par défaut), comme `m
 ### Règles
 
 - La valeur passée est cherchée à l'heure exacte (24 h ou 168 h avant), pas 24 lignes plus haut : si cette heure manque, par exemple un trou dans `gold.consommation_horaire`, la prévision reste vide et l'heure est exclue du score. Le script affiche combien d'heures sont exclues.
+- Comme pour le modèle, seules les heures mesurées servent de valeur passée (`taux_couverture` > 0) : une heure interpolée du jeu d'entraînement compte comme absente. Le modèle et la référence sont ainsi comparés sur les mêmes données.
 - Les décalages sont calculés sur tout le jeu avant de garder le jeu évalué : les premières heures du test utilisent les vraies valeurs de la validation.
 - L'erreur n'est mesurée que sur les valeurs réellement mesurées (`consommation_kwh_brute`), jamais sur les valeurs interpolées.
 - MAE et RMSE en kWh (`moyenne_kw` sur une heure vaut des kWh). WAPE = `Σ|erreur| / Σ réel`.
@@ -107,7 +108,53 @@ Jeu de test (2024-09-12 12:00 → 2024-12-31), jeu d'empreinte `f2ee5c19efdb` (v
 
 | Prévision | MAE | RMSE | WAPE |
 |---|---|---|---|
-| Semaine précédente (retenue) | 115,3 kWh | 255,2 kWh | **23,31 %** |
-| Veille | 137,1 kWh | 282,7 kWh | 27,74 % |
+| Semaine précédente (retenue) | 115,4 kWh | 255,3 kWh | **23,35 %** |
+| Veille | 136,9 kWh | 282,7 kWh | 27,73 % |
 
 La veille se trompe à chaque passage entre semaine et week-end. Les anomalies du jeu (pics, chutes, coupures) causent environ les deux tiers de l'erreur. Si les données changent (nouvelle version DVC, autre empreinte), relancer la commande et mettre ce tableau à jour.
+
+## Variables du modèle (SMARTOPS-29)
+
+`model/features.py` construit les variables à partir de lignes au format de `gold.consommation_horaire` (colonnes utilisées : `id_site`, `heure`, `moyenne_kw`, `taux_couverture`). Le même code sert à l'entraînement et à la prévision.
+
+Entraînement :
+
+```python
+from model.features import construire_variables, moyennes_par_site, noms_variables
+
+# Sur l'entraînement seulement, à enregistrer avec le modèle
+moyennes = moyennes_par_site(train)
+# Horizon 24 (24 h) ou 168 (7 jours)
+df = construire_variables(df, moyennes, 24)
+X = df[noms_variables(24, moyennes)]
+```
+
+Prévision : les heures à prévoir n'existent pas encore dans gold. Il faut d'abord les ajouter, vides, à la suite de l'historique. Leurs variables sont ensuite calculées à partir de l'historique :
+
+```python
+from model.features import ajouter_heures_a_prevoir
+
+# Les 24 heures à partir de prochaine_heure, pour le modèle à 24 h
+df = ajouter_heures_a_prevoir(historique, prochaine_heure, 24)
+# Moyennes enregistrées avec le modèle
+df = construire_variables(df, moyennes, 24)
+X = df.loc[df["heure"] >= prochaine_heure, noms_variables(24, moyennes)]
+```
+
+`ajouter_heures_a_prevoir` :
+
+- ajoute autant d'heures que l'horizon, pas plus : au-delà, les variables porteraient sur des heures encore inconnues. Pour 7 jours, appeler avec 168 et le modèle à 7 jours ;
+- demande un début avec fuseau horaire, sur une heure pile (`10:00`, pas `10:37`) ;
+- refuse un historique en retard. Chaque site doit avoir une mesure à l'heure qui précède le début, sinon les dernières heures à prévoir n'auraient pas toutes leurs variables. L'erreur nomme les sites en retard, y compris un site sans aucune mesure récente, au lieu de les prévoir à moitié ou de les faire disparaître. On peut les retirer de l'historique pour prévoir les autres ;
+- ne garde que les 28 jours avant le début (`HISTORIQUE_UTILE`), le plus long retour en arrière des variables. Il suffit donc de lire ces 28 jours dans gold.
+
+Règles :
+
+- Horizons : 24 et 168 seulement. Un horizon plus court ferait entrer dans les variables des heures inconnues au moment de prévoir.
+- Consommation de l'heure : `moyenne_kw` des heures mesurées (`taux_couverture` > 0), divisée par la moyenne du site sur l'entraînement (`conso_norm`), pour qu'un seul modèle serve à tous les sites. Une heure interpolée du jeu d'entraînement est traitée comme absente : en production, l'ETL ne comble jamais une heure entière, et elle serait absente de gold.
+- Sites : ceux qui ont une moyenne d'entraînement valable (au moins une heure mesurée, moyenne non nulle). Les moyennes, enregistrées avec le modèle, servent de liste des sites. Un nouveau site est refusé tant que le modèle n'est pas réentraîné avec lui.
+- Lags (24 h, 7, 14 et 28 jours) et moyennes glissantes (24 h, 7 jours) : seulement ceux qui sont connus au moment de prévoir, donc pris au moins `horizon` heures avant. À 7 jours, pas de lag de 24 h. Une moyenne glissante demande au moins 80 % d'heures connues, sinon elle reste vide.
+- Calendrier et site : heure du jour, jour de la semaine et site en colonnes 0/1, toujours les mêmes colonnes, même si une valeur est absente des données.
+- Heure du jour et jour de la semaine lus sur `heure` sans conversion en heure de Paris. Les horodatages du CSV et de l'API Mock sont l'heure du simulateur, sans changement d'heure, enregistrée comme de l'UTC (voir les règles du jeu d'entraînement). Le CSV n'a ni heure manquante en mars ni heure en double en octobre, et les bureaux y commencent à 8 h été comme hiver. Convertir en heure de Paris décalerait ce profil d'une heure l'été. Avec de vraies données en UTC, il faudra convertir en heure locale du site.
+- Décalages dans le temps : les heures absentes de gold sont ajoutées vides avant de décaler, puis retirées. Un lag de 24 h prend donc toujours l'heure d'il y a 24 h, ou reste vide. La prévision de référence utilise le même calcul (`valeurs_passees`).
+- Entrée refusée avec un message clair : colonne manquante, aucune ligne, même heure en double pour un site, site sans moyenne d'entraînement.

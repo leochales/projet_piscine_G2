@@ -21,6 +21,7 @@ import pandas as pd
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 from model.dataset import DEFAULT_OUTPUT_DIR, SPLITS
+from model.features import conso_mesuree, valeurs_passees
 
 DATASET_NAME = "dataset.parquet"
 # Décalage de chaque prévision, en heures
@@ -38,26 +39,14 @@ def charger(chemin: Path | None = None) -> pd.DataFrame:
     return df.sort_values(["id_site", "heure"], ignore_index=True)
 
 
-def valeur_passee(df: pd.DataFrame, heures: int) -> pd.Series:
-    """``moyenne_kw`` du même site, ``heures`` heures plus tôt.
-
-    Le décalage se fait sur l'heure, pas sur le numéro de ligne : si l'heure passée
-    manque (trou dans gold.consommation_horaire), la valeur est vide au lieu d'être
-    prise sur une autre heure."""
-    passe = df[["id_site", "heure", "moyenne_kw"]].copy()
-    passe["heure"] = passe["heure"] + pd.Timedelta(hours=heures)
-    valeurs = df[["id_site", "heure"]].merge(
-        passe, on=["id_site", "heure"], how="left", validate="many_to_one"
-    )["moyenne_kw"]
-    # merge renumérote les lignes : on garde l'index de df
-    return pd.Series(valeurs.to_numpy(), index=df.index, name=f"moins_{heures}h")
-
-
 def ajouter_baselines(df: pd.DataFrame) -> pd.DataFrame:
+    """Ajoute la valeur de la veille et de la semaine précédente, dans le temps et
+    sur les heures mesurées seulement, comme les lags du modèle : si l'heure passée
+    manque ou a été interpolée, la prévision est vide."""
     df = df.copy()
-    for nom, decalage in BASELINES.items():
-        df[nom] = valeur_passee(df, decalage)
-    return df
+    df["conso_mesuree"] = conso_mesuree(df)
+    df[list(BASELINES)] = valeurs_passees(df, "conso_mesuree", BASELINES)
+    return df.drop(columns="conso_mesuree")
 
 
 def scores(d: pd.DataFrame, colonne: str) -> pd.Series:
