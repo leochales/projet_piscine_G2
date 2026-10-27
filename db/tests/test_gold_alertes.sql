@@ -9,8 +9,9 @@
 
 BEGIN;
 
--- Données de test (superutilisateur) : deux sites de 200 kW
---   - SITE-A : seuil par défaut (90 %, soit 180 kW), critique à 220 kW ;
+-- Données de test (superutilisateur) : trois sites de 200 kW
+--   - SITE-A et SITE-C : seuil par défaut (90 %, soit 180 kW), critique à
+--     220 kW ;
 --   - SITE-B : seuil à 100 % (200 kW), comme un datacenter.
 INSERT INTO app.client (nom) VALUES ('Client test alertes');
 
@@ -25,7 +26,8 @@ FROM app.client AS c
 CROSS JOIN (
     VALUES
     ('SITE-A', 'Site test seuil'),
-    ('SITE-B', 'Site test capteurs')
+    ('SITE-B', 'Site test capteurs'),
+    ('SITE-C', 'Site test limites')
 ) AS v (id_site, nom)
 WHERE c.nom = 'Client test alertes';
 
@@ -46,6 +48,13 @@ WHERE id_site = 'SITE-B';
 --   10:02        normal
 --   10:03-10:06  capteur électrique en panne, sauf 10:05 non transmise
 --                (ignorée) : alerte medium dès 10:03, toujours en cours
+-- SITE-C, valeurs limites et trois pics sur la même série :
+--   10:00-10:02  180 180 219.99  pile 90 % : alerte dès 10:00, high
+--                                (juste sous 110 %)
+--   10:03-10:05  179.99 × 3      juste sous 90 % : fin à 10:03
+--   10:06-10:08  200 220 200     pile 110 % : 2e alerte, critical
+--   10:09-10:11  100 × 3         fin à 10:09
+--   10:12-10:14  190 × 3         3e alerte, toujours en cours
 CREATE TEMPORARY TABLE minutes_test (
     id_site VARCHAR,
     n_minute INT,
@@ -73,7 +82,22 @@ INSERT INTO minutes_test VALUES
 ('SITE-B', 3, 190, '{electrical_sensor_failure}'),
 ('SITE-B', 4, 190, '{electrical_sensor_failure}'),
 ('SITE-B', 5, null, '{no_reading}'),
-('SITE-B', 6, 190, '{electrical_sensor_failure}');
+('SITE-B', 6, 190, '{electrical_sensor_failure}'),
+('SITE-C', 0, 180, '{}'),
+('SITE-C', 1, 180, '{}'),
+('SITE-C', 2, 219.99, '{}'),
+('SITE-C', 3, 179.99, '{}'),
+('SITE-C', 4, 179.99, '{}'),
+('SITE-C', 5, 179.99, '{}'),
+('SITE-C', 6, 200, '{}'),
+('SITE-C', 7, 220, '{}'),
+('SITE-C', 8, 200, '{}'),
+('SITE-C', 9, 100, '{}'),
+('SITE-C', 10, 100, '{}'),
+('SITE-C', 11, 100, '{}'),
+('SITE-C', 12, 190, '{}'),
+('SITE-C', 13, 190, '{}'),
+('SITE-C', 14, 190, '{}');
 
 INSERT INTO silver.silver_readings (
     id_site, horodatage, consumption_kw_raw, consumption_kw_imputed,
@@ -194,7 +218,37 @@ BEGIN
 END
 $$;
 
--- 5. Le modèle lit le seuil des sites mais ne peut pas lancer la détection
+-- 5. Valeurs limites : 90 % et 110 % pile comptent, juste en dessous non.
+--    Plusieurs pics sur la même série, le dernier toujours en cours.
+DO $$
+DECLARE
+    a RECORD;
+    nb BIGINT;
+BEGIN
+    SELECT count(*) INTO nb FROM gold.alerte
+    WHERE id_site = 'SITE-C' AND type = 'threshold';
+    ASSERT nb = 3, format('3 alertes de seuil pour SITE-C, %s', nb);
+
+    SELECT * INTO a FROM gold.alerte
+    WHERE id_site = 'SITE-C' AND debut = '2026-01-01 10:00+00';
+    ASSERT a.fin = '2026-01-01 10:03+00', format('fin 1 : %s', a.fin);
+    ASSERT a.valeur = 219.99, format('valeur 1 : %s', a.valeur);
+    ASSERT a.severite = 'high', format('sévérité 1 : %s', a.severite);
+
+    SELECT * INTO a FROM gold.alerte
+    WHERE id_site = 'SITE-C' AND debut = '2026-01-01 10:06+00';
+    ASSERT a.fin = '2026-01-01 10:09+00', format('fin 2 : %s', a.fin);
+    ASSERT a.severite = 'critical', format('sévérité 2 : %s', a.severite);
+
+    SELECT * INTO a FROM gold.alerte
+    WHERE id_site = 'SITE-C' AND debut = '2026-01-01 10:12+00';
+    ASSERT a.fin IS null, 'pic 3 toujours en cours';
+    ASSERT a.severite = 'high', format('sévérité 3 : %s', a.severite);
+    RAISE NOTICE 'OK 5 : 90 %% et 110 %% pile, plusieurs pics, pic en cours';
+END
+$$;
+
+-- 6. Le modèle lit le seuil des sites mais ne peut pas lancer la détection
 RESET ROLE;
 SET ROLE model;
 
@@ -211,7 +265,7 @@ BEGIN
     EXCEPTION WHEN insufficient_privilege THEN
         NULL;  -- refus attendu
     END;
-    RAISE NOTICE 'OK 5 : le modèle lit le seuil, sans lancer la détection';
+    RAISE NOTICE 'OK 6 : le modèle lit le seuil, sans lancer la détection';
 END
 $$;
 

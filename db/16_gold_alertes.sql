@@ -84,8 +84,8 @@ WHERE source = 'etl';
 --
 -- Trois suivis par site, avec la même règle :
 --   - threshold : consommation mesurée (consumption_kw_raw, jamais une valeur
---     estimée) au-dessus du seuil du site. high, critical si le maximum
---     atteint dépasse 110 % de la capacité ;
+--     estimée) égale au seuil du site ou au-dessus. high, critical si le
+--     maximum atteint vaut 110 % de la capacité ou plus ;
 --   - sensor / consumption : raison consumption_sensor_failure. high : plus
 --     de consommation, donc plus de détection des pics ;
 --   - sensor / electrical : raison electrical_sensor_failure. medium : la

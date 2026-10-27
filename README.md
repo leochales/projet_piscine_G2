@@ -68,6 +68,13 @@ Les sites à collecter sont déclarés dans `app.site` par l'application (`db/08
 
 Les actions du dashboard (décisions sur les recommandations, prises en compte des alertes) sont enregistrées dans `app` par `db/10_actions.sql`, et non dans `gold`, que l'ETL et le modèle recalculent. Ce sont des historiques : l'API peut ajouter des lignes, mais ni les modifier ni les supprimer. Une alerte n'est prise en compte qu'une fois : la base refuse la deuxième. L'état courant se lit dans les vues `app.recommandation_etat` et `app.alerte_etat`.
 
+Chaque minute, l'ETL crée les alertes dans `gold.alerte` (`source = 'etl'`, `db/16_gold_alertes.sql`, appelé par `etl/gold_alerts.py`) :
+
+- **Pic de consommation** (`threshold`) : il commence après 3 mesures consécutives au seuil du site ou plus, et se termine après 3 mesures sous ce seuil. Il passe en `critical` si le maximum atteint vaut 110 % de la capacité ou plus, sinon il reste en `high`. Chaque site a son seuil, en % de sa capacité, dans `app.site.seuil_alerte_pct` : 100 % pour les datacenters, 98 % pour les usines et 90 % pour les autres sites au départ. La migration ne pose ces valeurs qu'une fois : un seuil modifié ensuite n'est jamais écrasé.
+- **Capteur en panne** (`sensor`, colonne `capteur`) : même règle des 3 minutes. Une panne du capteur de consommation est en `high`, une panne du capteur électrique en `medium`.
+
+Une minute sans mesure ne compte ni pour le début ni pour la fin d'une alerte. Relancer la détection met à jour l'alerte en cours au lieu d'en créer une nouvelle.
+
 Les tests SQL de `db/tests/` (droits des comptes, actions du dashboard) sont lancés par la CI (`images.yml`, sur la base de la stack de test). En local, sur une base qui tourne :
 
 ```bash
