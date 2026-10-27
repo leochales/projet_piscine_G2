@@ -22,7 +22,7 @@ import TableSkeleton from '@/components/common/TableSkeleton.vue'
 import ConsumptionChart from '@/components/site/ConsumptionChart.vue'
 import SiteRecommendations from '@/components/site/SiteRecommendations.vue'
 import SitesTable from '@/components/overview/SitesTable.vue'
-import { formatEurCents, formatKw, formatRelativeHour, formatTonnes } from '@/lib/format'
+import { formatEur, formatKw, formatRelativeHour, formatTonnes } from '@/lib/format'
 import { SEUIL_ALERTE_PCT } from '@/lib/indicators'
 import { useAutoRefresh } from '@/lib/refresh'
 import { useRequest } from '@/lib/request'
@@ -279,7 +279,7 @@ const openSite = (siteId: string) => router.push({ name: 'sites', params: { site
       <Card class="gap-2">
         <CardHeader><CardTitle>Coût et CO₂ (7 jours)</CardTitle></CardHeader>
         <CardContent v-if="costs.data.value" class="text-sm text-muted-foreground">
-          {{ formatEurCents(costs.data.value.coutEur) }} ·
+          {{ formatEur(costs.data.value.coutEur) }} ·
           {{ formatTonnes(costs.data.value.co2Tonnes) }} CO₂
         </CardContent>
         <CardContent v-else-if="costs.status.value === 'error'" class="text-sm">

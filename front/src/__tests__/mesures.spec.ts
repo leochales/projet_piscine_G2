@@ -113,18 +113,35 @@ describe('consommation horaire', () => {
     expect(kpis.variationCoutPct).toBeCloseTo(0)
   })
 
+  it('aligne hier sur la même heure civile le lendemain d’un changement d’heure', () => {
+    // 30 mars 2026, 08:30 UTC = 10:30 à Paris. Le 29, 10 h locales valent 08:00 UTC,
+    // pas 09:00 : hier a duré 23 h, une durée égale décalerait la fenêtre d'une heure.
+    const now = new Date('2026-03-30T08:30:00Z')
+    const heures = [
+      heure('2026-03-29T07:00:00Z', 10, 4), // hier 9 h
+      heure('2026-03-29T08:00:00Z', 10, 9), // hier 10 h, heure encore ouverte aujourd'hui
+      heure('2026-03-29T22:00:00Z', 10, 2), // aujourd'hui 0 h
+      heure('2026-03-30T07:00:00Z', 10, 3), // aujourd'hui 9 h
+    ]
+    const kpis = kpisFrom([toSiteOverview(mesure())], heures, now)
+    expect(kpis.coutJourEur).toBe(5)
+    expect(kpis.variationCoutPct).toBeCloseTo(((5 - 4) / 4) * 100)
+  })
+
   it('regroupe la courbe 24 h et les 7 coûts journaliers', () => {
     const now = new Date('2026-10-27T10:00:00Z')
     const trend = fleetFrom(
       [
         heure('2026-10-26T11:00:00Z', 10, 1), // dans les 24 h
         heure('2026-10-26T11:00:00Z', 5, 1), // même heure, autre site
+        heure('2026-10-26T12:00:00Z', 8, 1),
+        heure('2026-10-26T12:00:00Z', null, null), // un site sans mesure : trou, pas une chute
         heure('2026-10-20T23:00:00Z', 100, 8), // 21 octobre, trop ancien pour la courbe
         heure('2026-10-26T23:00:00Z', 20, 4), // aujourd'hui 0 h
       ],
       now,
     )
-    expect(trend.consommationKw24h).toEqual([15, 20])
+    expect(trend.consommationKw24h).toEqual([15, null, 20])
     expect(trend.coutEurJours7).toHaveLength(7)
     expect(trend.coutEurJours7[0]).toBe(8)
     expect(trend.coutEurJours7[6]).toBe(4)

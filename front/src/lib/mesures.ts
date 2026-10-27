@@ -109,50 +109,62 @@ function offsetMs(date: Date): number {
   return asUtc - date.getTime()
 }
 
+/** Heure civile à Paris (0–23) */
+function parisHour(date: Date): number {
+  const hour = clockParts.formatToParts(date).find((part) => part.type === 'hour')?.value
+  return Number(hour)
+}
+
 /**
- * Minuit à Paris, décalé de `dayOffset` jours calendaires (0 : aujourd'hui, −1 : hier).
- * Le décalage est celui de minuit, pas celui de midi : le jour du changement d'heure,
- * midi est déjà à l'heure d'été (ou d'hiver) alors que minuit ne l'est pas encore.
+ * Heure civile à Paris, décalée de `dayOffset` jours calendaires.
+ * Le décalage est celui de cette heure-là, pas celui de midi : le jour du changement
+ * d'heure, midi est déjà à l'heure d'été (ou d'hiver) alors que minuit ne l'est pas encore.
  */
-export function parisMidnight(dayOffset: number, now: Date = new Date()): Date {
+function parisWall(dayOffset: number, hour: number, now: Date): Date {
   const parts = Object.fromEntries(dayParts.formatToParts(now).map((p) => [p.type, p.value]))
   const shifted = new Date(
     Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day) + dayOffset),
   )
-  const localMidnight = Date.UTC(
+  const local = Date.UTC(
     shifted.getUTCFullYear(),
     shifted.getUTCMonth(),
     shifted.getUTCDate(),
+    hour,
   )
-  let utc = localMidnight
+  let utc = local
   for (let i = 0; i < 3; i++) {
-    const next = localMidnight - offsetMs(new Date(utc))
+    const next = local - offsetMs(new Date(utc))
     if (next === utc) break
     utc = next
   }
   return new Date(utc)
 }
 
-function sumCost(rows: readonly ConsommationHoraireApi[], from: number, to: number) {
-  return rows.reduce((total, row) => {
-    const time = new Date(row.heure).getTime()
-    if (row.cout_eur === null || time < from || time >= to) return total
-    return total + row.cout_eur
-  }, 0)
+/** Minuit à Paris, décalé de `dayOffset` jours calendaires (0 : aujourd'hui, −1 : hier). */
+export function parisMidnight(dayOffset: number, now: Date = new Date()): Date {
+  return parisWall(dayOffset, 0, now)
 }
 
-function sumKwh(rows: readonly ConsommationHoraireApi[], from: number, to: number) {
+function sumBetween(
+  rows: readonly ConsommationHoraireApi[],
+  field: 'cout_eur' | 'consommation_kwh',
+  from: number,
+  to: number,
+) {
   return rows.reduce((total, row) => {
+    const value = row[field]
     const time = new Date(row.heure).getTime()
-    if (row.consommation_kwh === null || time < from || time >= to) return total
-    return total + row.consommation_kwh
+    if (value === null || time < from || time >= to) return total
+    return total + value
   }, 0)
 }
 
 /**
  * Indicateurs du parc à partir des dernières mesures et des heures depuis hier minuit.
- * « vs hier » compare les mêmes heures closes. L'API s'arrête au début de l'heure UTC
- * en cours (`heure < fin`) : cette heure, encore ouverte, n'est comptée ni aujourd'hui ni hier.
+ * « vs hier » compare les mêmes heures locales closes. L'API s'arrête au début de l'heure
+ * UTC en cours (`heure < fin`) : cette heure n'est comptée ni aujourd'hui ni hier.
+ * La borne d'hier est la même heure civile, pas la même durée : le lendemain d'un
+ * changement d'heure, hier n'a pas le même nombre de millisecondes.
  */
 export function kpisFrom(
   sites: readonly SiteOverview[],
@@ -162,38 +174,57 @@ export function kpisFrom(
   const measured = sites.filter((s) => s.consommationKw !== null)
   const todayStart = parisMidnight(0, now).getTime()
   const yesterdayStart = parisMidnight(-1, now).getTime()
-  const fin = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours())
-  const elapsed = fin - todayStart
-  const todayCost = sumCost(heures, todayStart, fin)
-  const yesterdayCost = sumCost(heures, yesterdayStart, yesterdayStart + elapsed)
+  const finMs = Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate(),
+    now.getUTCHours(),
+  )
+  const fin = new Date(finMs)
+  const yesterdayEnd = parisWall(-1, parisHour(fin), fin).getTime()
+  const todayCost = sumBetween(heures, 'cout_eur', todayStart, finMs)
+  const yesterdayCost = sumBetween(heures, 'cout_eur', yesterdayStart, yesterdayEnd)
   return {
     consommationKw: measured.reduce((total, s) => total + s.consommationKw!, 0),
     nbSites: sites.length,
     nbSitesSansMesure: sites.length - measured.length,
     coutJourEur: todayCost,
     variationCoutPct: yesterdayCost === 0 ? 0 : ((todayCost - yesterdayCost) / yesterdayCost) * 100,
-    co2JourTonnes: (sumKwh(heures, todayStart, fin) * FACTEUR_CO2_KG_KWH) / 1000,
+    co2JourTonnes:
+      (sumBetween(heures, 'consommation_kwh', todayStart, finMs) * FACTEUR_CO2_KG_KWH) / 1000,
   }
 }
 
-/** Mini-courbes : puissance moyenne heure par heure sur 24 h, coût de chacun des 7 jours */
+/**
+ * Mini-courbes : puissance moyenne heure par heure sur 24 h, coût de chacun des 7 jours.
+ * Une heure où un site n'a pas de kWh est un trou : une somme partielle ferait chuter
+ * la courbe alors que le parc n'a pas moins consommé.
+ */
 export function fleetFrom(
   heures: readonly ConsommationHoraireApi[],
   now: Date = new Date(),
 ): FleetTrend {
   const since = now.getTime() - 24 * 3600 * 1000
-  const byHour = new Map<string, number>()
+  const byHour = new Map<string, { kw: number; complet: boolean }>()
   for (const row of heures) {
-    if (row.consommation_kwh === null || new Date(row.heure).getTime() < since) continue
-    byHour.set(row.heure, (byHour.get(row.heure) ?? 0) + row.consommation_kwh)
+    if (new Date(row.heure).getTime() < since) continue
+    const slot = byHour.get(row.heure) ?? { kw: 0, complet: true }
+    if (row.consommation_kwh === null) slot.complet = false
+    else slot.kw += row.consommation_kwh
+    byHour.set(row.heure, slot)
   }
   const consommationKw24h = [...byHour.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([, kw]) => kw)
+    .map(([, slot]) => (slot.complet ? slot.kw : null))
 
   const coutEurJours7 = Array.from({ length: 7 }, (_, index) => {
     const day = index - 6
-    return sumCost(heures, parisMidnight(day, now).getTime(), parisMidnight(day + 1, now).getTime())
+    return sumBetween(
+      heures,
+      'cout_eur',
+      parisMidnight(day, now).getTime(),
+      parisMidnight(day + 1, now).getTime(),
+    )
   })
   return { consommationKw24h, coutEurJours7 }
 }

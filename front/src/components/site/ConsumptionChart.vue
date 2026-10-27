@@ -53,10 +53,18 @@ onBeforeUnmount(() => themeObserver.disconnect())
 // Le dernier point mesuré sert aussi de départ à la prédiction, pour que les courbes se rejoignent.
 const points = computed(() => {
   const { mesures, predictions } = props.series
-  const last = mesures.length - 1
+  // La prévision part de la dernière heure qui a une valeur. Sinon, si cette heure
+  // est vide, le trait pointillé ne rejoint plus les mesures.
+  let junctionAt = -1
+  for (let i = mesures.length - 1; i >= 0; i--) {
+    if (mesures[i]?.kw != null) {
+      junctionAt = i
+      break
+    }
+  }
   return [
     ...mesures.map((m, i) => {
-      const junction = i === last ? m.kw : null
+      const junction = i === junctionAt ? m.kw : null
       return {
         t: m.horodatage,
         mesure: m.kw,
@@ -124,6 +132,7 @@ const data = computed<ChartData<'line'>>(() => ({
       borderColor: colors.value.ink,
       borderWidth: 2,
       borderDash: [6, 5],
+      spanGaps: true,
       tension: 0.35,
       pointRadius: points.value.map((_, i) => (i === peak.value.index ? 6 : 0)),
       pointBorderWidth: 2,

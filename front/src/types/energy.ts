@@ -62,8 +62,9 @@ export interface PredictionPoint {
 
 /** Évolution du parc, pour les mini-courbes des KPI */
 export interface FleetTrend {
-  // Consommation du parc heure par heure sur les dernières 24 h (sites mesurés seulement)
-  consommationKw24h: number[]
+  // Consommation du parc heure par heure sur les dernières 24 h.
+  // null : au moins un site sans mesure, la courbe s'interrompt.
+  consommationKw24h: (number | null)[]
   // Coût de chacun des 7 derniers jours, du plus ancien au plus récent
   coutEurJours7: number[]
 }

@@ -68,6 +68,24 @@ function respond<T>(value: T, empty?: T): Promise<T> {
   )
 }
 
+/**
+ * Même simulation pour un appel réseau. « erreur » et « vide » n'atteignent pas l'API :
+ * on peut voir ces états sans que la route échoue ou se vide vraiment.
+ */
+async function fromApi<T>(load: () => Promise<T>, empty?: T): Promise<T> {
+  const simulation = readSimulation()
+  if (simulation === 'erreur') return respond(undefined as T)
+  if (simulation === 'vide' && empty !== undefined) return respond(empty, empty)
+  if (simulation === 'lent') await new Promise((resolve) => setTimeout(resolve, SLOW_DELAY_MS))
+  return load()
+}
+
+/** Début de période aligné sur une heure UTC pleine, comme la borne `fin` de l'API. */
+function debutAvant(heures: number, now = new Date()): string {
+  const fin = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours())
+  return new Date(fin - heures * HOUR_MS).toISOString()
+}
+
 const HOUR_MS = 3600 * 1000
 
 // Appels en cours, partagés entre les requêtes lancées ensemble (KPI, liste, mini-courbes).
@@ -113,28 +131,37 @@ const DEBUT_PARC = () => parisMidnight(-6).toISOString()
 
 export async function fetchKpis(): Promise<FleetKpis> {
   if (SOURCES.mesures !== 'api') return respond(mocks.kpis)
-  const sites = await fetchDernieresMesures()
-  const heures = await fetchConsommationDuParc(sites, DEBUT_PARC())
-  return kpisFrom(sites, heures)
+  return fromApi(async () => {
+    const sites = await fetchDernieresMesures()
+    const heures = await fetchConsommationDuParc(sites, DEBUT_PARC())
+    return kpisFrom(sites, heures)
+  })
 }
 
 export async function fetchOverview(): Promise<SiteOverview[]> {
   if (SOURCES.mesures !== 'api') return respond(mocks.overview, [])
-  return fetchDernieresMesures()
+  return fromApi(() => fetchDernieresMesures(), [])
 }
 
 export async function fetchFleetTrend(): Promise<FleetTrend> {
   if (SOURCES.mesures !== 'api')
     return respond(mocks.fleetTrend(), { consommationKw24h: [], coutEurJours7: [] })
-  const sites = await fetchDernieresMesures()
-  const heures = await fetchConsommationDuParc(sites, DEBUT_PARC())
-  return fleetFrom(heures)
+  return fromApi(
+    async () => {
+      const sites = await fetchDernieresMesures()
+      const heures = await fetchConsommationDuParc(sites, DEBUT_PARC())
+      return fleetFrom(heures)
+    },
+    { consommationKw24h: [], coutEurJours7: [] },
+  )
 }
 
 export async function fetchSiteOverview(siteId: string): Promise<SiteOverview | undefined> {
   if (SOURCES.mesures !== 'api') return respond(mocks.overview.find((o) => o.site.id === siteId))
-  const sites = await fetchDernieresMesures()
-  return sites.find((site) => site.site.id === siteId)
+  return fromApi(async () => {
+    const sites = await fetchDernieresMesures()
+    return sites.find((site) => site.site.id === siteId)
+  })
 }
 
 export async function fetchSiteSeries(siteId: string, range: SeriesRange): Promise<SiteSeries> {
@@ -144,20 +171,24 @@ export async function fetchSiteSeries(siteId: string, range: SeriesRange): Promi
       predictions: [],
     })
   }
-  const heures = range === '24h' ? 24 : 7 * 24
-  const debut = new Date(Date.now() - heures * HOUR_MS).toISOString()
-  const lignes = await fetchConsommation(siteId, debut)
-  return {
-    mesures: lignes.map(toConsumptionPoint),
-    // Prévisions : US2. On ne mélange pas une prévision simulée avec des mesures réelles.
-    predictions: [],
-  }
+  return fromApi(
+    async () => {
+      const heures = range === '24h' ? 24 : 7 * 24
+      const lignes = await fetchConsommation(siteId, debutAvant(heures))
+      return {
+        mesures: lignes.map(toConsumptionPoint),
+        // Prévisions : US2. On ne mélange pas une prévision simulée avec des mesures réelles.
+        predictions: [],
+      }
+    },
+    { mesures: [], predictions: [] },
+  )
 }
 
 export async function fetchSiteCosts(siteId: string) {
   if (SOURCES.mesures !== 'api') return respond(mocks.siteCosts(siteId))
-  const lignes = await fetchConsommation(siteId, parisMidnight(-6).toISOString())
-  return costsFrom(lignes)
+  // 7 × 24 heures closes, pas depuis minuit d'il y a 6 jours : cette fenêtre fait moins de 7 jours.
+  return fromApi(() => fetchConsommation(siteId, debutAvant(7 * 24)).then(costsFrom))
 }
 
 export const fetchAlerts = (): Promise<Alert[]> => respond(structuredClone(mocks.alerts), [])
@@ -174,22 +205,25 @@ const STATUTS_EN_COURS = ['proposee', 'acceptee'] as const
  * par écarter les propositions les plus anciennes, encore à décider.
  */
 export async function fetchRecommendations(): Promise<Recommendation[]> {
-  const reponse =
-    SOURCES.recommandations === 'api'
-      ? (
-          await Promise.all(
-            STATUTS_EN_COURS.map((statut) =>
-              getJson<RecommandationApi[]>('/recommandations', { statut, limite: 500 }),
-            ),
-          )
-        ).flat()
-      : await respond(
-          structuredClone(mockRecommandations).filter((r) =>
-            (STATUTS_EN_COURS as readonly string[]).includes(r.statut),
-          ),
-          [],
-        )
-  return reponse.map(toRecommendation)
+  if (SOURCES.recommandations !== 'api') {
+    const reponse = await respond(
+      structuredClone(mockRecommandations).filter((r) =>
+        (STATUTS_EN_COURS as readonly string[]).includes(r.statut),
+      ),
+      [],
+    )
+    return reponse.map(toRecommendation)
+  }
+  return fromApi(async () => {
+    const reponse = (
+      await Promise.all(
+        STATUTS_EN_COURS.map((statut) =>
+          getJson<RecommandationApi[]>('/recommandations', { statut, limite: 500 }),
+        ),
+      )
+    ).flat()
+    return reponse.map(toRecommendation)
+  }, [])
 }
 
 export const fetchPreviousSavings = (): Promise<number> => respond(mocks.economiesAnterieuresEur)

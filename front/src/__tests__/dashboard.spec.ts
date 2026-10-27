@@ -55,7 +55,7 @@ describe('services/dashboard', () => {
     const { consommationKw24h, coutEurJours7 } = await fetchFleetTrend()
     expect(consommationKw24h).toHaveLength(24 + 1) // le point « maintenant » est inclus
     expect(coutEurJours7).toHaveLength(7)
-    expect([...consommationKw24h, ...coutEurJours7].every((v) => v > 0)).toBe(true)
+    expect([...consommationKw24h, ...coutEurJours7].every((v) => v !== null && v > 0)).toBe(true)
   })
 
   it('finit les mini-courbes sur les valeurs des KPI, et respecte la variation « vs hier »', async () => {
@@ -173,6 +173,8 @@ describe('mesures : source API', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
+    vi.useRealTimers()
+    window.history.replaceState(null, '', '/')
   })
 
   it('lit la dernière mesure de chaque site', async () => {
@@ -226,5 +228,36 @@ describe('mesures : source API', () => {
 
     expect(urls.filter((url) => url.includes('derniere-mesure'))).toHaveLength(1)
     expect(urls.filter((url) => url.includes('/consommation'))).toHaveLength(1)
+  })
+
+  it('demande des heures pleines : 24 h en font 24, et 7 jours en font 168', async () => {
+    vi.setSystemTime(new Date('2026-10-27T10:30:00Z'))
+    const urls: string[] = []
+    stubFetch((url) => {
+      urls.push(url)
+      return { status: 200, body: [] }
+    })
+
+    await fetchSiteSeries('SITE001', '24h')
+    await fetchSiteCosts('SITE001')
+
+    const debut = (url: string) => new URL(url, 'http://localhost').searchParams.get('debut')
+    expect(debut(urls[0]!)).toBe('2026-10-26T10:00:00.000Z')
+    expect(debut(urls[1]!)).toBe('2026-10-20T10:00:00.000Z')
+  })
+
+  it('applique ?simulation= sans appeler l’API', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+    vi.stubGlobal('fetch', fetchMock)
+    window.history.replaceState(null, '', '/?simulation=vide')
+
+    expect(await fetchOverview()).toEqual([])
+    expect(await fetchFleetTrend()).toEqual({ consommationKw24h: [], coutEurJours7: [] })
+    expect(await fetchSiteSeries('SITE001', '24h')).toEqual({ mesures: [], predictions: [] })
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    window.history.replaceState(null, '', '/?simulation=erreur')
+    await expect(fetchKpis()).rejects.toThrow('API simulée en erreur')
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })
