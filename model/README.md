@@ -158,3 +158,47 @@ Règles :
 - Heure du jour et jour de la semaine lus sur `heure` sans conversion en heure de Paris. Les horodatages du CSV et de l'API Mock sont l'heure du simulateur, sans changement d'heure, enregistrée comme de l'UTC (voir les règles du jeu d'entraînement). Le CSV n'a ni heure manquante en mars ni heure en double en octobre, et les bureaux y commencent à 8 h été comme hiver. Convertir en heure de Paris décalerait ce profil d'une heure l'été. Avec de vraies données en UTC, il faudra convertir en heure locale du site.
 - Décalages dans le temps : les heures absentes de gold sont ajoutées vides avant de décaler, puis retirées. Un lag de 24 h prend donc toujours l'heure d'il y a 24 h, ou reste vide. La prévision de référence utilise le même calcul (`valeurs_passees`).
 - Entrée refusée avec un message clair : colonne manquante, aucune ligne, même heure en double pour un site, site sans moyenne d'entraînement.
+
+## Entraînement (SMARTOPS-31)
+
+Depuis la racine du dépôt, après avoir construit le jeu (`python -m model.dataset`) :
+
+```bash
+python -m model.entrainement
+```
+
+Pour chaque horizon (24 h et 7 jours), le script :
+
+1. construit les variables (`model/features.py`) sur tout le jeu, avec les moyennes par site calculées sur l'entraînement seulement ;
+2. garde les heures mesurées (`taux_couverture` > 0), les seules qui servent à apprendre et à évaluer ;
+3. entraîne Ridge et random forest sur le jeu `entrainement` ;
+4. les compare sur la `validation`, avec les prévisions de référence, et retient celui qui a le plus petit WAPE ;
+5. mesure le modèle retenu une seule fois sur le `test`, au total et site par site.
+
+Il affiche les scores, le modèle retenu et le nombre d'heures concernées. Si le modèle retenu ne fait pas mieux que la référence sur le test, il le signale : c'est la règle de SMARTOPS-30, et SMARTOPS-32 n'enregistrera dans MLflow que les modèles qui la respectent (`Resultat.bat_reference`).
+
+### Règles
+
+- Pas de fuite de données : les moyennes par site viennent de l'entraînement, le choix du modèle de la validation, et le test ne sert qu'une fois, à la fin.
+- Le modèle prévoit `conso_norm` (consommation divisée par la moyenne du site), qu'on remultiplie par la moyenne du site pour revenir en kWh. Un seul modèle sert ainsi aux sites de toutes les tailles.
+- Une heure dont une variable manque (un lag pendant une panne, par exemple) est apprise et prévue quand même, comme en production. Le random forest accepte les cases vides. Pour Ridge, une case vide est remplacée par la moyenne de la colonne sur l'entraînement.
+- Modèles et références sont notés sur les mêmes heures, avec le même calcul que la prévision de référence (`scores`) : celles où les références valables pour l'horizon existent. À 24 h, la veille et la semaine précédente. À 7 jours, la semaine précédente seulement : la veille n'est pas encore connue 7 jours à l'avance, elle n'est ni affichée ni utilisée pour écarter des heures. La référence retenue pour la règle de SMARTOPS-30 est la semaine précédente, valable aux deux horizons.
+- Un site sans heure mesurée dans l'entraînement (mis en service après la date de coupure, par exemple) est écarté avec un message : il n'a pas de moyenne, le modèle ne peut pas le prévoir, mais il ne bloque pas les autres.
+- Réglages simples, sans recherche : Ridge avec `alpha=1`, random forest de 100 arbres, au moins 5 lignes par feuille, `random_state=0` pour des résultats reproductibles.
+
+### Résultats
+
+Jeu d'empreinte `f2ee5c19efdb`. Le random forest est retenu aux deux horizons (validation : 15,4 % de WAPE à 24 h et 15,8 % à 7 jours, contre 19,5 % et 20,1 % pour Ridge).
+
+Sur le test, sur les mêmes heures que la référence :
+
+| Horizon | Semaine précédente | Random forest |
+|---|---|---|
+| 24 h | 115,6 kWh de MAE, **23,40 %** de WAPE | 81,6 kWh, **16,51 %** |
+| 7 jours | 115,4 kWh, **23,35 %** | 82,8 kWh, **16,76 %** |
+
+Le modèle fait environ 30 % d'erreur en moins que la référence, et il fait mieux sur chacun des 7 sites (WAPE à 24 h de 12,8 % pour SITE005 à 20,4 % pour SITE002). Le 7 jours est presque aussi bon que le 24 h : la consommation suit surtout un rythme par semaine, que les deux modèles voient.
+
+Sur 17 980 heures mesurées du test, 2 013 ont une variable manquante à 24 h (1 639 à 7 jours) et sont prévues quand même. Celles qui n'ont pas de référence sont exclues de la comparaison : 843 à 24 h (veille ou semaine précédente manquante), 431 à 7 jours (semaine précédente manquante). À 7 jours, la référence retrouve donc les 23,35 % de SMARTOPS-30.
+
+L'erreur restante vient surtout des anomalies du jeu (pics, chutes, coupures), imprévisibles : le RMSE vaut plus du double de la MAE, signe de quelques heures très ratées plutôt que d'une petite erreur partout.
