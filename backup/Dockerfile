@@ -1,10 +1,9 @@
 # Sauvegarde : pg_dump des bases, chiffré et envoyé par restic, lancé par cron (supercronic)
 # Contexte de build = racine du dépôt, comme les autres images
 
-# supercronic : repris de l'image de l'ETL, seul endroit où il est téléchargé et vérifié
-# (version et empreintes dans etl/Dockerfile). « supercronic » est un contexte de build
-# nommé, fourni par compose (additional_contexts: service:etl) : construire cette image
-# avec docker compose build ou docker buildx bake, pas avec un docker build seul.
+# supercronic : téléchargé et vérifié dans infra/supercronic/Dockerfile (seul endroit),
+# fourni comme contexte de build nommé (additional_contexts: service:supercronic dans les
+# fichiers compose) : construire avec docker compose build ou docker buildx bake.
 
 # restic compilé depuis ses sources : le binaire officiel 0.19.1 est construit avec
 # Go 1.26.4 et des dépendances qui ont depuis des failles HIGH corrigées (Trivy).
@@ -40,7 +39,7 @@ RUN apk add --no-cache postgresql18-client \
 
 # DL3022 : supercronic est un contexte nommé fourni par compose (voir plus haut)
 # hadolint ignore=DL3022
-COPY --from=supercronic /usr/local/bin/supercronic /usr/local/bin/supercronic
+COPY --from=supercronic /supercronic /usr/local/bin/supercronic
 COPY --from=restic /usr/bin/restic /usr/local/bin/restic
 
 WORKDIR /app

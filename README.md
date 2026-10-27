@@ -113,6 +113,16 @@ docker compose -f compose-local.yml --profile backup run --rm backup sh -c "rest
 
 La procédure de restauration complète est l'objet de SMARTOPS-54.
 
+Le dépôt local est dans le volume `backup_home` (dossier `/home/backup/repo` du conteneur). Une première version de la branche utilisait un volume `backup_repo` : il n'est plus lu, et la sauvegarde suivante démarre un nouveau dépôt vide. Ce n'étaient que des sauvegardes de test locales ; pour les garder, copier le volume avant de le supprimer :
+
+```bash
+docker run --rm -v projet_piscine_g2_backup_repo:/ancien:ro -v projet_piscine_g2_backup_home:/home/backup alpine:3.23 sh -c "cp -a /ancien /home/backup/repo && chown -R 1000:1000 /home/backup/repo"
+```
+
+```bash
+docker volume rm projet_piscine_g2_backup_repo
+```
+
 ## Hooks pre-commit
 
 Les vérifications (ruff, sqlfluff, hadolint, prettier, eslint, gitleaks…) tournent avant chaque commit ; les tests avec couverture (pytest, vitest), le typage (mypy, vue-tsc) et Trivy avant chaque push. Configuration : `.pre-commit-config.yaml`.

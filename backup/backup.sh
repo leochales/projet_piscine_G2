@@ -12,7 +12,7 @@
 #   AZURE_ACCOUNT_NAME, AZURE_ACCOUNT_SAS   accès au stockage Azure (dépôt azure: seulement)
 #   PGHOST, PGUSER, PGPASSWORD              compte backup (lecture seule, db/06_roles.sql)
 #   BACKUP_DATABASES    bases sauvegardées, dans l'ordre (défaut : enervision keycloak)
-#   DEPLOY_ENV          environnement (dev, prod, local), inscrit comme hôte des sauvegardes
+#   DEPLOY_ENV          environnement (dev, prod, local ou ci), obligatoire, inscrit comme hôte
 #
 # Les deux bases ne sont pas figées au même instant : pg_dump ne sait pas prendre un
 # instantané commun à deux bases. L'ordre limite l'effet d'un compte créé entre les deux
@@ -24,13 +24,18 @@ set -eu
 
 mode="${1:-quotidien}"
 databases="${BACKUP_DATABASES:-enervision keycloak}"
-env="${DEPLOY_ENV:-local}"
+env="${DEPLOY_ENV:-}"
 host="enervision-$env"
 
-# Même format JSON que common/logs.py, pour Loki et Grafana. Le message est échappé
-# (guillemets, antislashs, retours à la ligne) : une sortie de restic reste du JSON valide.
+# Même format JSON que common/logs.py, pour Loki et Grafana. Le message est nettoyé
+# pour rester du JSON valide quelle que soit la sortie de restic : retours à la ligne et
+# tabulations remplacés par des espaces, autres caractères de contrôle (codes couleur
+# ANSI…) retirés, antislashs et guillemets échappés. Les secrets qu'un message d'erreur
+# pourrait contenir sont masqués : signature de SAS (sig=…) et identifiants d'une
+# adresse (https://utilisateur:mot-de-passe@…).
 log() {
-    message=$(printf '%s' "$2" | tr '\n\r\t' '   ' | sed 's/\\/\\\\/g; s/"/\\"/g')
+    message=$(printf '%s' "$2" | tr '\n\r\t' '   ' | tr -d '\000-\037\177' \
+        | sed 's/sig=[^&" ]*/sig=***/g; s#://[^/@ ]*@#://***@#g; s/\\/\\\\/g; s/"/\\"/g')
     printf '{"timestamp":"%s","level":"%s","service":"backup","logger":"backup","message":"%s"}\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$message"
 }
@@ -50,12 +55,27 @@ run() {
 [ -n "${RESTIC_PASSWORD:-}" ] || { log error "RESTIC_PASSWORD manquant"; exit 1; }
 [ -n "${PGPASSWORD:-}" ] || { log error "PGPASSWORD manquant (mot de passe du compte backup)"; exit 1; }
 
-# Sur la VM, le dépôt est forcément distant : un dépôt local finirait dans le conteneur,
-# effacé au déploiement suivant
-case "$env:$RESTIC_REPOSITORY" in
-    dev:azure:* | prod:azure:* | local:* | ci:*) ;;
+# Sur la VM, chaque environnement écrit dans son propre conteneur Azure (dev ne peut pas
+# écrire dans restic-prod, ni l'inverse) ; un dépôt local finirait dans le conteneur
+# Docker, effacé au déploiement suivant. DEPLOY_ENV est obligatoire : sans lui, ce
+# contrôle ne saurait pas quel dépôt attendre.
+case "$env" in
+    dev | prod)
+        case "$RESTIC_REPOSITORY" in
+            "azure:restic-$env:/"*) ;;
+            *)
+                log error "Dépôt restic refusé pour l'environnement $env : seul azure:restic-$env:/ est accepté"
+                exit 1
+                ;;
+        esac
+        ;;
+    local | ci) ;;
+    "")
+        log error "DEPLOY_ENV manquant (dev, prod, local ou ci)"
+        exit 1
+        ;;
     *)
-        log error "Dépôt restic non Azure refusé pour l'environnement $env"
+        log error "DEPLOY_ENV inconnu : $env (dev, prod, local ou ci)"
         exit 1
         ;;
 esac
@@ -65,14 +85,15 @@ lock="--retry-lock=1h"
 
 # Premier lancement : le dépôt n'existe pas encore (code 10 de restic), on le crée.
 # Toute autre erreur (réseau, SAS expiré, mauvais mot de passe) arrête la sauvegarde.
-# L'adresse du dépôt n'est jamais écrite dans les logs.
+# L'adresse du dépôt n'est pas écrite dans les logs ; le message de restic l'est, pour
+# distinguer la cause (SAS expiré, réseau, mauvais mot de passe).
 status=0
-restic cat config >/dev/null 2>&1 || status=$?
+output=$(restic cat config 2>&1 >/dev/null) || status=$?
 if [ "$status" -eq 10 ]; then
     log info "Dépôt restic absent, initialisation"
     run restic init --quiet
 elif [ "$status" -ne 0 ]; then
-    log error "Dépôt restic injoignable ou illisible (code restic $status)"
+    log error "Dépôt restic injoignable ou illisible (code restic $status) : $(printf '%s' "$output" | tail -n 5)"
     exit 1
 fi
 
