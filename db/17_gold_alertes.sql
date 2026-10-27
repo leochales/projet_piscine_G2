@@ -1,6 +1,6 @@
 -- =============================================================================
 -- EnerVision : alertes de l'ETL dans gold (SMARTOPS-26)
--- 16 : seuil d'alerte par site, et détection des alertes depuis silver :
+-- 17 : seuil d'alerte par site, et détection des alertes depuis silver :
 --      dépassements de seuil et pannes des capteurs électriques.
 --
 -- Les alertes de l'API Mock (GET /api/v1/alerts) ne sont pas reprises : l'API

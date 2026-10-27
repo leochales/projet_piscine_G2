@@ -1,5 +1,5 @@
 -- =============================================================================
--- Tests des alertes de l'ETL (db/16_gold_alertes.sql) et des droits des
+-- Tests des alertes de l'ETL (db/17_gold_alertes.sql) et des droits des
 -- comptes etl et model
 --
 -- Lancé par la CI (.github/workflows/images.yml) sur une base neuve, avec

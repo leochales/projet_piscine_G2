@@ -68,7 +68,7 @@ Les sites à collecter sont déclarés dans `app.site` par l'application (`db/08
 
 Les actions du dashboard (décisions sur les recommandations, prises en compte des alertes) sont enregistrées dans `app` par `db/10_actions.sql`, et non dans `gold`, que l'ETL et le modèle recalculent. Ce sont des historiques : l'API peut ajouter des lignes, mais ni les modifier ni les supprimer. Une alerte n'est prise en compte qu'une fois : la base refuse la deuxième. L'état courant se lit dans les vues `app.recommandation_etat` et `app.alerte_etat`.
 
-Chaque minute, l'ETL crée les alertes dans `gold.alerte` (`source = 'etl'`, `db/16_gold_alertes.sql`, appelé par `etl/gold_alerts.py`) :
+Chaque minute, l'ETL crée les alertes dans `gold.alerte` (`source = 'etl'`, `db/17_gold_alertes.sql`, appelé par `etl/gold_alerts.py`) :
 
 - **Pic de consommation** (`threshold`) : il commence après 3 mesures consécutives au seuil du site ou plus, et se termine après 3 mesures sous ce seuil. Il passe en `critical` si le maximum atteint vaut 110 % de la capacité ou plus, sinon il reste en `high`. Il n'a pas de message : le dashboard affiche la valeur atteinte et le seuil. Chaque site a son seuil, en % de sa capacité, dans `app.site.seuil_alerte_pct` : 100 % pour les datacenters, 98 % pour les usines et 90 % pour les autres sites au départ. Un nouveau site créé sans seuil reçoit celui de son type, et si son type est corrigé, son seuil suit, sauf s'il a été réglé à la main. Un seuil modifié n'est jamais écrasé par une migration.
 - **Capteur en panne** (`sensor`, colonne `capteur`) : même règle des 3 minutes. Une panne du capteur de consommation est en `high`, une panne du capteur électrique en `medium`.

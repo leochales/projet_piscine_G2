@@ -1,7 +1,7 @@
 """ETL — Alertes dans gold (silver → gold.alerte, SMARTOPS-26).
 
 La détection est faite par la fonction SQL ``gold.detecter_alertes()``
-(db/16_gold_alertes.sql), testée en CI par db/tests/test_gold_alertes.sql.
+(db/17_gold_alertes.sql), testée en CI par db/tests/test_gold_alertes.sql.
 Même règle pour tous les suivis : une alerte commence après 3 minutes en
 défaut consécutives, et se termine après 3 minutes sans défaut :
   - threshold : consommation mesurée au-dessus du seuil du site
