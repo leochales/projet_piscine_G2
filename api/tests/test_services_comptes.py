@@ -13,6 +13,7 @@ from api.services.comptes import (
     ErreurCompte,
     KeycloakAdmin,
     NouveauCompte,
+    sites_du_client,
 )
 from common.config import Settings
 
@@ -133,3 +134,11 @@ def test_email_deja_pris_leve_compte_existant(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(urllib.request, "urlopen", keycloak)
     with pytest.raises(CompteExistant):
         KeycloakAdmin(_settings()).creer(COMPTE, "mot-de-passe-long")
+
+
+def test_sites_du_client_sans_site_ne_lance_pas_de_requete() -> None:
+    class SansRequete:
+        def execute(self, *_: object) -> None:
+            raise AssertionError("aucune requête attendue")
+
+    assert sites_du_client(SansRequete(), 1, []) == set()  # type: ignore[arg-type]

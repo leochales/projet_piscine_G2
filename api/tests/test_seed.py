@@ -14,6 +14,7 @@ SITE = CompteDemo(
     "site@demo.test", "Cyril", "Site", ["CONSULT-SITE"], "Démo", ["SITE001"]
 )
 ADMIN = CompteDemo("admin@demo.test", "Alice", "Admin", ["GESTION-CLIENT"], None)
+CLIENT = CompteDemo("client@demo.test", "Camille", "Client", ["CONSULT-CLIENT"], "Démo")
 
 
 class FauxKeycloak:
@@ -54,6 +55,8 @@ class FausseBase:
         if sql.startswith("SELECT id_client FROM app.client"):
             return Resultat(self.clients.get(parametres["nom"]))
         if sql.startswith("SELECT id_site FROM app.site"):
+            # PostgreSQL refuse un tableau vide sans type : jamais envoyé
+            assert parametres["sites"], "requête des sites avec une liste vide"
             client = parametres["id_client"]
             sites = [s for s in parametres["sites"] if self.sites.get(s) == client]
             return Resultat(sites)
@@ -128,6 +131,17 @@ def test_cree_les_comptes_avec_roles_client_et_sites() -> None:
     assert keycloak.roles == {id_site: ["CONSULT-SITE"], id_admin: ["GESTION-CLIENT"]}
     assert base.utilisateurs == {id_site: 1, id_admin: None}
     assert base.sites_attribues == {(id_site, "SITE001")}
+
+
+def test_un_compte_client_sans_site_ne_bloque_pas_les_suivants() -> None:
+    keycloak, base = FauxKeycloak(), FausseBase()
+
+    assert lancer(keycloak, base, [CLIENT, SITE]) == 2
+
+    assert base.utilisateurs == {
+        keycloak.comptes[CLIENT.email]: 1,
+        keycloak.comptes[SITE.email]: 1,
+    }
 
 
 def test_un_compte_deja_en_base_n_est_pas_modifie() -> None:

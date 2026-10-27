@@ -113,11 +113,15 @@ def preparer(session: Session, compte: CompteDemo) -> NouveauCompte:
         client = id_client(session, compte.client)
         if client is None:
             raise DonneeInvalide(f"client inconnu {compte.client!r}")
-        inconnus = set(compte.sites) - sites_du_client(session, client, compte.sites)
-        if inconnus:
-            raise DonneeInvalide(
-                f"sites absents du client : {', '.join(sorted(inconnus))}"
+        # Requête seulement pour un compte limité à ses sites (rôles *-SITE)
+        if compte.sites:
+            inconnus = set(compte.sites) - sites_du_client(
+                session, client, compte.sites
             )
+            if inconnus:
+                raise DonneeInvalide(
+                    f"sites absents du client : {', '.join(sorted(inconnus))}"
+                )
     elif compte.sites:
         raise DonneeInvalide("sites sans client")
     return NouveauCompte(compte.email, compte.prenom, compte.nom, compte.roles, client)

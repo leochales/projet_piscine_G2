@@ -188,8 +188,12 @@ def terminer_compte(
 
 def sites_du_client(session: Session, id_client: int, sites: list[str]) -> set[str]:
     """Parmi les sites donnés, ceux qui appartiennent au client."""
+    if not sites:
+        return set()
+    # Tableau typé : une liste vide arriverait sans type et PostgreSQL la refuserait
     requete = text(
-        "SELECT id_site FROM app.site WHERE id_client = :id_client AND id_site = ANY(:sites)"
+        "SELECT id_site FROM app.site "
+        "WHERE id_client = :id_client AND id_site = ANY(CAST(:sites AS VARCHAR[]))"
     )
     lignes = session.execute(requete, {"id_client": id_client, "sites": sites})
     return set(lignes.scalars())
