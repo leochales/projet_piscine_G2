@@ -628,6 +628,106 @@ BEGIN
 END
 $$;
 
+-- 15. Alerte plus longue que la fenêtre : SITE-D, en cours depuis 11:01,
+--     230 kW à 11:04 (critical), puis 190 kW jusqu'à 11:30. Avec une
+--     fenêtre de 5 minutes (11:25), l'alerte est reprise de la base : même
+--     ligne, même début, même maximum. Puis 3 minutes à 100 kW la ferment.
+RESET ROLE;
+INSERT INTO silver.silver_readings (
+    id_site, horodatage, consumption_kw_raw, consumption_kw_imputed,
+    imputation_method, data_quality, null_reasons
+)
+SELECT
+    'SITE-D' AS id_site,
+    '2026-01-01 11:04+00'::TIMESTAMPTZ + n * INTERVAL '1 minute' AS horodatage,
+    CASE WHEN n = 0 THEN 230 ELSE 190 END AS consumption_kw_raw,
+    CASE WHEN n = 0 THEN 230 ELSE 190 END AS consumption_kw_imputed,
+    'none' AS imputation_method,
+    'good' AS data_quality,
+    '{}'::TEXT[] AS null_reasons
+FROM generate_series(0, 16) AS n;
+SET ROLE etl;
+
+DO $$
+DECLARE
+    a RECORD;
+BEGIN
+    PERFORM gold.detecter_alertes();
+
+    SELECT * INTO a FROM gold.alerte WHERE id_site = 'SITE-D';
+    ASSERT a.valeur = 230 AND a.severite = 'critical',
+    format('valeur %s, sévérité %s', a.valeur, a.severite);
+END
+$$;
+
+RESET ROLE;
+INSERT INTO silver.silver_readings (
+    id_site, horodatage, consumption_kw_raw, consumption_kw_imputed,
+    imputation_method, data_quality, null_reasons
+)
+SELECT
+    'SITE-D' AS id_site,
+    '2026-01-01 11:21+00'::TIMESTAMPTZ + n * INTERVAL '1 minute' AS horodatage,
+    190 AS consumption_kw_raw,
+    190 AS consumption_kw_imputed,
+    'none' AS imputation_method,
+    'good' AS data_quality,
+    '{}'::TEXT[] AS null_reasons
+FROM generate_series(0, 9) AS n;
+SET ROLE etl;
+
+DO $$
+DECLARE
+    a RECORD;
+    nb BIGINT;
+BEGIN
+    SELECT count(*) INTO nb FROM gold.detecter_alertes(INTERVAL '5 minutes')
+    WHERE id_site = 'SITE-D';
+    ASSERT nb = 0, format('alerte reprise sans changement attendue, %s', nb);
+
+    SELECT count(*) INTO nb FROM gold.alerte WHERE id_site = 'SITE-D';
+    ASSERT nb = 1, format('une seule alerte pour SITE-D, %s', nb);
+
+    SELECT * INTO a FROM gold.alerte WHERE id_site = 'SITE-D';
+    ASSERT a.id_alerte = (SELECT id_alerte FROM id_test), 'même identifiant';
+    ASSERT a.debut = '2026-01-01 11:01+00', format('début : %s', a.debut);
+    ASSERT a.fin IS null, 'toujours en cours';
+    ASSERT a.valeur = 230 AND a.severite = 'critical',
+    format('valeur %s, sévérité %s', a.valeur, a.severite);
+END
+$$;
+
+RESET ROLE;
+INSERT INTO silver.silver_readings (
+    id_site, horodatage, consumption_kw_raw, consumption_kw_imputed,
+    imputation_method, data_quality, null_reasons
+)
+SELECT
+    'SITE-D' AS id_site,
+    '2026-01-01 11:31+00'::TIMESTAMPTZ + n * INTERVAL '1 minute' AS horodatage,
+    100 AS consumption_kw_raw,
+    100 AS consumption_kw_imputed,
+    'none' AS imputation_method,
+    'good' AS data_quality,
+    '{}'::TEXT[] AS null_reasons
+FROM generate_series(0, 2) AS n;
+SET ROLE etl;
+
+DO $$
+DECLARE
+    a RECORD;
+BEGIN
+    PERFORM gold.detecter_alertes(INTERVAL '5 minutes');
+
+    SELECT * INTO a FROM gold.alerte WHERE id_site = 'SITE-D';
+    ASSERT a.id_alerte = (SELECT id_alerte FROM id_test), 'même identifiant';
+    ASSERT a.debut = '2026-01-01 11:01+00', format('début : %s', a.debut);
+    ASSERT a.fin = '2026-01-01 11:31+00', format('fin : %s', a.fin);
+    ASSERT a.valeur = 230, format('valeur : %s', a.valeur);
+    RAISE NOTICE 'OK 15 : alerte plus longue que la fenêtre, reprise de la base';
+END
+$$;
+
 RESET ROLE;
 
 ROLLBACK;

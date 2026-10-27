@@ -158,10 +158,13 @@ WHERE source = 'etl';
 -- l'API, sans la règle des 3 minutes. Un capteur peut donc y être en panne
 -- sans qu'aucune alerte ne soit ouverte : c'est voulu.
 --
--- Fenêtre : par site, les `fenetre` dernières minutes de silver, élargies au
--- début des alertes en cours ou récentes, pour retrouver la même alerte à
--- chaque passage. Le temps de référence est la dernière minute du site, et
--- non now() : silver en retard ne ferme rien à tort.
+-- Fenêtre : par site, les `fenetre` dernières minutes de silver seulement,
+-- même pendant une alerte de plusieurs jours : le coût d'un passage ne
+-- grandit pas avec la durée des alertes. Une alerte qui a commencé avant la
+-- fenêtre et la recouvre est reprise de gold.alerte (début et maximum
+-- atteint), puis prolongée ou fermée par les minutes de la fenêtre. Le temps
+-- de référence est la dernière minute du site, et non now() : silver en
+-- retard ne ferme rien à tort.
 -- Une alerte en cours dont le début change (seuil modifié, minute réécrite)
 -- garde sa ligne et son identifiant. Une alerte en cours que le calcul ne
 -- retrouve plus (défaut disparu, site désactivé) est fermée à la dernière
@@ -211,23 +214,27 @@ BEGIN
     ),
 
     depart AS (
-        -- least() ignore NULL : sans alerte en cours ni récente, la fenêtre
+        -- Début de la fenêtre, et alerte qui a commencé avant et la recouvre
+        -- (amorce) : son état n'est pas recalculé, il est repris de la base
         SELECT
             u.*,
-            least(
-                u.ref - fenetre,
-                (
-                    SELECT min(a.debut)
-                    FROM gold.alerte AS a
-                    WHERE
-                        a.id_site = u.id_site
-                        AND a.source = 'etl'
-                        AND a.type = u.type
-                        AND a.capteur IS NOT DISTINCT FROM u.capteur
-                        AND (a.fin IS null OR a.fin >= u.ref - fenetre)
-                )
-            ) AS depuis
+            u.ref - fenetre AS depuis,
+            am.debut AS amorce_debut,
+            am.valeur AS amorce_valeur
         FROM suivis AS u
+        LEFT JOIN LATERAL (
+            SELECT a.debut, a.valeur
+            FROM gold.alerte AS a
+            WHERE
+                a.source = 'etl'
+                AND a.id_site = u.id_site
+                AND a.type = u.type
+                AND a.capteur IS NOT DISTINCT FROM u.capteur
+                AND a.debut < u.ref - fenetre
+                AND (a.fin IS null OR a.fin > u.ref - fenetre)
+            ORDER BY a.debut DESC
+            LIMIT 1
+        ) AS am ON true
     ),
 
     minutes AS (
@@ -276,14 +283,15 @@ BEGIN
 
     series AS (
         -- Suites de minutes consécutives dans le même état (îlots), sans
-        -- trou de plus de 5 minutes
+        -- trou de plus de 5 minutes, avec leur maximum
         SELECT
             id_site,
             type,
             capteur,
             en_defaut,
             min(horodatage) AS debut,
-            count(*) AS nb
+            count(*) AS nb,
+            max(kw) AS kw_max
         FROM (
             SELECT
                 *,
@@ -298,54 +306,85 @@ BEGIN
             FROM troncons
         ) AS x
         GROUP BY id_site, type, capteur, troncon, en_defaut, ilot
+
+        UNION ALL
+
+        -- L'amorce compte comme une suite en défaut, avant la fenêtre
+        SELECT
+            id_site,
+            type,
+            capteur,
+            true,
+            amorce_debut,
+            3,
+            amorce_valeur
+        FROM depart
+        WHERE amorce_debut IS NOT null
     ),
 
     franches AS (
-        -- Seules les suites d'au moins 3 minutes changent l'état de l'alerte
+        -- Seules les suites d'au moins 3 minutes changent l'état de l'alerte.
+        -- Début d'alerte : une suite en défaut après une suite sans défaut
+        -- (ou aucune).
         SELECT
-            *,
-            lag(en_defaut) OVER (
+            id_site,
+            type,
+            capteur,
+            debut,
+            en_defaut
+            AND lag(en_defaut) OVER (
                 PARTITION BY id_site, type, capteur ORDER BY debut
-            ) AS precedente
+            ) IS DISTINCT FROM true AS est_debut
         FROM series
         WHERE nb >= 3
     ),
 
-    alertes AS (
-        -- Début : une suite en défaut après une suite sans défaut (ou aucune).
-        -- Fin : la première suite sans défaut qui la suit.
+    episodes AS (
+        -- Chaque suite, franche ou non, rattachée à l'alerte commencée avant
+        -- elle (episode 0 : aucune)
         SELECT
-            o.id_site,
-            o.type,
-            o.capteur,
-            o.debut,
-            (
-                SELECT min(f.debut)
-                FROM franches AS f
-                WHERE
-                    f.id_site = o.id_site
-                    AND f.type = o.type
-                    AND f.capteur IS NOT DISTINCT FROM o.capteur
-                    AND NOT f.en_defaut
-                    AND f.debut > o.debut
+            s.*,
+            f.debut IS NOT null AS franche,
+            coalesce(f.est_debut, false) AS est_debut,
+            count(*) FILTER (WHERE f.est_debut) OVER (
+                PARTITION BY s.id_site, s.type, s.capteur ORDER BY s.debut
+            ) AS episode
+        FROM series AS s
+        LEFT JOIN franches AS f
+            ON
+                s.id_site = f.id_site
+                AND s.type = f.type
+                AND s.capteur IS NOT DISTINCT FROM f.capteur
+                AND s.debut = f.debut
+    ),
+
+    bornes AS (
+        -- Fin de l'alerte : la première suite franche sans défaut qui la suit
+        SELECT
+            *,
+            min(debut) FILTER (WHERE franche AND NOT en_defaut) OVER (
+                PARTITION BY id_site, type, capteur, episode
             ) AS fin
-        FROM franches AS o
-        WHERE o.en_defaut AND o.precedente IS DISTINCT FROM true
+        FROM episodes
+        WHERE episode > 0
+    ),
+
+    alertes AS (
+        -- Maximum atteint : sur les suites entre le début et la fin
+        SELECT
+            id_site,
+            type,
+            capteur,
+            min(debut) FILTER (WHERE est_debut) AS debut,
+            min(fin) AS fin,
+            max(kw_max) FILTER (WHERE fin IS null OR debut < fin) AS valeur
+        FROM bornes
+        GROUP BY id_site, type, capteur, episode
     ),
 
     detail AS (
         SELECT
             a.*,
-            (
-                SELECT max(m.kw)
-                FROM minutes AS m
-                WHERE
-                    m.id_site = a.id_site
-                    AND m.type = a.type
-                    AND m.capteur IS NOT DISTINCT FROM a.capteur
-                    AND m.horodatage >= a.debut
-                    AND (a.fin IS null OR m.horodatage < a.fin)
-            ) AS valeur,
             u.seuil,
             u.capacite_kw,
             -- Alerte déjà en base avec le même début
@@ -484,9 +523,8 @@ BEGIN
         -- Alertes en cours que le calcul ne retrouve plus : défaut disparu
         -- (seuil relevé), site qui n'est plus actif, ou alerte absorbée par
         -- une plus ancienne (seuil abaissé). Fermées à la dernière minute du
-        -- site : laissées en cours, elles resteraient affichées et
-        -- élargiraient la fenêtre (depart) à chaque passage. Jamais les mêmes
-        -- lignes que modifiees (NOT EXISTS).
+        -- site : laissées en cours, elles resteraient affichées. Jamais les
+        -- mêmes lignes que modifiees (NOT EXISTS).
         UPDATE gold.alerte AS a
         SET fin = greatest(
             a.debut,
