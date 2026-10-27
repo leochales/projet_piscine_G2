@@ -85,7 +85,7 @@ Grafana : http://localhost/grafana (compte `admin`, mot de passe `GRAFANA_ADMIN_
 
 ## Sauvegarde (restic)
 
-Chaque nuit à 2 h UTC, le conteneur `backup` ([`backup/`](backup/)) sauvegarde les bases `enervision` puis `keycloak`, dans la même exécution (les comptes de l'application sont liés à Keycloak) :
+Chaque nuit à 2 h UTC, le conteneur `backup` ([`backup/`](backup/)) sauvegarde la base de l'application (celle de `POSTGRES_DB`, propre à chaque environnement) puis `keycloak`, dans la même exécution (les comptes de l'application sont liés à Keycloak). Chaque snapshot porte en tag le nom de sa base, et le fichier s'appelle `<base>.dump` :
 
 - `pg_dump` (format custom) avec le compte `backup`, en lecture seule, envoyé directement à restic, sans fichier sur le disque ;
 - chiffré par restic avec `RESTIC_PASSWORD` avant l'envoi : **sans cette clé, les sauvegardes sont illisibles**, la conserver aussi hors de GitHub ;
@@ -105,7 +105,7 @@ docker compose -f compose-local.yml --profile backup run --rm backup /app/backup
 docker compose -f compose-local.yml --profile backup run --rm backup restic snapshots
 ```
 
-Pour récupérer un dump (ici le dernier de `enervision`) et l'inspecter avec `pg_restore` :
+Pour récupérer un dump (ici le dernier de la base `enervision`, le `POSTGRES_DB` du `.env` par défaut ; sur la VM, remplacer par le `POSTGRES_DB` de l'environnement) et l'inspecter avec `pg_restore` :
 
 ```bash
 docker compose -f compose-local.yml --profile backup run --rm backup sh -c "restic dump latest enervision.dump --tag enervision | pg_restore --list"

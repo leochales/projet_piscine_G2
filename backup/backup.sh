@@ -11,7 +11,8 @@
 #   RESTIC_PASSWORD     clé de chiffrement du dépôt : sans elle, les sauvegardes sont illisibles
 #   AZURE_ACCOUNT_NAME, AZURE_ACCOUNT_SAS   accès au stockage Azure (dépôt azure: seulement)
 #   PGHOST, PGUSER, PGPASSWORD              compte backup (lecture seule, db/06_roles.sql)
-#   BACKUP_DATABASES    bases sauvegardées, dans l'ordre (défaut : enervision keycloak)
+#   BACKUP_DATABASES    bases sauvegardées, dans l'ordre, obligatoire : la base de
+#                       l'application (POSTGRES_DB, propre à chaque environnement) puis keycloak
 #   DEPLOY_ENV          environnement (dev, prod, local ou ci), obligatoire, inscrit comme hôte
 #
 # Les deux bases ne sont pas figées au même instant : pg_dump ne sait pas prendre un
@@ -23,7 +24,7 @@
 set -eu
 
 mode="${1:-quotidien}"
-databases="${BACKUP_DATABASES:-enervision keycloak}"
+databases="${BACKUP_DATABASES:-}"
 env="${DEPLOY_ENV:-}"
 host="enervision-$env"
 
@@ -63,6 +64,7 @@ case "$mode" in
         ;;
 esac
 
+[ -n "$databases" ] || { log error "BACKUP_DATABASES manquant (base de l'application puis keycloak)"; exit 1; }
 [ -n "${RESTIC_REPOSITORY:-}" ] || { log error "RESTIC_REPOSITORY manquant"; exit 1; }
 [ -n "${RESTIC_PASSWORD:-}" ] || { log error "RESTIC_PASSWORD manquant"; exit 1; }
 [ -n "${PGPASSWORD:-}" ] || { log error "PGPASSWORD manquant (mot de passe du compte backup)"; exit 1; }

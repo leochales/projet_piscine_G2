@@ -163,6 +163,9 @@ services:
       DEPLOY_ENV: ${DEPLOY_ENV:?DEPLOY_ENV manquant (dev ou prod)}
       PGHOST: db
       PGUSER: backup
+      # La base de l'application porte le nom POSTGRES_DB de l'environnement (pas
+      # forcément « enervision »), puis celle de Keycloak, toujours « keycloak »
+      BACKUP_DATABASES: ${POSTGRES_DB} keycloak
       PGPASSWORD: ${BACKUP_DB_PASSWORD}
       RESTIC_REPOSITORY: azure:restic-${DEPLOY_ENV}:/
       RESTIC_PASSWORD: ${RESTIC_PASSWORD}
