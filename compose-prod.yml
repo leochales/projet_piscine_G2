@@ -131,22 +131,11 @@ services:
       - postgres_network
       - traefik_public
 
-  # Étape de construction partagée : binaire supercronic téléchargé et vérifié une seule
-  # fois, copié par les images etl et backup (additional_contexts). Jamais démarrée.
-  supercronic:
-    build:
-      context: .
-      dockerfile: infra/supercronic/Dockerfile
-    deploy:
-      replicas: 0
-
   etl:
     image: ${IMAGE_REPO:?IMAGE_REPO manquant}/enervision-etl:${IMAGE_TAG:?IMAGE_TAG manquant}
     build:
       context: .
       dockerfile: etl/Dockerfile
-      additional_contexts:
-        supercronic: service:supercronic
     restart: unless-stopped
     environment:
       ETL_ENABLED: ${ETL_ENABLED:-true}
@@ -168,8 +157,6 @@ services:
     build:
       context: .
       dockerfile: backup/Dockerfile
-      additional_contexts:
-        supercronic: service:supercronic
     restart: unless-stopped
     environment:
       # Obligatoire : backup.sh en déduit le seul dépôt accepté (azure:restic-<env>:/)

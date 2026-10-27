@@ -188,21 +188,27 @@ jobs:
             restic snapshots --json | jq -r '[.[].tags[]] | sort | join(" ")')
           [ "$snapshots" = "enervision keycloak" ] \
             || { echo "::error::Snapshots inattendus : '$snapshots'"; exit 1; }
-          # Garde-fou de backup.sh, dans la configuration de la VM (DEPLOY_ENV=dev) : il doit
-          # refuser, avec son message, tout dépôt autre que azure:restic-dev:/
-          refuse() {
+          # Garde-fou de backup.sh, dans la configuration de la VM (DEPLOY_ENV=dev). Sans
+          # compte Azure en CI, backup.sh échoue toujours : on vérifie qu'il échoue à la
+          # bonne étape, d'après son message.
+          echec_attendu() {
             message=$1
             shift
             if output=$(docker compose -f compose-prod.yml exec -T "$@" backup /app/backup.sh 2>&1); then
-              echo "::error::backup.sh aurait dû refuser ($*)"
+              echo "::error::backup.sh aurait dû échouer ($*)"
               exit 1
             fi
             echo "$output" | grep -qF "$message" \
-              || { echo "::error::Refus inattendu ($*) : $output"; exit 1; }
+              || { echo "::error::Échec à une autre étape que prévu ($*) : $output"; exit 1; }
           }
-          refuse "Dépôt restic refusé" -e RESTIC_REPOSITORY=/tmp/repo
-          refuse "Dépôt restic refusé" -e RESTIC_REPOSITORY=azure:restic-prod:/
-          refuse "DEPLOY_ENV manquant" -e DEPLOY_ENV=
+          # Refusés par le garde-fou : tout dépôt autre que azure:restic-dev:/
+          echec_attendu "Dépôt restic refusé" -e RESTIC_REPOSITORY=/tmp/repo
+          echec_attendu "Dépôt restic refusé" -e RESTIC_REPOSITORY=azure:restic-prod:/
+          echec_attendu "DEPLOY_ENV manquant" -e DEPLOY_ENV=
+          # Accepté : le dépôt de compose-prod.yml (azure:restic-dev:/) passe le garde-fou,
+          # et la sauvegarde ne s'arrête qu'à l'ouverture du dépôt, faute de compte Azure
+          # (aucune requête réseau). Un motif trop strict bloquerait sinon toutes les nuits.
+          echec_attendu "Account name (\$AZURE_ACCOUNT_NAME) is empty" -e AZURE_ACCOUNT_NAME=
 
       # Job du jeu d'entraînement (profil jobs), sur un petit CSV généré : image du modèle,
       # montage des données brutes et enregistrement dans le MLflow de la stack

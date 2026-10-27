@@ -31,11 +31,13 @@ host="enervision-$env"
 # pour rester du JSON valide quelle que soit la sortie de restic : retours à la ligne et
 # tabulations remplacés par des espaces, autres caractères de contrôle (codes couleur
 # ANSI…) retirés, antislashs et guillemets échappés. Les secrets qu'un message d'erreur
-# pourrait contenir sont masqués : signature de SAS (sig=…) et identifiants d'une
-# adresse (https://utilisateur:mot-de-passe@…).
+# pourrait contenir sont masqués : signature de SAS, en clair (sig=…) ou encodée dans
+# une URL (sig%3D…, jusqu'à la fin de l'adresse), et identifiants d'une adresse
+# (https://utilisateur:mot-de-passe@…).
 log() {
     message=$(printf '%s' "$2" | tr '\n\r\t' '   ' | tr -d '\000-\037\177' \
-        | sed 's/sig=[^&" ]*/sig=***/g; s#://[^/@ ]*@#://***@#g; s/\\/\\\\/g; s/"/\\"/g')
+        | sed 's/sig=[^&" ]*/sig=***/g; s/sig%3[dD][^" ]*/sig%3D***/g; s#://[^/@ ]*@#://***@#g' \
+        | sed 's/\\/\\\\/g; s/"/\\"/g')
     printf '{"timestamp":"%s","level":"%s","service":"backup","logger":"backup","message":"%s"}\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$message"
 }

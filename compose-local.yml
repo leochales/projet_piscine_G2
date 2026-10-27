@@ -165,21 +165,10 @@ services:
       - postgres_network          # accès à la base
       - proxy_network             # joignable par Traefik
 
-  # Étape de construction partagée : binaire supercronic téléchargé et vérifié une seule
-  # fois, copié par les images etl et backup (additional_contexts). Jamais démarrée.
-  supercronic:
-    build:
-      context: .
-      dockerfile: infra/supercronic/Dockerfile
-    deploy:
-      replicas: 0
-
   etl:
     build:
       context: .
       dockerfile: etl/Dockerfile
-      additional_contexts:
-        supercronic: service:supercronic
     container_name: etl
     environment:
       ETL_ENABLED: ${ETL_ENABLED:-true}
@@ -200,8 +189,6 @@ services:
     build:
       context: .
       dockerfile: backup/Dockerfile
-      additional_contexts:
-        supercronic: service:supercronic
     profiles: [backup]
     environment:
       DEPLOY_ENV: local

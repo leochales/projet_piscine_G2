@@ -258,11 +258,15 @@ jobs:
           docker image prune -af --filter "label=org.opencontainers.image.source=${REPO_URL}"
 
   # GHCR est gratuit « pour l'instant » : on ne garde que les 20 dernières versions de
-  # chaque image. Après le déploiement, qui n'attend donc pas la purge ; une seule
-  # définition pour toutes les images (matrice). Un échec n'a aucun effet sur l'application.
+  # chaque image. Les versions sont communes à dev et prod : la purge ne tourne donc
+  # qu'au déploiement de prod, dont la version vient d'être publiée et reste la plus
+  # récente. Une purge lancée par dev pourrait sinon supprimer la version qui tourne en
+  # prod. Après le déploiement, qui ne l'attend pas ; une seule définition pour toutes
+  # les images (matrice). Un échec n'a aucun effet sur l'application.
   purge:
     name: Purger les anciennes versions (${{ matrix.image }})
     needs: deploy
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     continue-on-error: true
     permissions:
