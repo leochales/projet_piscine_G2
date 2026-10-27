@@ -1,21 +1,18 @@
 <#--
   Mise en page commune à toutes les pages de connexion du realm (connexion, mot de passe
   oublié, erreur...) : la marque EnerVision, et une Card de shadcn.
-  Même macro et mêmes sections que le template.ftl du thème de base, que les autres pages
-  appellent ; « subtitle » en plus, pour le sous-titre de la carte (login.ftl).
+  Même macro que le template.ftl du thème de base, que les autres pages appellent, sans
+  ce que le realm n'utilise pas (fournisseurs d'identité, autre moyen de connexion,
+  passkeys) ; « subtitle » en plus, pour le sous-titre de la carte (login.ftl).
 -->
 <#macro registrationLayout bodyClass="" displayInfo=false displayMessage=true displayRequiredFields=false>
 <!DOCTYPE html>
-<html class="${properties.kcHtmlClass!}" lang="${lang}"<#if realm.internationalizationEnabled> dir="${(locale.rtl)?then('rtl','ltr')}"</#if>>
+<html lang="${lang}">
 
 <head>
     <meta charset="utf-8">
     <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
-    <#if properties.meta?has_content>
-        <#list properties.meta?split(' ') as meta>
-            <meta name="${meta?split('==')[0]}" content="${meta?split('==')[1]}"/>
-        </#list>
-    </#if>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>${msg("loginTitle",(realm.displayName!''))}</title>
     <link rel="icon" href="${url.resourcesPath}/img/favicon.ico" />
     <#-- Même clé et même règle que front/index.html (le front est à la même adresse, donc
@@ -25,68 +22,22 @@
             var theme = localStorage.getItem('enervision-theme')
             if (theme === 'dark' || ((!theme || theme === 'auto') && matchMedia('(prefers-color-scheme: dark)').matches)) {
                 document.documentElement.classList.add('dark')
-            } else {
-                document.documentElement.classList.add('light')
             }
         } catch (e) {}
     </script>
-    <#if properties.stylesCommon?has_content>
-        <#list properties.stylesCommon?split(' ') as style>
-            <link href="${url.resourcesCommonPath}/${style}" rel="stylesheet" />
-        </#list>
-    </#if>
-    <#if properties.styles?has_content>
-        <#list properties.styles?split(' ') as style>
-            <link href="${url.resourcesPath}/${style}" rel="stylesheet" />
-        </#list>
-    </#if>
-    <#if properties.scripts?has_content>
-        <#list properties.scripts?split(' ') as script>
-            <script src="${url.resourcesPath}/${script}" type="text/javascript"></script>
-        </#list>
-    </#if>
-    <script type="importmap">
-        {
-            "imports": {
-                "rfc4648": "${url.resourcesCommonPath}/vendor/rfc4648/rfc4648.js"
-            }
-        }
-    </script>
+    <link href="${url.resourcesPath}/css/enervision.css" rel="stylesheet" />
     <#if scripts??>
         <#list scripts as script>
             <script src="${script}" type="text/javascript"></script>
         </#list>
     </#if>
-    <#-- Scripts du thème de base : session ouverte dans un autre onglet, liens à usage unique -->
+    <#-- Script du thème de base : connexion faite dans un autre onglet -->
     <script type="module">
         import { startSessionPolling } from "${url.resourcesPath}/js/authChecker.js";
 
         startSessionPolling(
             "${url.ssoLoginInOtherTabsUrl?no_esc}"
         );
-    </script>
-    <script type="module">
-        document.addEventListener("click", (event) => {
-            const link = event.target.closest("a[data-once-link]");
-
-            if (!link) {
-                return;
-            }
-
-            if (link.getAttribute("aria-disabled") === "true") {
-                event.preventDefault();
-                return;
-            }
-
-            const { disabledClass } = link.dataset;
-
-            if (disabledClass) {
-                link.classList.add(...disabledClass.trim().split(/\s+/));
-            }
-
-            link.setAttribute("role", "link");
-            link.setAttribute("aria-disabled", "true");
-        });
     </script>
     <#if authenticationSession??>
         <script type="module">
@@ -99,12 +50,12 @@
     </#if>
 </head>
 
-<body class="${properties.kcBodyClass!} ${bodyClass}" data-page-id="login-${pageId}">
-<main class="${properties.kcLoginClass!}">
-    <div id="kc-header" class="${properties.kcHeaderClass!}">${kcSanitize(msg("loginTitleHtml",(realm.displayNameHtml!'')))?no_esc}</div>
+<body class="ev-page ${bodyClass}" data-page-id="login-${pageId}">
+<main class="ev-shell">
+    <div id="kc-header" class="ev-brand">${realm.displayName!'EnerVision'}</div>
 
-    <div class="${properties.kcFormCardClass!}" data-slot="card">
-        <header class="${properties.kcFormHeaderClass!}" data-slot="card-header">
+    <div class="ev-card" data-slot="card">
+        <header class="ev-card-header" data-slot="card-header">
             <#if auth?has_content && auth.showUsername() && !auth.showResetCredentials()>
                 <#nested "show-username">
                 <h1 id="kc-page-title" class="ev-card-title"><#nested "header"></h1>
@@ -134,16 +85,6 @@
             </#if>
 
             <#nested "form">
-
-            <#if auth?has_content && auth.showTryAnotherWayLink()>
-                <form id="kc-select-try-another-way-form" action="${url.loginAction}" method="post">
-                    <input type="hidden" name="tryAnotherWay" value="on"/>
-                    <a href="#" id="try-another-way" class="ev-link"
-                       onclick="document.forms['kc-select-try-another-way-form'].requestSubmit();return false;">${msg("doTryAnotherWay")}</a>
-                </form>
-            </#if>
-
-            <#nested "socialProviders">
 
             <#if displayInfo>
                 <div id="kc-info" class="${properties.kcSignUpClass!}">

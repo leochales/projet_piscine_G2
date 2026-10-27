@@ -237,7 +237,7 @@ jobs:
 
       # Console d'administration exposée : le realm master bloque un compte après 5 mots de
       # passe faux (15 min, puis plus longtemps). Le realm enervision n'est importé qu'au
-      # premier démarrage : son thème de connexion est donc aussi appliqué ici. Un échec (mot
+      # premier démarrage : son thème de connexion (en français seul) est donc aussi appliqué ici. Un échec (mot
       # de passe administrateur changé dans Keycloak depuis le premier démarrage) n'arrête
       # pas le déploiement.
       - name: Configurer les realms Keycloak
@@ -262,7 +262,7 @@ jobs:
           fi
           kcadm update realms/master -s bruteForceProtected=true -s failureFactor=5 \
             -s waitIncrementSeconds=900 -s maxFailureWaitSeconds=3600 -s permanentLockout=false
-          kcadm update realms/enervision -s loginTheme=enervision
+          kcadm update realms/enervision -s loginTheme=enervision -s 'supportedLocales=["fr"]'
 
       # Images orphelines, et anciennes versions de nos images qu'aucun conteneur
       # (dev ou prod) n'utilise plus. Elles restent récupérables sur GHCR.
