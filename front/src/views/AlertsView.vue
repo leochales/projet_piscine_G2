@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { storeToRefs } from 'pinia'
-import { toast } from 'vue-sonner'
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -12,25 +11,41 @@ import RequestError from '@/components/common/RequestError.vue'
 import TableSkeleton from '@/components/common/TableSkeleton.vue'
 import AlertsTable from '@/components/alerts/AlertsTable.vue'
 import RecommendationList from '@/components/alerts/RecommendationList.vue'
-import { notifyActionFailed } from '@/lib/actions'
+import DataFreshness from '@/components/common/DataFreshness.vue'
+import { useActionsNotice, useAcknowledgeAlert, useCanAcknowledge } from '@/lib/actions'
 import { alertSites, filterAlerts, NO_FILTER, type AlertFilter } from '@/lib/alerts'
 import { formatEur } from '@/lib/format'
 import { listedRecommendations } from '@/lib/recommendations'
 import { SEVERITY_LABELS } from '@/lib/labels'
+import { useAutoRefresh } from '@/lib/refresh'
 import { useRequest } from '@/lib/request'
 import { useOperationsStore } from '@/stores/operations'
-import { ACTION_ROLES, useUserStore } from '@/stores/user'
 
-const user = useUserStore()
-const readOnly = computed(() => !user.hasAnyRole(ACTION_ROLES))
+// Pourquoi les boutons d'action manquent : rôle de consultation, ou actions pas encore
+// enregistrées avec les vraies données (US7)
+const actionsNotice = useActionsNotice()
 
 const operations = useOperationsStore()
-const { alerts, recommendations, savings, pending } = storeToRefs(operations)
+const { alerts, recommendations, savings, pending, loaded } = storeToRefs(operations)
 // Même ordre que la page d'un site, sans les recommandations acceptées depuis longtemps
 const listed = computed(() => listedRecommendations(recommendations.value))
 
-// Le store ne recharge pas ce qu'il a déjà : revenir sur l'écran garde les actions faites
-const request = useRequest(() => operations.load())
+// Premier passage : tout le store (alertes, recommandations, économies). Ensuite, alertes et
+// recommandations sont rechargées chaque minute : un nouveau dépassement de seuil apparaît
+// sans recharger la page (US3). Les actions faites restent affichées (store).
+const request = useRequest(async () => {
+  if (!operations.loaded) return operations.load()
+  await Promise.all([operations.reloadAlerts(), operations.reloadRecommendations()])
+})
+const freshness = useAutoRefresh([request])
+// Squelettes et erreur pleine page tant que le store n'a rien. Au retour sur l'écran,
+// les listes déjà chargées restent affichées, même si le rechargement est en cours ou échoue.
+const firstLoading = computed(
+  () => !loaded.value && !request.updatedAt.value && request.status.value === 'loading',
+)
+const firstFailed = computed(
+  () => !loaded.value && !request.updatedAt.value && request.status.value === 'error',
+)
 
 // Filtres de la liste des alertes : gravité et site
 const filter = ref<AlertFilter>({ ...NO_FILTER })
@@ -49,28 +64,25 @@ function setGravite(value: unknown) {
 const resetFilter = () => (filter.value = { ...NO_FILTER })
 
 // Retour après chaque action : confirmation discrète, ou erreur à réessayer (lib/actions.ts)
-async function acknowledge(alertId: string) {
-  const alert = alerts.value.find((a) => a.id === alertId)
-  try {
-    await operations.acknowledge(alertId)
-    toast.success('Alerte prise en compte', {
-      description: alert && `${alert.siteId} · ${alert.message}`,
-    })
-  } catch {
-    notifyActionFailed()
-  }
-}
+const acknowledge = useAcknowledgeAlert()
+const canAcknowledge = useCanAcknowledge()
 </script>
 
 <template>
   <section class="space-y-4">
     <h1 class="sr-only">Alertes et recommandations</h1>
-    <p v-if="readOnly" class="text-sm text-muted-foreground">
-      Lecture seule : les actions sont réservées aux gestionnaires.
-    </p>
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <p class="text-sm text-muted-foreground">{{ actionsNotice }}</p>
+      <DataFreshness
+        :updated-at="freshness.updatedAt.value"
+        :refreshing="freshness.refreshing.value"
+        :failed="freshness.failed.value"
+        @refresh="freshness.refresh"
+      />
+    </div>
 
     <RequestError
-      v-if="request.status.value === 'error'"
+      v-if="firstFailed"
       what="les alertes et les recommandations"
       @retry="request.reload"
     />
@@ -110,7 +122,7 @@ async function acknowledge(alertId: string) {
           </div>
         </CardHeader>
         <CardContent>
-          <TableSkeleton v-if="request.status.value === 'loading'" :rows="4" />
+          <TableSkeleton v-if="firstLoading" :rows="4" />
           <EmptyState
             v-else-if="alerts.length === 0"
             title="Aucune alerte active"
@@ -126,7 +138,7 @@ async function acknowledge(alertId: string) {
           <AlertsTable
             v-else
             :alerts="filtered"
-            :can-act-on="user.canActOn"
+            :can-act-on="canAcknowledge"
             :pending="pending"
             @acknowledge="acknowledge"
           />
@@ -136,7 +148,7 @@ async function acknowledge(alertId: string) {
       <div class="space-y-4">
         <Card>
           <CardHeader><CardTitle>Recommandations</CardTitle></CardHeader>
-          <CardContent v-if="request.status.value === 'loading'" class="space-y-4">
+          <CardContent v-if="firstLoading" class="space-y-4">
             <div v-for="n in 3" :key="n" class="space-y-2">
               <Skeleton class="h-4 w-3/4" />
               <Skeleton class="h-4 w-1/2" />
@@ -156,7 +168,7 @@ async function acknowledge(alertId: string) {
         <Card class="gap-1">
           <CardHeader><CardTitle>Économies réalisées ce mois-ci</CardTitle></CardHeader>
           <CardContent>
-            <Skeleton v-if="request.status.value === 'loading'" class="h-9 w-32" />
+            <Skeleton v-if="firstLoading" class="h-9 w-32" />
             <p v-else class="text-3xl font-semibold tabular-nums">{{ formatEur(savings) }}</p>
             <p class="text-sm text-muted-foreground">
               somme des gains des recommandations acceptées (gains hebdomadaires ramenés au mois)

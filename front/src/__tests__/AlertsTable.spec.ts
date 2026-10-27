@@ -4,9 +4,18 @@ import { flushPromises, mount } from '@vue/test-utils'
 import AlertsTable from '@/components/alerts/AlertsTable.vue'
 import type { Alert } from '@/types/energy'
 
+const base = {
+  nomSite: 'Site',
+  type: 'anomaly',
+  debut: new Date().toISOString(),
+  valeurKw: null,
+  seuilKw: null,
+  priseEnCompte: false,
+} as const
+
 const alerts: Alert[] = [
-  { id: 'A1', siteId: 'SITE002', gravite: 'critique', message: 'Pic prévu', priseEnCompte: false },
-  { id: 'A2', siteId: 'SITE003', gravite: 'moyenne', message: 'Capteur', priseEnCompte: false },
+  { ...base, id: 'A1', siteId: 'SITE002', gravite: 'critique', message: 'Pic prévu' },
+  { ...base, id: 'A2', siteId: 'SITE003', gravite: 'moyenne', message: 'Capteur' },
 ]
 
 describe('AlertsTable', () => {

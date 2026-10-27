@@ -2,7 +2,9 @@
 // Les vues n'importent que ce fichier : brancher l'API ne changera que lui.
 
 import * as mocks from '@/mocks/data'
+import { alertes as mockAlertes } from '@/mocks/alertes'
 import { recommandations as mockRecommandations } from '@/mocks/recommandations'
+import { toAlert } from '@/lib/alerts'
 import {
   fleetFrom,
   kpisFrom,
@@ -13,7 +15,12 @@ import {
 } from '@/lib/mesures'
 import { toRecommendation } from '@/lib/recommendations'
 import { getJson } from '@/services/http'
-import type { ConsommationHoraireApi, DerniereMesureApi, RecommandationApi } from '@/types/api'
+import type {
+  AlerteApi,
+  ConsommationHoraireApi,
+  DerniereMesureApi,
+  RecommandationApi,
+} from '@/types/api'
 import type {
   Alert,
   FleetKpis,
@@ -27,10 +34,13 @@ import type {
  * Source de chaque donnée : 'mock' (données simulées) ou 'api' (vraie route).
  * Les données simulées ont le format exact de la route : passer à 'api' ne change rien d'autre.
  */
-export const SOURCES: Record<'recommandations' | 'mesures', 'mock' | 'api'> = {
+export const SOURCES: Record<'recommandations' | 'alertes' | 'mesures', 'mock' | 'api'> = {
   // GET /api/recommandations (SMARTOPS-39). À passer à 'api' une fois gold.recommandation
   // rempli par l'ETL (SMARTOPS-40)
   recommandations: 'mock',
+  // GET /api/alertes (SMARTOPS-39). À passer à 'api' une fois gold.alerte rempli par l'ETL
+  // (dépassements de seuil et pics, SMARTOPS-26)
+  alertes: 'mock',
   // GET /api/sites/derniere-mesure et /api/sites/{id}/consommation (SMARTOPS-42)
   mesures: 'api',
 }
@@ -191,7 +201,14 @@ export async function fetchSiteCosts(siteId: string) {
   return fromApi(() => fetchConsommation(siteId, debutAvant(7 * 24)).then(costsFrom))
 }
 
-export const fetchAlerts = (): Promise<Alert[]> => respond(structuredClone(mocks.alerts), [])
+/** Alertes en cours de tous les sites : l'écran 3, l'en-tête et la page d'un site les partagent */
+export async function fetchAlerts(): Promise<Alert[]> {
+  const reponse =
+    SOURCES.alertes === 'api'
+      ? await getJson<AlerteApi[]>('/alertes', { en_cours: true, limite: 500 })
+      : await respond(structuredClone(mockAlertes), [])
+  return reponse.map(toAlert)
+}
 
 // Recommandations en cours : à décider, ou acceptées (en cours d'application)
 const STATUTS_EN_COURS = ['proposee', 'acceptee'] as const
@@ -230,7 +247,20 @@ export const fetchPreviousSavings = (): Promise<number> => respond(mocks.economi
 
 // Actions de l'écran 3. Simulées : l'API n'a pas encore de route pour les enregistrer (US7).
 // Elles échouent avec ?simulation=erreur, comme le feraient les vraies routes.
-export const acknowledgeAlert = (alertId: string): Promise<string> => respond(alertId)
+
+/**
+ * Prendre une alerte en compte n'est possible qu'avec les données simulées : avec les vraies
+ * alertes, une prise en compte simulée serait annoncée comme faite sans être enregistrée.
+ * À ouvrir avec la route d'enregistrement (US7, SMARTOPS-59).
+ */
+export const canAcknowledgeAlerts = () => SOURCES.alertes === 'mock'
+
+export function acknowledgeAlert(alertId: string): Promise<string> {
+  if (!canAcknowledgeAlerts()) {
+    return Promise.reject(new Error('Pas encore de route pour prendre une alerte en compte (US7)'))
+  }
+  return respond(alertId)
+}
 
 /**
  * Décider d'une recommandation n'est possible qu'avec les données simulées : avec les vraies
