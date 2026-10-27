@@ -65,6 +65,7 @@ export function toConsumptionPoint(api: ConsommationHoraireApi): ConsumptionPoin
     kw: api.consommation_kwh,
     kwh: api.consommation_kwh,
     coutEur: api.cout_eur,
+    minutesImputees: api.nb_imputees,
   }
 }
 

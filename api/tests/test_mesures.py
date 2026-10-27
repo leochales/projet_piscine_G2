@@ -73,10 +73,14 @@ def test_consommation_calcule_le_cout_en_euros(client: TestClient) -> None:
         {
             "heure": datetime(2026, 10, 21, 13, 0, tzinfo=UTC),
             "consommation_kwh": Decimal("500.000"),
+            "nb_imputees": 0,
+            "taux_couverture": Decimal("1.000"),
         },
         {
             "heure": datetime(2026, 10, 21, 14, 0, tzinfo=UTC),
             "consommation_kwh": None,
+            "nb_imputees": 0,
+            "taux_couverture": Decimal("0.000"),
         },
     ]
     app.dependency_overrides[get_session] = lambda: FausseSession(lignes)
@@ -89,6 +93,87 @@ def test_consommation_calcule_le_cout_en_euros(client: TestClient) -> None:
     assert corps[0]["cout_eur"] == 70.0
     assert corps[1]["consommation_kwh"] is None
     assert corps[1]["cout_eur"] is None
+
+
+def test_consommation_signale_les_minutes_imputees(client: TestClient) -> None:
+    lignes: list[dict[str, Any]] = [
+        {
+            "heure": datetime(2026, 10, 21, 13, 0, tzinfo=UTC),
+            "consommation_kwh": Decimal("480.000"),
+            "nb_imputees": 12,
+            "taux_couverture": Decimal("1.000"),
+        },
+    ]
+    app.dependency_overrides[get_session] = lambda: FausseSession(lignes)
+
+    response = client.get("/api/sites/SITE001/consommation")
+
+    assert response.status_code == 200
+    assert response.json()[0]["nb_imputees"] == 12
+    assert response.json()[0]["taux_couverture"] == 1.0
+
+
+def etat(**champs: Any) -> dict[str, Any]:
+    return {
+        "id_site": "SITE001",
+        "nom": "Bureau Paris La Défense",
+        "derniere_mesure_le": datetime(2026, 10, 21, 14, 30, tzinfo=UTC),
+        "collecte_a_jour": True,
+        "transmet": True,
+        "etat_capteurs": "ok",
+        "capteurs_en_panne": [],
+        "retablissement_prevu": None,
+        **champs,
+    }
+
+
+def test_etat_renvoie_la_transmission_et_les_capteurs(client: TestClient) -> None:
+    lignes = [
+        etat(),
+        etat(
+            id_site="SITE002",
+            nom="Usine Lyon Vénissieux",
+            transmet=False,
+            etat_capteurs="critical",
+            capteurs_en_panne=["network"],
+            retablissement_prevu=datetime(2026, 10, 21, 15, 0, tzinfo=UTC),
+        ),
+    ]
+    app.dependency_overrides[get_session] = lambda: FausseSession(lignes)
+
+    response = client.get("/api/sites/etat")
+
+    assert response.status_code == 200
+    corps = response.json()
+    assert corps[0]["transmet"] is True
+    assert corps[1]["transmet"] is False
+    assert corps[1]["capteurs_en_panne"] == ["network"]
+    assert corps[1]["retablissement_prevu"] == "2026-10-21T15:00:00Z"
+
+
+def test_etat_garde_une_transmission_inconnue_si_la_collecte_est_arretee(
+    client: TestClient,
+) -> None:
+    lignes = [etat(collecte_a_jour=False, transmet=None, etat_capteurs=None)]
+    app.dependency_overrides[get_session] = lambda: FausseSession(lignes)
+
+    response = client.get("/api/sites/etat")
+
+    assert response.status_code == 200
+    assert response.json()[0]["collecte_a_jour"] is False
+    assert response.json()[0]["transmet"] is None
+    assert response.json()[0]["etat_capteurs"] is None
+
+
+def test_etat_filtre_sur_le_perimetre_de_l_utilisateur(client: TestClient) -> None:
+    session = FausseSession([])
+    app.dependency_overrides[get_session] = lambda: session
+
+    response = client.get("/api/sites/etat")
+
+    assert response.status_code == 200
+    assert ":id_client" in session.requete
+    assert ":id_utilisateur_sites" in session.requete
 
 
 def test_consommation_refuse_une_date_invalide(client: TestClient) -> None:

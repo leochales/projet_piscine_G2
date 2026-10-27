@@ -110,11 +110,45 @@ Consommation heure par heure d'un site (lue dans `gold.consommation_horaire`), e
 
 ```json
 [
-  { "heure": "2026-10-21T13:00:00Z", "consommation_kwh": 500.0, "cout_eur": 70.0 }
+  {
+    "heure": "2026-10-21T13:00:00Z",
+    "consommation_kwh": 500.0,
+    "cout_eur": 70.0,
+    "nb_imputees": 12,
+    "taux_couverture": 1.0
+  }
 ]
 ```
 
 `cout_eur` = `consommation_kwh` × `PRIX_KWH_EUR` (variable du `.env`, tarif fixe provisoire de 0,14 € HT/kWh). Il vaut `null` si la consommation manque.
+
+`nb_imputees` : minutes de l'heure reconstituées par imputation en silver après une panne (la valeur de l'heure est en partie estimée ; le dashboard le signale sur la courbe). `taux_couverture` : part des 60 minutes qui ont une consommation, mesurée ou imputée ; sous 1, `consommation_kwh` est sous-estimée.
+
+### `GET /api/sites/etat`
+
+Transmission et capteurs de chaque site du périmètre (vue `gold.etat_site`), pour le bandeau « sites qui ne transmettent plus » et la page d'un site (US4).
+
+```json
+[
+  {
+    "id_site": "SITE003",
+    "nom": "Data center de Lille",
+    "derniere_mesure_le": "2026-10-21T14:12:00Z",
+    "collecte_a_jour": true,
+    "transmet": false,
+    "etat_capteurs": "critical",
+    "capteurs_en_panne": ["network"],
+    "retablissement_prevu": "2026-10-21T15:00:00Z"
+  }
+]
+```
+
+| Champ | Sens |
+|---|---|
+| `transmet` | Mesure transmise par le site depuis moins de 5 minutes. `null` (inconnu) quand `collecte_a_jour` est faux : la panne vient de notre collecte (ETL arrêté, API Mock injoignable), pas du site |
+| `etat_capteurs` | `critical` si le capteur réseau est en panne, `degraded` si un autre l'est, `ok` sinon ; `null` tant que l'état des capteurs n'a jamais été lu |
+| `capteurs_en_panne` | Parmi `consumption`, `electrical`, `temperature`, `humidity`, `network` |
+| `retablissement_prevu` | Dernier rétablissement annoncé parmi les capteurs en panne, `null` si aucun |
 
 ### `GET /api/sites/{id_site}/predictions`
 

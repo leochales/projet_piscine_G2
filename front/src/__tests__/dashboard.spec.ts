@@ -12,6 +12,7 @@ import {
   fetchSiteOverview,
   fetchRecommendations,
   fetchSiteSeries,
+  fetchSiteStatuses,
   readSimulation,
   SLOW_DELAY_MS,
   SOURCES,
@@ -193,6 +194,31 @@ describe('mesures : source API', () => {
     })
   })
 
+  it('lit la transmission et les capteurs de chaque site (US4)', async () => {
+    stubFetch((url) => {
+      expect(url).toBe('/api/sites/etat')
+      return {
+        status: 200,
+        body: [
+          {
+            id_site: 'SITE003',
+            nom: 'Data center de Lille',
+            derniere_mesure_le: '2026-10-27T08:20:00Z',
+            collecte_a_jour: true,
+            transmet: false,
+            etat_capteurs: 'critical',
+            capteurs_en_panne: ['network'],
+            retablissement_prevu: null,
+          },
+        ],
+      }
+    })
+
+    expect(await fetchSiteStatuses()).toMatchObject([
+      { siteId: 'SITE003', transmission: 'muet', capteursEnPanne: ['reseau'] },
+    ])
+  })
+
   it('remonte l’erreur de la route', async () => {
     stubFetch(() => ({ status: 503, body: { detail: 'indisponible' } }))
 
@@ -205,8 +231,20 @@ describe('mesures : source API', () => {
       return {
         status: 200,
         body: [
-          { heure: '2026-10-27T08:00:00Z', consommation_kwh: 10, cout_eur: 1.4 },
-          { heure: '2026-10-27T09:00:00Z', consommation_kwh: null, cout_eur: null },
+          {
+            heure: '2026-10-27T08:00:00Z',
+            consommation_kwh: 10,
+            cout_eur: 1.4,
+            nb_imputees: 0,
+            taux_couverture: 1,
+          },
+          {
+            heure: '2026-10-27T09:00:00Z',
+            consommation_kwh: null,
+            cout_eur: null,
+            nb_imputees: 0,
+            taux_couverture: 0,
+          },
         ],
       }
     })

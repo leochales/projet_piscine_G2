@@ -70,6 +70,7 @@ const points = computed(() => {
         mesure: m.kw,
         kwh: m.kwh ?? null,
         cout: m.coutEur ?? null,
+        imputees: m.minutesImputees ?? 0,
         pred: junction,
         basse: junction,
         haute: junction,
@@ -80,12 +81,19 @@ const points = computed(() => {
       mesure: null,
       kwh: null,
       cout: null,
+      imputees: 0,
       pred: p.kw,
       basse: p.basseKw,
       haute: p.hauteKw,
     })),
   ]
 })
+
+// US4 : heures dont une partie des minutes a été reconstituée après une panne. Marquées d'un
+// point creux sur la courbe : la valeur est en partie estimée, pas mesurée.
+const isImputed = (p: { mesure: number | null; imputees: number }) =>
+  p.mesure !== null && p.imputees > 0
+const hasImputed = computed(() => points.value.some(isImputed))
 
 const nowIndex = computed(() => props.series.mesures.length - 1)
 
@@ -122,7 +130,10 @@ const data = computed<ChartData<'line'>>(() => ({
       data: points.value.map((p) => p.mesure),
       borderColor: colors.value.ink,
       borderWidth: 2,
-      pointRadius: 0,
+      pointRadius: points.value.map((p) => (isImputed(p) ? 3 : 0)),
+      pointBorderWidth: 1.5,
+      pointBackgroundColor: 'transparent',
+      pointBorderColor: colors.value.ink,
       tension: 0.2,
       spanGaps: false,
     },
@@ -200,7 +211,11 @@ const options = computed<ChartOptions<'line'>>(() => ({
           // Heure réelle : kWh et euros. Le tracé reste en kW (les kWh d'une heure).
           if (item.datasetIndex === 2 && point?.kwh != null) {
             const cout = point.cout == null ? '' : ` · ${formatEurCents(point.cout)}`
-            return `Consommation : ${formatKwh(point.kwh)}${cout}`
+            const lignes = [`Consommation : ${formatKwh(point.kwh)}${cout}`]
+            if (point.imputees > 0) {
+              lignes.push(`dont ${point.imputees} min reconstituées après une panne`)
+            }
+            return lignes
           }
           return `${item.dataset.label} : ${formatKw(Number(item.raw))}`
         },
@@ -226,6 +241,13 @@ const options = computed<ChartOptions<'line'>>(() => ({
       <li class="flex items-center gap-2">
         <span class="h-3 w-5 rounded-sm bg-(--chart-canvas-band)" aria-hidden="true" /> fourchette
         (valeur basse – valeur haute)
+      </li>
+      <li v-if="hasImputed" class="flex items-center gap-2">
+        <span
+          class="mx-1.5 size-2 rounded-full border-[1.5px] border-foreground"
+          aria-hidden="true"
+        />
+        heure en partie reconstituée après une panne
       </li>
     </ul>
   </div>

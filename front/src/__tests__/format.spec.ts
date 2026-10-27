@@ -92,6 +92,8 @@ describe('heures en heure de Paris', () => {
     expect(formatRelativeDateTime('2026-10-20T07:12:00Z', now)).toBe('mar. 20 à 09:12')
     // 23 h 30 UTC le 22 = 1 h 30 le 23 à Paris : c'est aujourd'hui, pas hier
     expect(formatRelativeDateTime('2026-10-22T23:30:00Z', now)).toBe("aujourd'hui à 01:30")
+    // Rétablissement prévu d'un capteur (US4)
+    expect(formatRelativeDateTime('2026-10-24T08:30:00Z', now)).toBe('demain à 10:30')
   })
 
   it('donne l’heure exacte à Paris', () => {
