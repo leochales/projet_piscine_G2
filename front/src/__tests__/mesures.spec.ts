@@ -50,10 +50,17 @@ describe('dernière mesure', () => {
 })
 
 describe('consommation horaire', () => {
-  const heure = (h: string, kwh: number | null, cout: number | null): ConsommationHoraireApi => ({
+  const heure = (
+    h: string,
+    kwh: number | null,
+    cout: number | null,
+    nbImputees = 0,
+  ): ConsommationHoraireApi => ({
     heure: h,
     consommation_kwh: kwh,
     cout_eur: cout,
+    nb_imputees: nbImputees,
+    taux_couverture: kwh === null ? 0 : 1,
   })
 
   it('reprend les kWh et le coût, et garde une heure sans mesure', () => {
@@ -62,13 +69,21 @@ describe('consommation horaire', () => {
       kw: 500,
       kwh: 500,
       coutEur: 70,
+      minutesImputees: 0,
     })
     expect(toConsumptionPoint(heure('2026-10-27T09:00:00Z', null, null))).toEqual({
       horodatage: '2026-10-27T09:00:00Z',
       kw: null,
       kwh: null,
       coutEur: null,
+      minutesImputees: 0,
     })
+  })
+
+  it('garde le nombre de minutes reconstituées après une panne (US4)', () => {
+    expect(toConsumptionPoint(heure('2026-10-27T08:00:00Z', 480, 67.2, 12)).minutesImputees).toBe(
+      12,
+    )
   })
 
   it('additionne le coût et le CO₂ des heures reçues', () => {
