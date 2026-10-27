@@ -153,27 +153,30 @@ jobs:
           # Redirection de nginx (dossier) : relative, donc reste en HTTPS
           location=$(curl -sk -o /dev/null -w '%header{location}' "$base/assets")
           [ "$location" = "/assets/" ] || { echo "::error::Redirection de nginx inattendue : '$location'"; exit 1; }
-          # Autre nom d'hôte : 404 de Traefik, sans redirection vers cet hôte
-          for path in /api/health/ /assets /; do
-            result=$(curl -sk -o /dev/null -w '%{http_code} %header{location}' -H "Host: evil.example" "$base$path")
-            [ "$result" = "404 " ] || { echo "::error::Host: evil.example accepté sur $path : '$result'"; exit 1; }
+          # Autre nom d'hôte : 404 de Traefik, sans redirection vers cet hôte, en HTTPS
+          # comme en HTTP (infra/traefik/redirections.yml)
+          for url in "$base/api/health/" "$base/assets" "$base/" http://localhost:8080/; do
+            result=$(curl -sk -o /dev/null -w '%{http_code} %header{location}' -H "Host: evil.example" "$url")
+            [ "$result" = "404 " ] || { echo "::error::Host: evil.example accepté sur $url : '$result'"; exit 1; }
           done
-          # En-têtes de sécurité (infra/traefik/middlewares.yml), sans version dans Server
+          # En-têtes de sécurité (infra/traefik/middlewares.yml) et leur valeur, sans version
+          # dans Server. Chaque attendu est le début de la ligne d'en-tête.
           check_headers() {
             local path=$1
             headers=$(curl -sk -o /dev/null -D - "$base$path" | tr -d '\r')
             shift
-            for header in X-Content-Type-Options Referrer-Policy "$@"; do
-              grep -qi "^$header:" <<< "$headers" \
-                || { echo "::error::$header absent de $path"; echo "$headers"; exit 1; }
+            for expected in "X-Content-Type-Options: nosniff" \
+                            "Referrer-Policy: strict-origin-when-cross-origin" "$@"; do
+              grep -qi "^$expected" <<< "$headers" \
+                || { echo "::error::$expected attendu sur $path"; echo "$headers"; exit 1; }
             done
             if grep -qiE '^Server:.*[0-9]' <<< "$headers"; then
               echo "::error::Version du serveur exposée"; echo "$headers"; exit 1
             fi
           }
-          check_headers /api/health X-Frame-Options
-          check_headers / X-Frame-Options Content-Security-Policy
-          check_headers /page-inexistante X-Frame-Options Content-Security-Policy
+          check_headers /api/health "X-Frame-Options: DENY"
+          check_headers / "X-Frame-Options: DENY" "Content-Security-Policy: default-src 'self';"
+          check_headers /page-inexistante "X-Frame-Options: DENY" "Content-Security-Policy: default-src 'self';"
           check_headers /auth/realms/enervision
           # Front utilisable sous la CSP (default-src 'self') : aucun script en ligne dans la
           # page, et chaque script qu'elle charge vient de la même origine

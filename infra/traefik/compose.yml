@@ -37,19 +37,19 @@ services:
       - --providers.docker.endpoint=tcp://socket-proxy:2375
       - --providers.docker.exposedbydefault=false
       - --providers.docker.network=traefik_public
-      # Configuration dynamique : certificat par défaut (dynamic.yml) et en-têtes de
-      # sécurité (middlewares.yml, partagé avec le Traefik local)
+      # Configuration dynamique : certificat par défaut (dynamic.yml), en-têtes de
+      # sécurité (middlewares.yml, partagé avec le Traefik local) et redirections
+      # HTTP → HTTPS pour PUBLIC_HOST seulement (redirections.yml)
       - --providers.file.directory=/etc/traefik/dynamic
       - --entrypoints.http-prod.address=:80
-      - --entrypoints.http-prod.http.redirections.entrypoint.to=https-prod
-      - --entrypoints.http-prod.http.redirections.entrypoint.scheme=https
       - --entrypoints.https-prod.address=:443
       - --entrypoints.https-prod.http.tls=true
       - --entrypoints.http-dev.address=:8080
-      - --entrypoints.http-dev.http.redirections.entrypoint.to=https-dev
-      - --entrypoints.http-dev.http.redirections.entrypoint.scheme=https
       - --entrypoints.https-dev.address=:8443
       - --entrypoints.https-dev.http.tls=true
+    environment:
+      # Seul nom d'hôte redirigé vers HTTPS (redirections.yml) : IP de la VM, localhost en CI
+      PUBLIC_HOST: ${PUBLIC_HOST:?PUBLIC_HOST manquant}
     ports:
       - "80:80"
       - "443:443"
@@ -58,6 +58,7 @@ services:
     volumes:
       - ./dynamic.yml:/etc/traefik/dynamic/dynamic.yml:ro
       - ./middlewares.yml:/etc/traefik/dynamic/middlewares.yml:ro
+      - ./redirections.yml:/etc/traefik/dynamic/redirections.yml:ro
       - ${TLS_CERT_DIR:?TLS_CERT_DIR manquant}:/certs:ro
     networks:
       - public

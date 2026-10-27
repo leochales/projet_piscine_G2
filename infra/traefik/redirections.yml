@@ -1,0 +1,32 @@
+# Redirection HTTP → HTTPS de chaque environnement, pour PUBLIC_HOST seulement.
+# Pas de redirection sur l'entrypoint : elle a lieu avant le choix du routeur et reprend
+# l'en-tête Host de la requête (Host: evil.example → https://evil.example/…). Ici, un autre
+# Host ne trouve aucun routeur et reçoit le 404 de Traefik, sans Location.
+#
+# PUBLIC_HOST est lu dans l'environnement du conteneur Traefik (gabarit Go du provider
+# file). Fichier propre au Traefik de la VM : le Traefik local n'a pas ces entrypoints.
+http:
+  routers:
+    http-prod:
+      entryPoints: [http-prod]
+      rule: 'Host(`{{ env "PUBLIC_HOST" }}`)'
+      middlewares: [https-prod]
+      service: noop@internal
+    http-dev:
+      entryPoints: [http-dev]
+      rule: 'Host(`{{ env "PUBLIC_HOST" }}`)'
+      middlewares: [https-dev]
+      service: noop@internal
+
+  middlewares:
+    # Port 443 omis dans l'adresse, comme le fait le navigateur
+    https-prod:
+      redirectScheme:
+        scheme: https
+        port: "443"
+        permanent: true
+    https-dev:
+      redirectScheme:
+        scheme: https
+        port: "8443"
+        permanent: true
