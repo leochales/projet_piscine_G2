@@ -70,9 +70,18 @@ function respond<T>(value: T, empty?: T): Promise<T> {
 
 const HOUR_MS = 3600 * 1000
 
+// Appels en cours, partagés entre les requêtes lancées ensemble (KPI, liste, mini-courbes).
+// Oubliés dès la réponse : le rafraîchissement suivant reprend des données neuves.
+let dernieresEnCours: Promise<SiteOverview[]> | null = null
+const consommationEnCours = new Map<string, Promise<ConsommationHoraireApi[]>>()
+
 async function fetchDernieresMesures(): Promise<SiteOverview[]> {
-  const lignes = await getJson<DerniereMesureApi[]>('/sites/derniere-mesure')
-  return lignes.map(toSiteOverview)
+  dernieresEnCours ??= getJson<DerniereMesureApi[]>('/sites/derniere-mesure')
+    .then((lignes) => lignes.map(toSiteOverview))
+    .finally(() => {
+      dernieresEnCours = null
+    })
+  return dernieresEnCours
 }
 
 async function fetchConsommation(siteId: string, debut: string): Promise<ConsommationHoraireApi[]> {
@@ -82,18 +91,30 @@ async function fetchConsommation(siteId: string, debut: string): Promise<Consomm
 }
 
 /** Consommation horaire de chaque site du périmètre, depuis `debut` */
-async function fetchConsommationDuParc(
+function fetchConsommationDuParc(
   sites: readonly SiteOverview[],
   debut: string,
 ): Promise<ConsommationHoraireApi[]> {
-  const series = await Promise.all(sites.map((site) => fetchConsommation(site.site.id, debut)))
-  return series.flat()
+  const cle = `${debut}|${sites.map((site) => site.site.id).join(',')}`
+  const enCours = consommationEnCours.get(cle)
+  if (enCours) return enCours
+  const promesse = Promise.all(sites.map((site) => fetchConsommation(site.site.id, debut)))
+    .then((series) => series.flat())
+    .finally(() => {
+      consommationEnCours.delete(cle)
+    })
+  consommationEnCours.set(cle, promesse)
+  return promesse
 }
+
+// Sept jours : les KPI n'utilisent que hier et aujourd'hui, mais la même requête sert
+// aux mini-courbes, lancées en même temps.
+const DEBUT_PARC = () => parisMidnight(-6).toISOString()
 
 export async function fetchKpis(): Promise<FleetKpis> {
   if (SOURCES.mesures !== 'api') return respond(mocks.kpis)
   const sites = await fetchDernieresMesures()
-  const heures = await fetchConsommationDuParc(sites, parisMidnight(-1).toISOString())
+  const heures = await fetchConsommationDuParc(sites, DEBUT_PARC())
   return kpisFrom(sites, heures)
 }
 
@@ -106,7 +127,7 @@ export async function fetchFleetTrend(): Promise<FleetTrend> {
   if (SOURCES.mesures !== 'api')
     return respond(mocks.fleetTrend(), { consommationKw24h: [], coutEurJours7: [] })
   const sites = await fetchDernieresMesures()
-  const heures = await fetchConsommationDuParc(sites, parisMidnight(-6).toISOString())
+  const heures = await fetchConsommationDuParc(sites, DEBUT_PARC())
   return fleetFrom(heures)
 }
 
@@ -127,10 +148,7 @@ export async function fetchSiteSeries(siteId: string, range: SeriesRange): Promi
   const debut = new Date(Date.now() - heures * HOUR_MS).toISOString()
   const lignes = await fetchConsommation(siteId, debut)
   return {
-    mesures: lignes.flatMap((ligne) => {
-      const point = toConsumptionPoint(ligne)
-      return point ? [point] : []
-    }),
+    mesures: lignes.map(toConsumptionPoint),
     // Prévisions : US2. On ne mélange pas une prévision simulée avec des mesures réelles.
     predictions: [],
   }

@@ -7,7 +7,8 @@ export type SiteType =
 export interface Site {
   id: string
   nom: string
-  type: SiteType
+  // Libellé connu (SiteType) ou le type renvoyé par l'API s'il n'est pas encore traduit
+  type: SiteType | (string & {})
   capaciteKw: number
 }
 
@@ -44,10 +45,11 @@ export interface FleetKpis {
 
 export interface ConsumptionPoint {
   horodatage: string
-  kw: number
+  // null : heure sans mesure. La courbe s'interrompt, au lieu de relier les voisines.
+  kw: number | null
   // Présents pour une heure venue de l'API : kWh de l'heure et son coût. Sur une heure,
   // les kWh égalent la puissance moyenne en kW, d'où le tracé de la courbe.
-  kwh?: number
+  kwh?: number | null
   coutEur?: number | null
 }
 

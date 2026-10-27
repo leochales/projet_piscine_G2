@@ -93,13 +93,14 @@ const peak = computed(() => {
 const qualityText = computed(() => {
   const qualite = current.value?.qualite
   if (!qualite) return ''
-  if (qualite.statut === 'bonne') return 'Aucune mesure manquante sur 7 jours.'
+  // data_quality décrit la dernière mesure, pas les 7 jours
+  if (qualite.statut === 'bonne') return 'Dernière mesure de bonne qualité.'
   if (qualite.statut === 'partielle') {
     return qualite.heuresManquantes == null
-      ? 'Des mesures manquent sur la période.'
+      ? 'Dernière mesure incomplète.'
       : `${qualite.heuresManquantes} h de mesures manquantes : les valeurs ont été estimées.`
   }
-  return 'Données insuffisantes : la prédiction est peu fiable.'
+  return 'Dernière mesure de mauvaise qualité.'
 })
 
 const openSite = (siteId: string) => router.push({ name: 'sites', params: { siteId } })

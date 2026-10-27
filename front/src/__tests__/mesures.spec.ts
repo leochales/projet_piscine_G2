@@ -41,6 +41,7 @@ describe('dernière mesure', () => {
     expect(toSiteOverview(mesure({ data_quality: 'critical' })).qualite).toEqual({
       statut: 'mauvaise',
     })
+    expect(toSiteOverview(mesure({ type: 'serre' })).site.type).toBe('serre')
   })
 
   it('garde une puissance absente : un capteur en panne n’affiche pas 0 kW', () => {
@@ -55,14 +56,19 @@ describe('consommation horaire', () => {
     cout_eur: cout,
   })
 
-  it('reprend les kWh et le coût, et écarte une heure sans mesure', () => {
+  it('reprend les kWh et le coût, et garde une heure sans mesure', () => {
     expect(toConsumptionPoint(heure('2026-10-27T08:00:00Z', 500, 70))).toEqual({
       horodatage: '2026-10-27T08:00:00Z',
       kw: 500,
       kwh: 500,
       coutEur: 70,
     })
-    expect(toConsumptionPoint(heure('2026-10-27T09:00:00Z', null, null))).toBeNull()
+    expect(toConsumptionPoint(heure('2026-10-27T09:00:00Z', null, null))).toEqual({
+      horodatage: '2026-10-27T09:00:00Z',
+      kw: null,
+      kwh: null,
+      coutEur: null,
+    })
   })
 
   it('additionne le coût et le CO₂ des heures reçues', () => {
@@ -70,11 +76,19 @@ describe('consommation horaire', () => {
     expect(costsFrom(rows)).toEqual({ coutEur: 14, co2Tonnes: (100 * 0.052) / 1000 })
   })
 
-  it('situe minuit à Paris, changement d’heure compris', () => {
+  it('situe minuit à Paris, y compris le jour du changement d’heure', () => {
     // 27 octobre 2026, 10:00 UTC = 11:00 à Paris (UTC+1, heure d'hiver)
-    const now = new Date('2026-10-27T10:00:00Z')
-    expect(parisMidnight(0, now).toISOString()).toBe('2026-10-26T23:00:00.000Z')
-    expect(parisMidnight(-1, now).toISOString()).toBe('2026-10-25T23:00:00.000Z')
+    const hiver = new Date('2026-10-27T10:00:00Z')
+    expect(parisMidnight(0, hiver).toISOString()).toBe('2026-10-26T23:00:00.000Z')
+    expect(parisMidnight(-1, hiver).toISOString()).toBe('2026-10-25T23:00:00.000Z')
+    // 29 mars 2026 : midi est déjà à l'heure d'été, minuit est encore à l'heure d'hiver
+    expect(parisMidnight(0, new Date('2026-03-29T12:00:00Z')).toISOString()).toBe(
+      '2026-03-28T23:00:00.000Z',
+    )
+    // 25 octobre 2026 : midi est déjà à l'heure d'hiver, minuit est encore à l'heure d'été
+    expect(parisMidnight(0, new Date('2026-10-25T12:00:00Z')).toISOString()).toBe(
+      '2026-10-24T22:00:00.000Z',
+    )
   })
 
   it('compare le coût déjà écoulé aujourd’hui aux mêmes heures hier', () => {

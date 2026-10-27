@@ -44,7 +44,7 @@ export function toSiteOverview(api: DerniereMesureApi): SiteOverview {
     site: {
       id: api.id_site,
       nom: api.nom,
-      type: SITE_TYPES[api.type] ?? 'bureaux',
+      type: SITE_TYPES[api.type] ?? api.type,
       capaciteKw: api.capacite_kw,
     },
     consommationKw: api.consommation_kw,
@@ -55,9 +55,11 @@ export function toSiteOverview(api: DerniereMesureApi): SiteOverview {
   }
 }
 
-/** Heure présente : kWh et coût. Les kWh d'une heure sont la puissance moyenne, en kW. */
-export function toConsumptionPoint(api: ConsommationHoraireApi): ConsumptionPoint | null {
-  if (api.consommation_kwh === null) return null
+/**
+ * Heure présente : kWh et coût. Les kWh d'une heure sont la puissance moyenne, en kW.
+ * Une heure sans mesure est gardée (kw null) : la courbe s'interrompt à cet endroit.
+ */
+export function toConsumptionPoint(api: ConsommationHoraireApi): ConsumptionPoint {
   return {
     horodatage: api.heure,
     kw: api.consommation_kwh,
@@ -82,28 +84,53 @@ const dayParts = new Intl.DateTimeFormat('en-US', {
   month: '2-digit',
   day: '2-digit',
 })
-const hourPart = new Intl.DateTimeFormat('en-US', {
+const clockParts = new Intl.DateTimeFormat('en-US', {
   timeZone: TIME_ZONE,
-  hour: 'numeric',
   hourCycle: 'h23',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
 })
 
-function parisHour(date: Date) {
-  return Number(hourPart.format(date))
+/** Décalage de Paris à cet instant (ms à ajouter à UTC pour obtenir l'heure locale) */
+function offsetMs(date: Date): number {
+  const parts = Object.fromEntries(clockParts.formatToParts(date).map((p) => [p.type, p.value]))
+  const asUtc = Date.UTC(
+    Number(parts.year),
+    Number(parts.month) - 1,
+    Number(parts.day),
+    Number(parts.hour),
+    Number(parts.minute),
+    Number(parts.second),
+  )
+  return asUtc - date.getTime()
 }
 
-/** Minuit à Paris, décalé de `dayOffset` jours calendaires (0 : aujourd'hui, −1 : hier) */
+/**
+ * Minuit à Paris, décalé de `dayOffset` jours calendaires (0 : aujourd'hui, −1 : hier).
+ * Le décalage est celui de minuit, pas celui de midi : le jour du changement d'heure,
+ * midi est déjà à l'heure d'été (ou d'hiver) alors que minuit ne l'est pas encore.
+ */
 export function parisMidnight(dayOffset: number, now: Date = new Date()): Date {
   const parts = Object.fromEntries(dayParts.formatToParts(now).map((p) => [p.type, p.value]))
   const shifted = new Date(
     Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day) + dayOffset),
   )
-  const year = shifted.getUTCFullYear()
-  const month = shifted.getUTCMonth()
-  const day = shifted.getUTCDate()
-  // Décalage de Paris à midi : minuit n'est pas l'heure du changement d'heure
-  const offsetHours = parisHour(new Date(Date.UTC(year, month, day, 12))) - 12
-  return new Date(Date.UTC(year, month, day, -offsetHours))
+  const localMidnight = Date.UTC(
+    shifted.getUTCFullYear(),
+    shifted.getUTCMonth(),
+    shifted.getUTCDate(),
+  )
+  let utc = localMidnight
+  for (let i = 0; i < 3; i++) {
+    const next = localMidnight - offsetMs(new Date(utc))
+    if (next === utc) break
+    utc = next
+  }
+  return new Date(utc)
 }
 
 function sumCost(rows: readonly ConsommationHoraireApi[], from: number, to: number) {

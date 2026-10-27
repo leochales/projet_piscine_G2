@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { ApiError } from '@/services/http'
 import {
   acknowledgeAlert,
   decideRecommendation,
@@ -15,6 +16,11 @@ import {
   SLOW_DELAY_MS,
   SOURCES,
 } from '@/services/dashboard'
+
+vi.mock('@/lib/auth', () => ({
+  getToken: vi.fn<() => Promise<string>>(() => Promise.resolve('jeton-de-test')),
+  login: vi.fn<() => Promise<void>>(() => Promise.resolve()),
+}))
 
 describe('services/dashboard', () => {
   beforeEach(() => {
@@ -134,5 +140,91 @@ describe('simulation des cas réels (?simulation=…)', () => {
     await vi.advanceTimersByTimeAsync(1)
     await call
     expect(done).toBe(true)
+  })
+})
+
+describe('mesures : source API', () => {
+  const derniere = {
+    id_site: 'SITE001',
+    nom: 'Bureau Paris La Défense',
+    type: 'office',
+    capacite_kw: 200,
+    horodatage: '2026-10-27T09:05:00Z',
+    consommation_kw: 120,
+    data_quality: 'good',
+  }
+
+  function stubFetch(reponse: (url: string) => { status: number; body: unknown }) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const { status, body } = reponse(String(url))
+        return new Response(JSON.stringify(body), {
+          status,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }),
+    )
+  }
+
+  beforeEach(() => {
+    SOURCES.mesures = 'api'
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('lit la dernière mesure de chaque site', async () => {
+    stubFetch((url) => {
+      expect(url).toBe('/api/sites/derniere-mesure')
+      return { status: 200, body: [derniere] }
+    })
+
+    const sites = await fetchOverview()
+
+    expect(sites).toHaveLength(1)
+    expect(sites[0]).toMatchObject({
+      site: { id: 'SITE001', nom: 'Bureau Paris La Défense', type: 'bureaux' },
+      consommationKw: 120,
+      mesureLe: '2026-10-27T09:05:00Z',
+    })
+  })
+
+  it('remonte l’erreur de la route', async () => {
+    stubFetch(() => ({ status: 503, body: { detail: 'indisponible' } }))
+
+    await expect(fetchOverview()).rejects.toBeInstanceOf(ApiError)
+  })
+
+  it('garde une heure sans kWh dans la courbe', async () => {
+    stubFetch((url) => {
+      if (!url.includes('/consommation')) return { status: 200, body: [] }
+      return {
+        status: 200,
+        body: [
+          { heure: '2026-10-27T08:00:00Z', consommation_kwh: 10, cout_eur: 1.4 },
+          { heure: '2026-10-27T09:00:00Z', consommation_kwh: null, cout_eur: null },
+        ],
+      }
+    })
+
+    const series = await fetchSiteSeries('SITE001', '24h')
+
+    expect(series.mesures.map((point) => point.kw)).toEqual([10, null])
+  })
+
+  it('ne demande la dernière mesure et la consommation du parc qu’une fois', async () => {
+    const urls: string[] = []
+    stubFetch((url) => {
+      urls.push(url)
+      if (url.includes('derniere-mesure')) return { status: 200, body: [derniere] }
+      return { status: 200, body: [] }
+    })
+
+    await Promise.all([fetchKpis(), fetchOverview(), fetchFleetTrend()])
+
+    expect(urls.filter((url) => url.includes('derniere-mesure'))).toHaveLength(1)
+    expect(urls.filter((url) => url.includes('/consommation'))).toHaveLength(1)
   })
 })

@@ -15,7 +15,7 @@ import SortableHead from '@/components/overview/SortableHead.vue'
 import DataQualityBadge from '@/components/overview/DataQualityBadge.vue'
 import { formatKw, formatPct, formatRelativeDateTime, formatRelativeHour } from '@/lib/format'
 import { capacityPct } from '@/lib/indicators'
-import { SITE_TYPE_LABELS } from '@/lib/labels'
+import { siteTypeLabel } from '@/lib/labels'
 import {
   DEFAULT_DIRECTION,
   nextSort,
@@ -73,9 +73,7 @@ function onMobileSort(event: Event) {
           >
             {{ row.site.id }}
           </RouterLink>
-          <span class="ml-2 text-sm text-muted-foreground">{{
-            SITE_TYPE_LABELS[row.site.type]
-          }}</span>
+          <span class="ml-2 text-sm text-muted-foreground">{{ siteTypeLabel(row.site.type) }}</span>
         </p>
         <DataQualityBadge :qualite="row.qualite" />
       </div>
@@ -140,7 +138,7 @@ function onMobileSort(event: Event) {
             {{ row.site.id }}
           </RouterLink>
         </TableCell>
-        <TableCell>{{ SITE_TYPE_LABELS[row.site.type] }}</TableCell>
+        <TableCell>{{ siteTypeLabel(row.site.type) }}</TableCell>
         <TableCell
           class="tabular-nums"
           :title="row.consommationKw === null ? noReading : undefined"

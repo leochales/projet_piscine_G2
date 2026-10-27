@@ -116,6 +116,7 @@ const data = computed<ChartData<'line'>>(() => ({
       borderWidth: 2,
       pointRadius: 0,
       tension: 0.2,
+      spanGaps: false,
     },
     {
       label: 'Prédiction',
