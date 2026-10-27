@@ -151,8 +151,8 @@ function sumKwh(rows: readonly ConsommationHoraireApi[], from: number, to: numbe
 
 /**
  * Indicateurs du parc à partir des dernières mesures et des heures depuis hier minuit.
- * « vs hier » compare les heures déjà écoulées aujourd'hui aux mêmes heures hier :
- * un matin ne paraît pas en baisse seulement parce que la journée n'est pas finie.
+ * « vs hier » compare les mêmes heures closes. L'API s'arrête au début de l'heure UTC
+ * en cours (`heure < fin`) : cette heure, encore ouverte, n'est comptée ni aujourd'hui ni hier.
  */
 export function kpisFrom(
   sites: readonly SiteOverview[],
@@ -162,8 +162,9 @@ export function kpisFrom(
   const measured = sites.filter((s) => s.consommationKw !== null)
   const todayStart = parisMidnight(0, now).getTime()
   const yesterdayStart = parisMidnight(-1, now).getTime()
-  const elapsed = now.getTime() - todayStart
-  const todayCost = sumCost(heures, todayStart, now.getTime())
+  const fin = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours())
+  const elapsed = fin - todayStart
+  const todayCost = sumCost(heures, todayStart, fin)
   const yesterdayCost = sumCost(heures, yesterdayStart, yesterdayStart + elapsed)
   return {
     consommationKw: measured.reduce((total, s) => total + s.consommationKw!, 0),
@@ -171,7 +172,7 @@ export function kpisFrom(
     nbSitesSansMesure: sites.length - measured.length,
     coutJourEur: todayCost,
     variationCoutPct: yesterdayCost === 0 ? 0 : ((todayCost - yesterdayCost) / yesterdayCost) * 100,
-    co2JourTonnes: (sumKwh(heures, todayStart, now.getTime()) * FACTEUR_CO2_KG_KWH) / 1000,
+    co2JourTonnes: (sumKwh(heures, todayStart, fin) * FACTEUR_CO2_KG_KWH) / 1000,
   }
 }
 

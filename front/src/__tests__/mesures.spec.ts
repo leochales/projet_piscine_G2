@@ -91,8 +91,8 @@ describe('consommation horaire', () => {
     )
   })
 
-  it('compare le coût déjà écoulé aujourd’hui aux mêmes heures hier', () => {
-    const now = new Date('2026-10-27T10:30:00Z') // 11:30 à Paris : heures 0 à 10 révolues, 11 en cours
+  it('compare les heures closes d’aujourd’hui aux mêmes heures hier', () => {
+    const now = new Date('2026-10-27T10:30:00Z') // 11:30 à Paris : l'heure 11 est encore ouverte
     const sites = [
       toSiteOverview(mesure()),
       toSiteOverview(mesure({ id_site: 'SITE003', consommation_kw: null })),
@@ -100,7 +100,7 @@ describe('consommation horaire', () => {
     const heures = [
       heure('2026-10-25T23:00:00Z', 10, 1), // hier 0 h
       heure('2026-10-26T09:00:00Z', 10, 4), // hier 10 h
-      heure('2026-10-26T10:00:00Z', 10, 9), // hier 11 h, heure en cours aujourd'hui : comptée
+      heure('2026-10-26T10:00:00Z', 10, 9), // hier 11 h : l'heure en cours, écartée des deux côtés
       heure('2026-10-26T23:00:00Z', 10, 2), // aujourd'hui 0 h
       heure('2026-10-27T09:00:00Z', 10, 3), // aujourd'hui 10 h
     ]
@@ -109,8 +109,8 @@ describe('consommation horaire', () => {
     expect(kpis.nbSitesSansMesure).toBe(1)
     expect(kpis.consommationKw).toBe(640)
     expect(kpis.coutJourEur).toBe(5)
-    // Hier sur les mêmes heures : 1 + 4 + 9
-    expect(kpis.variationCoutPct).toBeCloseTo(((5 - 14) / 14) * 100)
+    // Hier sur les heures closes : 1 + 4, pas le 9 de l'heure encore ouverte
+    expect(kpis.variationCoutPct).toBeCloseTo(0)
   })
 
   it('regroupe la courbe 24 h et les 7 coûts journaliers', () => {
