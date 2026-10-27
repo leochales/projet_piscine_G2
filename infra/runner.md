@@ -185,6 +185,14 @@ kcadm update clients/<id> -r enervision -s 'redirectUris=["https://<VM_IP>/*"]'
 
 Les comptes se créent dans Keycloak. En temps normal, ce sont les gestionnaires qui les créent depuis le dashboard (`POST /api/utilisateurs`, SMARTOPS-84). À la main, on passe par l'administration de Keycloak : la console (`http://localhost/auth/admin` en local, `https://<VM_IP>[:8443]/auth/admin` sur la VM) ou `kcadm.sh`.
 
+**Comptes de démonstration sur dev** : `infra/seed/utilisateurs.sh` fait les deux étapes ci-dessous pour chaque ligne de `infra/seed/utilisateurs.csv` (un compte par rôle), avec l'administrateur initial de Keycloak. Depuis la racine du dépôt sur la VM, avec un compte du groupe `docker` :
+
+```bash
+infra/seed/utilisateurs.sh dev
+```
+
+Mot de passe de tous les comptes : `EnerVision-Demo-2026`, ou `SEED_PASSWORD` s'il est défini. Le script refuse la prod. Il échoue si le mot de passe de l'administrateur `master` a été changé depuis le premier démarrage de Keycloak.
+
 **Attention** : l'API n'accepte que les utilisateurs enregistrés dans `app.utilisateur`, car c'est là qu'elle trouve leur entreprise. Un compte créé dans Keycloak sans cette ligne reçoit un 403.
 
 1. Créer le compte dans Keycloak et noter son identifiant (`sub` des jetons). Avec le raccourci `kcadm` ci-dessus :

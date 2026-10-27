@@ -1,0 +1,7 @@
+email;prenom;nom;roles;client
+admin@enervision.test;Alice;Admin;GESTION-CLIENT,MONITORING;
+gestion.client@demo.test;Gaston;Client;GESTION-CLIENT;Démo EnerVision
+gestion.site@demo.test;Gisèle;Site;GESTION-SITE;Démo EnerVision
+consult.client@demo.test;Camille;Client;CONSULT-CLIENT;Démo EnerVision
+consult.site@demo.test;Cyril;Site;CONSULT-SITE;Démo EnerVision
+monitoring@enervision.test;Morgan;Monitoring;MONITORING;
