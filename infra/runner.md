@@ -44,7 +44,7 @@ Les labels par défaut (`self-hosted`, `Linux`, `X64`) correspondent à `runs-on
 
 ## Secrets et variables
 
-Le dépôt est privé sur un plan Free, sans *GitHub Environments*. Les secrets sont donc des secrets **du dépôt**, préfixés par environnement (**Settings → Secrets and variables → Actions**). Le workflow lit `DEV_X` ou `PROD_X` selon la branche et le transmet à `docker compose` sous le nom `X`. Aucun fichier `.env` n'est écrit sur la VM.
+Le dépôt est **public**, et le déploiement n'utilise pas (encore) les *GitHub Environments*. Les secrets sont donc des secrets **du dépôt**, préfixés par environnement (**Settings → Secrets and variables → Actions**). Le workflow lit `DEV_X` ou `PROD_X` selon la branche et le transmet à `docker compose` sous le nom `X`. Aucun fichier `.env` n'est écrit sur la VM.
 
 | Secrets (obligatoires)                               | Rôle                        |
 |------------------------------------------------------|-----------------------------|
@@ -56,6 +56,7 @@ Le dépôt est privé sur un plan Free, sans *GitHub Environments*. Les secrets 
 | `DEV_KEYCLOAK_DB_PASSWORD` / `PROD_KEYCLOAK_DB_PASSWORD` | Compte `keycloak` (base `keycloak`) |
 | `DEV_KEYCLOAK_ADMIN_PASSWORD` / `PROD_KEYCLOAK_ADMIN_PASSWORD` | Administrateur initial de Keycloak |
 | `DEV_KEYCLOAK_ADMIN_CLIENT_SECRET` / `PROD_KEYCLOAK_ADMIN_CLIENT_SECRET` | Secret du client `enervision-admin` (création des comptes par l'API) |
+| `DEV_AZURE_ACCOUNT_SAS` / `PROD_AZURE_ACCOUNT_SAS` | SAS du conteneur `restic-dev` / `restic-prod` du stockage des sauvegardes ([`infra/terraform`](terraform/README.md)). Pas encore lu par le déploiement |
 
 | Variables                                    | Obligatoire | Rôle                                          |
 |----------------------------------------------|-------------|-----------------------------------------------|
@@ -64,6 +65,7 @@ Le dépôt est privé sur un plan Free, sans *GitHub Environments*. Les secrets 
 | `DEV_ETL_ENABLED` / `PROD_ETL_ENABLED`       | non         | `false` pour désactiver l'ETL (défaut `true`) |
 | `DEV_KEYCLOAK_ADMIN` / `PROD_KEYCLOAK_ADMIN` | oui         | Identifiant de l'administrateur initial de Keycloak |
 | `VM_IP`                                      | oui         | IP de la VM, inscrite dans le certificat et dans l'adresse de retour de connexion de Keycloak (`FRONT_URL`) |
+| `AZURE_ACCOUNT_NAME`                         | non         | Compte de stockage des sauvegardes (`terraform output storage_account_name`), commun à dev et prod |
 | `DVC_STORE`                                  | non         | Dossier du stockage DVC sur la VM (défaut `/srv/enervision-dvc`) |
 
 Utiliser des mots de passe différents entre dev et prod. Les mots de passe des comptes des services (`ETL_`, `MODEL_`, `API_`, `BACKUP_`, `KEYCLOAK_DB_PASSWORD`) sont **réappliqués à chaque déploiement** par la migration de la base : pour en changer un, modifier le secret puis redéployer. Exceptions :
@@ -237,14 +239,15 @@ Le secret est injecté dans le realm à l'import : modifier `<ENV>_KEYCLOAK_ADMI
 
 ## Limite connue : secrets et runner
 
-Risque **accepté**, faute de plan payant :
+Risques **acceptés** pour l'instant :
 
 - Un secret du dépôt est lisible par n'importe quel workflow, quelle que soit la branche. Les conditions `if:` de `deploy.yml` évitent un déploiement par erreur, mais ne protègent pas les secrets. Toute personne ayant les **droits d'écriture** peut lire `PROD_*`. Les PR venant de forks ne reçoivent aucun secret.
 - Le runner exécute le code de toute branche dont un workflow cible `runs-on: self-hosted`. Comme `github-runner` est dans le groupe `docker`, les droits d'écriture donnent en pratique un accès root à la VM.
+- **Dépôt public** : n'importe qui peut forker et ouvrir une PR. Sur `pull_request`, GitHub exécute la version des workflows **contenue dans la PR** : un workflow `self-hosted` déclenché par `pull_request` ferait tourner le code d'un inconnu sur la VM. Règle : aucun workflow `runs-on: self-hosted` ne se déclenche sur `pull_request` ; ils se lancent sur `push` (`main`) ou à la main (`workflow_dispatch`, qui demande les droits d'écriture).
 
-Mesures en place : droits d'écriture réservés à l'équipe, mots de passe différents entre dev et prod, un compte PostgreSQL par service.
+Mesures en place : droits d'écriture réservés à l'équipe, mots de passe différents entre dev et prod, un compte PostgreSQL par service, et dans **Settings → Actions → General → Approval for running fork pull request workflows from contributors** : *Require approval for all external contributors*, pour qu'aucun workflow d'une PR de fork ne démarre sans qu'un membre de l'équipe l'ait relue.
 
-Correctif si le dépôt passe sur GitHub Pro, Team, Enterprise ou en public : environnements `dev` (branche `develop`) et `prod` (branche `main`, approbation obligatoire), avec leurs propres secrets, et suppression de `ENV_PREFIX`.
+Correctif possible maintenant que le dépôt est public (les environnements y sont disponibles sur le plan Free) : environnements `dev` (branche `develop`) et `prod` (branche `main`, approbation obligatoire), avec leurs propres secrets, et suppression de `ENV_PREFIX`.
 
 ---
 

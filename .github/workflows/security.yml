@@ -33,4 +33,16 @@ jobs:
           format: "table"
           trivyignores: ".trivyignore"
 
+      # Le scan fs ne cherche que vulnérabilités et secrets : la configuration
+      # Terraform (stockage Azure) a son propre scan
+      - name: Trivy - Scan Terraform
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: "v0.76.1"
+          scan-type: "config"
+          scan-ref: "infra/terraform"
+          severity: "HIGH,CRITICAL"
+          exit-code: "1"
+          format: "table"
+
   # Les images Docker sont construites, testées et scannées par images.yml

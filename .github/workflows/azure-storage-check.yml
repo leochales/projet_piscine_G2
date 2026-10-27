@@ -1,0 +1,73 @@
+name: Azure storage check
+
+# Vérifie que le runner de la VM peut écrire dans le stockage Azure des sauvegardes
+# (infra/terraform) : il envoie, relit puis supprime un petit fichier de test.
+# Lancement manuel uniquement (Actions → Azure storage check → Run workflow), comme
+# deploy et dataset. Jamais sur pull_request : le dépôt est public, et une PR venant
+# d'un fork exécuterait sa propre version du workflow sur le runner de la VM.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: azure-storage-check-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 5
+    env:
+      AZURE_ACCOUNT_NAME: ${{ vars.AZURE_ACCOUNT_NAME }}
+      # SAS limité au conteneur de l'environnement (voir infra/terraform/README.md)
+      AZURE_ACCOUNT_SAS: ${{ secrets[format('{0}_AZURE_ACCOUNT_SAS', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
+      CONTAINER: restic-${{ github.ref_name == 'main' && 'prod' || 'dev' }}
+    steps:
+      - name: Vérifier les secrets
+        run: |
+          missing=0
+          if [ -z "$AZURE_ACCOUNT_NAME" ]; then
+            echo "::error::Variable AZURE_ACCOUNT_NAME manquante (Settings → Secrets and variables → Actions → Variables)"
+            missing=1
+          fi
+          if [ -z "$AZURE_ACCOUNT_SAS" ]; then
+            echo "::error::Secret ${{ github.ref_name == 'main' && 'PROD' || 'DEV' }}_AZURE_ACCOUNT_SAS manquant"
+            missing=1
+          fi
+          exit "$missing"
+
+      # L'IP qu'Azure voit : c'est elle qui doit figurer dans allowed_ips
+      - name: IP publique de sortie
+        run: |
+          echo "IP publique de sortie de la VM : $(curl -fsS --max-time 10 https://ifconfig.me)"
+
+      - name: Écrire, relire et supprimer un fichier de test
+        run: |
+          set -eu
+          url="https://${AZURE_ACCOUNT_NAME}.blob.core.windows.net/${CONTAINER}/check/${GITHUB_RUN_ID}.txt"
+          body="test du runner $(hostname) le $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          out="$RUNNER_TEMP/azure-check.out"
+          code=$(curl -sS -o "$out" -w '%{http_code}' -X PUT \
+            -H "x-ms-blob-type: BlockBlob" -H "Content-Type: text/plain" \
+            --data-binary "$body" "${url}?${AZURE_ACCOUNT_SAS}")
+          if [ "$code" != "201" ]; then
+            echo "::error::Écriture refusée (HTTP $code). 403 : IP de sortie absente de allowed_ips, ou SAS expiré ou d'un autre conteneur."
+            cat "$out"
+            exit 1
+          fi
+          echo "Écriture : OK"
+
+          read_back=$(curl -fsS "${url}?${AZURE_ACCOUNT_SAS}")
+          if [ "$read_back" != "$body" ]; then
+            echo "::error::Le fichier relu ne correspond pas à celui envoyé"
+            exit 1
+          fi
+          echo "Lecture : OK"
+
+          # Le versioning garde une copie supprimée pendant retention_days
+          curl -fsS -o /dev/null -X DELETE "${url}?${AZURE_ACCOUNT_SAS}"
+          echo "Suppression : OK"
