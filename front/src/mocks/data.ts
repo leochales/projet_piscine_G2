@@ -111,7 +111,7 @@ const FACTEUR_CO2_KG_KWH = 0.052
 
 /** Coût et CO₂ d'un site sur les 7 derniers jours */
 export function siteCosts(siteId: string) {
-  const kwh = siteSeries(siteId, 7 * 24).mesures.reduce((total, m) => total + m.kw, 0)
+  const kwh = siteSeries(siteId, 7 * 24).mesures.reduce((total, m) => total + (m.kw ?? 0), 0)
   return { coutEur: kwh * TARIF_EUR_KWH, co2Tonnes: (kwh * FACTEUR_CO2_KG_KWH) / 1000 }
 }
 
@@ -123,7 +123,7 @@ export function siteCosts(siteId: string) {
 export function fleetTrend(): FleetTrend {
   const measured = overview.filter((o) => o.consommationKw !== null)
   const hourly = measured.map((o) => siteSeries(o.site.id, 24).mesures)
-  const shape = hourly[0]!.map((_, i) => hourly.reduce((total, m) => total + m[i]!.kw, 0))
+  const shape = hourly[0]!.map((_, i) => hourly.reduce((total, m) => total + (m[i]!.kw ?? 0), 0))
   const scale = kpis.consommationKw / shape[shape.length - 1]!
   const consommationKw24h = shape.map((kw) => Math.round(kw * scale))
 

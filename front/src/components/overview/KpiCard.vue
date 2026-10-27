@@ -14,7 +14,7 @@ defineProps<{
   /** Le hint signale une donnée incomplète : icône d'avertissement et texte mis en avant */
   warning?: boolean
   /** Mini-courbe à droite de la valeur, et sa description pour les lecteurs d'écran */
-  sparkline?: readonly number[]
+  sparkline?: readonly (number | null)[]
   sparklineLabel?: string
 }>()
 </script>

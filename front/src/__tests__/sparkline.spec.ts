@@ -5,20 +5,26 @@ import { describeSeries, sparklinePath, sparklinePoints } from '@/lib/sparkline'
 describe('sparklinePoints', () => {
   it('étale les valeurs sur la largeur, et sur toute la hauteur moins la marge', () => {
     const points = sparklinePoints([10, 30, 20], 100, 20, 2)
-    expect(points.map((p) => p.x)).toEqual([0, 50, 100])
+    expect(points.map((p) => p!.x)).toEqual([0, 50, 100])
     // La plus haute valeur en haut (y = marge), la plus basse en bas (y = hauteur − marge)
-    expect(points.map((p) => p.y)).toEqual([18, 2, 10])
+    expect(points.map((p) => p!.y)).toEqual([18, 2, 10])
   })
 
   it('trace une courbe plate au milieu', () => {
-    expect(sparklinePoints([5, 5, 5], 60, 20).map((p) => p.y)).toEqual([10, 10, 10])
-    expect(sparklinePoints([0, 0], 60, 20).map((p) => p.y)).toEqual([10, 10])
+    expect(sparklinePoints([5, 5, 5], 60, 20).map((p) => p!.y)).toEqual([10, 10, 10])
+    expect(sparklinePoints([0, 0], 60, 20).map((p) => p!.y)).toEqual([10, 10])
   })
 
   it('n’exagère pas une série presque constante', () => {
     // 0,05 % de variation : sans seuil, la courbe irait du bas au haut de la carte
-    const ys = sparklinePoints([19748, 19758, 19750], 60, 20).map((p) => p.y)
+    const ys = sparklinePoints([19748, 19758, 19750], 60, 20).map((p) => p!.y)
     expect(Math.max(...ys) - Math.min(...ys)).toBeLessThan(0.1)
+  })
+
+  it('laisse un trou là où une valeur manque', () => {
+    const points = sparklinePoints([10, null, 10], 100, 20, 2)
+    expect(points[1]).toBeNull()
+    expect(sparklinePath(points)).toBe('M0.0 10.0 M100.0 10.0')
   })
 
   it('ne trace rien avec moins de deux valeurs', () => {

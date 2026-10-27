@@ -10,7 +10,17 @@ const euros = new Intl.NumberFormat('fr-FR', {
 
 // null : pas de mesure (capteur en panne). Jamais « 0 kW », qui ferait croire à un site arrêté.
 export const formatKw = (kw: number | null) => (kw === null ? '—' : `${integer.format(kw)} kW`)
+export const formatKwh = (kwh: number | null) =>
+  kwh === null ? '—' : `${oneDecimal.format(kwh)} kWh`
+const eurosCents = new Intl.NumberFormat('fr-FR', {
+  style: 'currency',
+  currency: 'EUR',
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+})
 export const formatEur = (eur: number) => euros.format(eur)
+/** Coût horaire : les centimes comptent (tarif 0,14 €/kWh) */
+export const formatEurCents = (eur: number) => eurosCents.format(eur)
 export const formatPct = (pct: number) => `${integer.format(pct)} %`
 export const formatTonnes = (t: number) => `${oneDecimal.format(t)} t`
 

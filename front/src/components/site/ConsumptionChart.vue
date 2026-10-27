@@ -15,7 +15,7 @@ import {
   type Plugin,
 } from 'chart.js'
 
-import { formatAxisHour, formatKw } from '@/lib/format'
+import { formatAxisHour, formatEurCents, formatKwh, formatKw } from '@/lib/format'
 import type { SiteSeries } from '@/types/energy'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler, Tooltip)
@@ -53,15 +53,33 @@ onBeforeUnmount(() => themeObserver.disconnect())
 // Le dernier point mesuré sert aussi de départ à la prédiction, pour que les courbes se rejoignent.
 const points = computed(() => {
   const { mesures, predictions } = props.series
-  const last = mesures.length - 1
+  // La prévision part de la dernière heure qui a une valeur. Sinon, si cette heure
+  // est vide, le trait pointillé ne rejoint plus les mesures.
+  let junctionAt = -1
+  for (let i = mesures.length - 1; i >= 0; i--) {
+    if (mesures[i]?.kw != null) {
+      junctionAt = i
+      break
+    }
+  }
   return [
     ...mesures.map((m, i) => {
-      const junction = i === last ? m.kw : null
-      return { t: m.horodatage, mesure: m.kw, pred: junction, basse: junction, haute: junction }
+      const junction = i === junctionAt ? m.kw : null
+      return {
+        t: m.horodatage,
+        mesure: m.kw,
+        kwh: m.kwh ?? null,
+        cout: m.coutEur ?? null,
+        pred: junction,
+        basse: junction,
+        haute: junction,
+      }
     }),
     ...predictions.slice(1).map((p) => ({
       t: p.horodatage,
       mesure: null,
+      kwh: null,
+      cout: null,
       pred: p.kw,
       basse: p.basseKw,
       haute: p.hauteKw,
@@ -106,6 +124,7 @@ const data = computed<ChartData<'line'>>(() => ({
       borderWidth: 2,
       pointRadius: 0,
       tension: 0.2,
+      spanGaps: false,
     },
     {
       label: 'Prédiction',
@@ -113,6 +132,7 @@ const data = computed<ChartData<'line'>>(() => ({
       borderColor: colors.value.ink,
       borderWidth: 2,
       borderDash: [6, 5],
+      spanGaps: true,
       tension: 0.35,
       pointRadius: points.value.map((_, i) => (i === peak.value.index ? 6 : 0)),
       pointBorderWidth: 2,
@@ -174,7 +194,17 @@ const options = computed<ChartOptions<'line'>>(() => ({
     legend: { display: false },
     tooltip: {
       filter: (item) => item.raw !== null && item.datasetIndex >= 2,
-      callbacks: { label: (item) => `${item.dataset.label} : ${formatKw(Number(item.raw))}` },
+      callbacks: {
+        label: (item) => {
+          const point = points.value[item.dataIndex]
+          // Heure réelle : kWh et euros. Le tracé reste en kW (les kWh d'une heure).
+          if (item.datasetIndex === 2 && point?.kwh != null) {
+            const cout = point.cout == null ? '' : ` · ${formatEurCents(point.cout)}`
+            return `Consommation : ${formatKwh(point.kwh)}${cout}`
+          }
+          return `${item.dataset.label} : ${formatKw(Number(item.raw))}`
+        },
+      },
     },
   },
 }))
