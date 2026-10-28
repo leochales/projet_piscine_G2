@@ -35,3 +35,10 @@ def test_swagger_est_servi_sous_api(client: TestClient) -> None:
     assert client.get("/api/docs").status_code == 200
     assert client.get("/api/openapi.json").json()["info"]["title"] == "EnerVision API"
     assert client.get("/api/redoc").status_code == 404
+
+
+def test_slash_final_404_sans_redirection(client: TestClient) -> None:
+    response = client.get("/api/health/", follow_redirects=False)
+
+    assert response.status_code == 404
+    assert "location" not in response.headers

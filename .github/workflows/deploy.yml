@@ -86,6 +86,10 @@ jobs:
       # Adresse publique du front (redirectUris de Keycloak) : https://<VM_IP> en prod,
       # https://<VM_IP>:8443 en dev. Le port 443 est omis, comme dans l'adresse du navigateur.
       FRONT_URL: ${{ format('https://{0}{1}', vars.VM_IP, github.ref_name != 'main' && ':8443' || '') }}
+      # Seul nom d'hôte accepté par les routes Traefik (règle Host de compose-prod.yml)
+      PUBLIC_HOST: ${{ vars.VM_IP }}
+      # Swagger et openapi.json masqués en prod (routes pas encore protégées par Keycloak)
+      API_DOCS_ENABLED: ${{ github.ref_name == 'main' && 'false' || 'true' }}
     steps:
       # Pas de jeton dans .git/config : le runner de la VM conserve ses fichiers entre les jobs
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -222,11 +226,13 @@ jobs:
       - name: Préparer le job du jeu d'entraînement
         run: docker compose -f compose-prod.yml create --no-build --pull never dataset
 
-      # Passe par Traefik comme un client (-k : certificat auto-signé)
+      # Passe par Traefik comme un client (-k : certificat auto-signé). --resolve : la
+      # requête vise l'IP publique (règle Host de Traefik) mais part vers 127.0.0.1.
       - name: Vérifier la santé de l'API
         run: |
           for _ in $(seq 1 30); do
-            if curl -fsSk "https://localhost:${HTTPS_PORT}/api/health"; then
+            if curl -fsSk --resolve "${PUBLIC_HOST}:${HTTPS_PORT}:127.0.0.1" \
+                 "https://${PUBLIC_HOST}:${HTTPS_PORT}/api/health"; then
               exit 0
             fi
             sleep 2
