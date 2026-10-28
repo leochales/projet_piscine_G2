@@ -15,7 +15,8 @@ import {
   toConsumptionPoint,
   toSiteOverview,
 } from '@/lib/mesures'
-import { toPredictionPoint } from '@/lib/predictions'
+import { SEUIL_ALERTE_PCT } from '@/lib/indicators'
+import { picAuSeuil, toPredictionPoint } from '@/lib/predictions'
 import { ACCEPTEE_EN_COURS_JOURS, toRecommendation } from '@/lib/recommendations'
 import { ApiError, getJson, postJson } from '@/services/http'
 import type {
@@ -177,6 +178,29 @@ export async function fetchKpis(): Promise<FleetKpis> {
 export async function fetchOverview(): Promise<SiteOverview[]> {
   if (SOURCES.mesures !== 'api') return respond(mocks.overview, [])
   return fromApi(() => fetchDernieresMesures(), [])
+}
+
+/**
+ * Mêmes lignes que la vue d'ensemble, avec le pic des 24 h quand il atteint le seuil.
+ * À n'appeler que pour le tableau : la page d'un site n'affiche pas ces pics.
+ * Une prévision en panne laisse sa ligne sans pic. Une session expirée (401) ou un
+ * compte refusé (403) remonte, comme pour les mesures.
+ */
+export async function fetchPicsPrevus(): Promise<SiteOverview[]> {
+  if (SOURCES.mesures !== 'api') return fetchOverview()
+  return fromApi(async () => {
+    const sites = await fetchDernieresMesures()
+    return Promise.all(
+      sites.map(async (site) => ({
+        ...site,
+        picPrevu: picAuSeuil(
+          (await fetchPredictions(site.site.id, '24h')).map(toPredictionPoint),
+          site.site.capaciteKw,
+          site.site.seuilAlertePct ?? SEUIL_ALERTE_PCT,
+        ),
+      })),
+    )
+  }, [])
 }
 
 export async function fetchFleetTrend(): Promise<FleetTrend> {

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 
@@ -16,7 +17,13 @@ import { trend } from '@/lib/indicators'
 import { describeSeries } from '@/lib/sparkline'
 import { useAutoRefresh } from '@/lib/refresh'
 import { useRequest } from '@/lib/request'
-import { fetchFleetTrend, fetchKpis, fetchOverview, fetchSiteStatuses } from '@/services/dashboard'
+import {
+  fetchFleetTrend,
+  fetchKpis,
+  fetchOverview,
+  fetchPicsPrevus,
+  fetchSiteStatuses,
+} from '@/services/dashboard'
 import { useOperationsStore } from '@/stores/operations'
 
 const router = useRouter()
@@ -28,6 +35,9 @@ const { pendingAlerts, pendingCritical, savings } = storeToRefs(operations)
 // Les KPI combinent les indicateurs du parc et le store : ils attendent les deux
 const kpis = useRequest(async () => (await Promise.all([fetchKpis(), operations.load()]))[0])
 const sites = useRequest(fetchOverview)
+// Pics du tableau, après les mesures : la liste s'affiche sans les attendre.
+const pics = useRequest(fetchPicsPrevus)
+const rows = computed(() => pics.data.value ?? sites.data.value)
 // Alertes et économies ne sont pas rafraîchies : le store garderait sinon les actions faites
 // à l'écran 3 seulement jusqu'au rafraîchissement suivant (pas encore d'API pour les enregistrer)
 // Mini-courbes des KPI. Sans réponse, les KPI s'affichent simplement sans courbe.
@@ -35,7 +45,7 @@ const fleet = useRequest(fetchFleetTrend)
 // Sites qui ne transmettent plus (US4). Sans réponse, pas de bandeau : les autres données
 // restent lisibles, et DataFreshness signale déjà l'échec du rafraîchissement.
 const statuses = useRequest(fetchSiteStatuses)
-const freshness = useAutoRefresh([kpis, sites, fleet, statuses])
+const freshness = useAutoRefresh([kpis, sites, pics, fleet, statuses])
 
 const sitesWithoutReading = (n: number) => (n > 1 ? `${n} sites sans mesure` : '1 site sans mesure')
 
@@ -130,7 +140,7 @@ const openSite = (siteId: string) => router.push({ name: 'sites', params: { site
           title="Aucun site à afficher"
           description="Aucun site n'est rattaché à votre compte pour le moment."
         />
-        <SitesTable v-else-if="sites.data.value" :rows="sites.data.value" @select="openSite" />
+        <SitesTable v-else-if="rows" :rows="rows" @select="openSite" />
         <TableSkeleton v-else />
       </CardContent>
     </Card>

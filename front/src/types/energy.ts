@@ -32,7 +32,7 @@ export interface SiteOverview {
   consommationKw: number | null
   // Heure de cette mesure (ISO 8601). Absente des données simulées.
   mesureLe?: string | null
-  picPrevu: PredictedPeak | null // seulement s'il dépasse le seuil d'alerte
+  picPrevu: PredictedPeak | null // seulement s'il atteint le seuil d'alerte
   qualite: DataQuality
 }
 

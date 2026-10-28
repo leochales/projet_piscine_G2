@@ -38,4 +38,17 @@ describe('SitesTable', () => {
     const cards = wrapper.findAll('ul li a').map((a) => a.text())
     expect(cards[0]).toBe('SITE002')
   })
+
+  it('affiche le pic prévu seulement pour le site qui en a un', () => {
+    const wrapper = mountTable()
+    const carte = (id: string) => wrapper.findAll('ul li').find((li) => li.text().includes(id))!
+    const ligne = (id: string) =>
+      wrapper.findAll('table tbody tr').find((tr) => tr.text().includes(id))!
+
+    expect(carte('SITE002').text()).toContain('Pic prévu')
+    expect(carte('SITE002').text()).toContain('94 %')
+    expect(carte('SITE001').text()).not.toContain('Pic prévu')
+    expect(ligne('SITE002').text()).toContain('94 %')
+    expect(ligne('SITE001').text()).toContain('—')
+  })
 })
