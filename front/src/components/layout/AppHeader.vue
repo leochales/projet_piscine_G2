@@ -4,6 +4,8 @@ import { useRoute } from 'vue-router'
 import { onKeyStroke } from '@vueuse/core'
 import { Menu, X } from '@lucide/vue'
 
+import logo from '@/assets/logo.svg'
+import logoDark from '@/assets/logo-dark.svg'
 import { Button } from '@/components/ui/button'
 import AlertCountBadge from '@/components/layout/AlertCountBadge.vue'
 import UserMenu from '@/components/layout/UserMenu.vue'
@@ -49,7 +51,11 @@ onKeyStroke('Escape', () => (menuOpen.value = false))
 <template>
   <header class="border-b border-border bg-card">
     <div class="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
-      <RouterLink :to="{ name: 'overview' }" class="text-lg font-semibold">EnerVision</RouterLink>
+      <RouterLink :to="{ name: 'overview' }" class="shrink-0">
+        <img :src="logo" alt="EnerVision" class="h-12 w-auto dark:hidden" />
+        <!-- Mode sombre : bleus foncés éclaircis, sinon « ENER » est illisible sur fond sombre -->
+        <img :src="logoDark" alt="EnerVision" class="hidden h-12 w-auto dark:block" />
+      </RouterLink>
 
       <nav aria-label="Navigation principale" class="hidden gap-6 text-sm md:flex">
         <RouterLink
