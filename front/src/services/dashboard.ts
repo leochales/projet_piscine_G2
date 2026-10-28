@@ -15,7 +15,7 @@ import {
   toConsumptionPoint,
   toSiteOverview,
 } from '@/lib/mesures'
-import { toRecommendation } from '@/lib/recommendations'
+import { ACCEPTEE_EN_COURS_JOURS, toRecommendation } from '@/lib/recommendations'
 import { getJson, postJson } from '@/services/http'
 import type {
   AlerteApi,
@@ -228,9 +228,15 @@ export async function fetchAlerts(): Promise<Alert[]> {
 // Recommandations en cours : à décider, ou acceptées (en cours d'application)
 const STATUTS_EN_COURS = ['proposee', 'acceptee'] as const
 
-/** Minuit du 1er du mois en cours, heure locale (comme decidedThisMonth) */
-function debutDuMois(now = new Date()): string {
-  return new Date(now.getFullYear(), now.getMonth(), 1).toISOString()
+/**
+ * Date à partir de laquelle charger les acceptées : la plus ancienne entre minuit du 1er du
+ * mois, heure locale (comme decidedThisMonth), et maintenant moins ACCEPTEE_EN_COURS_JOURS
+ * (comme isStaleAccepted)
+ */
+function accepteesDepuis(now = new Date()): string {
+  const debutDuMois = new Date(now.getFullYear(), now.getMonth(), 1)
+  const debutEnCours = new Date(now.getTime() - ACCEPTEE_EN_COURS_JOURS * 24 * 3600 * 1000)
+  return (debutDuMois < debutEnCours ? debutDuMois : debutEnCours).toISOString()
 }
 
 /**
@@ -242,8 +248,9 @@ function debutDuMois(now = new Date()): string {
  * par écarter les propositions les plus anciennes, encore à décider.
  *  - à décider : seulement si leur alerte est en cours, comme les alertes affichées. Une
  *    alerte terminée retire sa recommandation, qui n'a plus d'objet ;
- *  - acceptées : celles du mois en cours, même si leur alerte est terminée. Ce sont elles qui
- *    font les économies du mois (store) ; celles des mois précédents n'y comptent plus.
+ *  - acceptées : même si leur alerte est terminée, celles du mois en cours et celles encore en
+ *    cours d'application (ACCEPTEE_EN_COURS_JOURS), qui restent affichées. Les économies du
+ *    mois (store) ne comptent que celles du mois (decidedThisMonth).
  */
 export async function fetchRecommendations(): Promise<Recommendation[]> {
   if (SOURCES.recommandations !== 'api') {
@@ -265,7 +272,7 @@ export async function fetchRecommendations(): Promise<Recommendation[]> {
         }),
         getJson<RecommandationApi[]>('/recommandations', {
           statut: 'acceptee',
-          decidee_depuis: debutDuMois(),
+          decidee_depuis: accepteesDepuis(),
           limite: 500,
         }),
       ])
