@@ -1,0 +1,41 @@
+# Totaux de gold.supervision_metier (db/19_supervision_metier.sql).
+# postgres-exporter préfixe chaque colonne par le nom de la requête :
+# enervision_mesures_collectees, etc. Une colonne NULL n'est pas exportée.
+enervision:
+  query: |
+    SELECT
+        mesures_collectees,
+        derniere_collecte_epoch,
+        valeurs_imputees,
+        puissance_kw,
+        previsions_ecrites,
+        dernier_calcul_epoch,
+        alertes_en_cours,
+        ecart_prevu_reel_pct
+    FROM gold.supervision_metier
+  master: true
+  metrics:
+    - mesures_collectees:
+        usage: "GAUGE"
+        description: "Mesures stockées dans bronze"
+    - derniere_collecte_epoch:
+        usage: "GAUGE"
+        description: "Horodatage Unix de la dernière ingestion"
+    - valeurs_imputees:
+        usage: "GAUGE"
+        description: "Minutes imputées par interpolation linéaire"
+    - puissance_kw:
+        usage: "GAUGE"
+        description: "Puissance instantanée du parc, en kW"
+    - previsions_ecrites:
+        usage: "GAUGE"
+        description: "Lignes écrites dans gold.prediction"
+    - dernier_calcul_epoch:
+        usage: "GAUGE"
+        description: "Horodatage Unix du dernier calcul de prévision"
+    - alertes_en_cours:
+        usage: "GAUGE"
+        description: "Alertes ouvertes"
+    - ecart_prevu_reel_pct:
+        usage: "GAUGE"
+        description: "Écart entre prévu et réel sur les heures déjà passées, en %"
