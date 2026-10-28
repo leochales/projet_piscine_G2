@@ -2,11 +2,14 @@
 ``predicted_peak``.
 
 Appelé par ``model.prevision.generer`` après l'écriture des prévisions, dans la même
-transaction, avec les prévisions qui viennent d'être écrites. Pour chaque site dont le
-pic de l'heure a été prévu (``pic_prevu_kw`` connu) :
+transaction, avec les prévisions qui viennent d'être écrites. Seules les
+``HORIZON_ALERTE`` premières heures comptent : celles du modèle 24 h, le plus précis.
+Plus loin, une prévision qui frôle le seuil changerait d'un passage à l'autre, et
+l'alerte s'ouvrirait et se fermerait sans cesse. Pour chaque site dont le pic de
+l'heure a été prévu (``pic_prevu_kw`` connu) sur ces heures :
 
-  - si au moins une heure prévue atteint le seuil du site (``pic_prevu``, même seuil
-    que la détection des pics mesurés de l'ETL), le site a une alerte en cours :
+  - si au moins une heure atteint le seuil du site (``pic_prevu``, même seuil que la
+    détection des pics mesurés de l'ETL), le site a une alerte en cours :
     ``debut`` = première heure au-dessus du seuil, ``valeur`` = plus fort pic prévu
     parmi ces heures, ``valeur_le`` = son heure, ``seuil`` = seuil du site en kW.
     Sévérité ``high``, ``critical`` dès 110 % de la capacité, comme l'ETL ;
@@ -14,11 +17,18 @@ pic de l'heure a été prévu (``pic_prevu_kw`` connu) :
 
 Une seule alerte du modèle en cours par site (index ``uq_alerte_modele_en_cours``,
 ``db/19_alerte_modele.sql``) : un passage suivant met à jour l'alerte en cours (valeur,
-heure du maximum, seuil, sévérité) au lieu d'en créer une autre. Son début reste le
-premier : il n'avance que si le pic est désormais prévu plus tôt.
+heure du maximum, seuil, sévérité) au lieu d'en créer une autre. Tant que son début
+est à venir, il suit la prévision (pic avancé ou retardé) ; une fois atteint, il ne
+change plus.
 
-Un site sans pic prévu (pas assez d'historique, site écarté de la prévision) n'est pas
-évalué : son alerte en cours, s'il en a une, n'est ni mise à jour ni terminée.
+Une alerte terminée a pour fin le moment présent. Un pic annulé avant son heure (plus
+prévu) n'a pas eu lieu : son début est ramené au même moment, pour que la fin ne soit
+pas dans le futur ; ``valeur_le`` garde l'heure du pic qui était prévu.
+
+Un site sans pic prévu (pas assez d'historique, site écarté de la prévision ou
+désactivé) n'est pas évalué : son alerte est gardée tant que l'heure de son pic
+(``valeur_le``) n'est pas passée, puis terminée (``terminer``), comme quand aucun
+modèle n'est en production.
 
 La version du modèle qui a produit l'alerte se lit dans ``gold.prediction`` : la
 prévision de ``valeur_le`` pour ce site porte ``version_modele``.
@@ -37,6 +47,8 @@ logger = logging.getLogger(__name__)
 # Sévérité critical dès ce pourcentage de la capacité, comme les pics mesurés de l'ETL
 # (db/17_gold_alertes.sql)
 CRITIQUE_PCT = 110
+# Heures prévues qui comptent pour l'alerte, à partir de la première
+HORIZON_ALERTE = pd.Timedelta(hours=24)
 COLONNES = ["id_site", "debut", "valeur", "valeur_le", "seuil", "severite"]
 
 
@@ -44,9 +56,12 @@ def pics_prevus(
     previsions: pd.DataFrame, sites: pd.DataFrame
 ) -> tuple[pd.DataFrame, list[str]]:
     """Alerte attendue de chaque site qui a au moins une heure au-dessus de son seuil
-    (``COLONNES``), et liste des sites évalués : ceux dont le pic a été prévu.
-    ``sites`` : ``seuil_kw`` et ``capacite_kw``, indexés par ``id_site``."""
-    evalues = previsions[previsions["pic_prevu_kw"].notna()]
+    dans les ``HORIZON_ALERTE`` premières heures (``COLONNES``), et liste des sites
+    évalués : ceux dont le pic a été prévu sur ces heures. ``sites`` : ``seuil_kw`` et
+    ``capacite_kw``, indexés par ``id_site``."""
+    fin_horizon = previsions["heure_prevue"].min() + HORIZON_ALERTE
+    proches = previsions[previsions["heure_prevue"] < fin_horizon]
+    evalues = proches[proches["pic_prevu_kw"].notna()]
     sites_evalues = sorted(evalues["id_site"].unique())
     hautes = evalues[evalues["pic_prevu"].astype(bool)]
     if hautes.empty:
@@ -72,9 +87,10 @@ def pics_prevus(
 def mettre_a_jour(
     conn: Connection, previsions: pd.DataFrame, sites: pd.DataFrame
 ) -> tuple[int, int]:
-    """Ouvre ou met à jour l'alerte en cours des sites dont un pic est prévu, et
-    termine celle des sites évalués qui n'en ont plus. Renvoie le nombre d'alertes en
-    cours écrites et le nombre d'alertes terminées."""
+    """Ouvre ou met à jour l'alerte en cours des sites dont un pic est prévu, puis
+    termine celles des sites évalués qui n'en ont plus et celles dont le pic est passé
+    (``terminer``). Renvoie le nombre d'alertes en cours écrites et le nombre d'alertes
+    terminées."""
     pics, sites_evalues = pics_prevus(previsions, sites)
     if not pics.empty:
         conn.execute(
@@ -94,34 +110,48 @@ def mettre_a_jour(
                     valeur = excluded.valeur,
                     valeur_le = excluded.valeur_le,
                     seuil = excluded.seuil,
-                    debut = least(gold.alerte.debut, excluded.debut)
+                    -- Début à venir : il suit la prévision ; atteint : il reste
+                    debut = CASE
+                        WHEN gold.alerte.debut > now() THEN excluded.debut
+                        ELSE gold.alerte.debut
+                    END
                 """
             ),
             pics.astype(object).where(pics.notna(), None).to_dict("records"),
         )
     sans_pic = sorted(set(sites_evalues) - set(pics["id_site"]))
-    terminees = []
-    if sans_pic:
-        # Terminée maintenant, ou à son début s'il est encore à venir (pic annoncé
-        # puis plus prévu) : la base exige fin >= debut
-        terminees = conn.execute(
+    terminees = terminer(conn, sans_pic)
+    logger.info(
+        "pics prévus : %d alertes en cours (%s), %d terminées",
+        len(pics),
+        ", ".join(pics["id_site"]) or "aucune",
+        terminees,
+    )
+    return len(pics), terminees
+
+
+def terminer(conn: Connection, sans_pic: list[str]) -> int:
+    """Termine les alertes en cours du modèle des sites ``sans_pic`` (évalués, plus
+    aucune heure au-dessus du seuil), et celles dont l'heure du pic (``valeur_le``) est
+    passée : site qui n'est plus évalué, ou plus de modèle en production. Fin = le
+    moment présent ; un début encore à venir (pic annulé avant son heure) y est ramené,
+    la base exigeant fin >= debut. Renvoie le nombre d'alertes terminées."""
+    return len(
+        conn.execute(
             text(
                 """
                 UPDATE gold.alerte
-                SET fin = greatest(debut, now())
+                SET fin = now(), debut = least(debut, now())
                 WHERE source = 'modele'
                   AND type = 'predicted_peak'
                   AND fin IS null
-                  AND id_site = ANY(:sites)
+                  AND (
+                      id_site = ANY(:sites)
+                      OR coalesce(valeur_le, debut) + interval '1 hour' <= now()
+                  )
                 RETURNING id_alerte
                 """
             ),
             {"sites": sans_pic},
         ).all()
-    logger.info(
-        "pics prévus : %d alertes en cours (%s), %d terminées",
-        len(pics),
-        ", ".join(pics["id_site"]) or "aucune",
-        len(terminees),
     )
-    return len(pics), len(terminees)

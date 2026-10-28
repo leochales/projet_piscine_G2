@@ -318,14 +318,23 @@ def test_ecrire_bornes_absentes_en_null(historique, debut, jeu):
     assert ligne["pic_prevu"] is False
 
 
-def test_generer_sans_modele_ne_touche_pas_la_base(monkeypatch):
+def test_generer_sans_modele_termine_seulement_les_alertes_passees(monkeypatch):
+    """Sans modèle : aucune prévision, mais les alertes de pic prévu dont l'heure est
+    passée sont terminées (elles resteraient sinon en cours pour toujours)."""
     monkeypatch.setattr(prevision, "charger_production", lambda horizon: None)
+    conn = FakeConnection()
 
-    def pas_de_base():
-        raise AssertionError("la base ne doit pas être lue")
+    class FakeEngine:
+        @contextmanager
+        def begin(self):
+            yield conn
 
-    monkeypatch.setattr(prevision, "get_engine", pas_de_base)
+    monkeypatch.setattr(prevision, "get_engine", FakeEngine)
     assert generer() == 0
+    assert len(conn.requetes) == 1
+    sql, parametres = conn.requetes[0]
+    assert "UPDATE gold.alerte" in sql
+    assert parametres == {"sites": []}
 
 
 def test_generer_lit_et_ecrit_dans_une_transaction(

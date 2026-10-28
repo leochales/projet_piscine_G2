@@ -466,16 +466,21 @@ def ecrire(conn: Connection, previsions: pd.DataFrame) -> None:
 def generer(maintenant: datetime | None = None) -> int:
     """Calcule et écrit les prévisions, puis les alertes de pic prévu qui en découlent
     (``model.alerte_pic``), dans la même transaction : si un calcul ou une écriture
-    échoue, aucune alerte n'est ouverte ni fermée. Renvoie le nombre de prévisions
-    écrites."""
+    échoue, aucune alerte n'est ouverte ni fermée. Sans prévision (aucun modèle en
+    production, aucun site prévu), seules les alertes dont le pic est passé sont
+    terminées. Renvoie le nombre de prévisions écrites."""
     debut = debut_des_previsions(maintenant or datetime.now(UTC))
     modeles = {horizon: charger_production(horizon) for horizon in HORIZONS}
     if not any(modeles.values()):
         logger.warning("aucun modèle en production : rien à prévoir")
+        with get_engine().begin() as conn:
+            alerte_pic.terminer(conn, [])
         return 0
     with get_engine().begin() as conn:
         previsions = assembler(lire_historique(conn, debut), modeles, debut)
-        if not previsions.empty:
+        if previsions.empty:
+            alerte_pic.terminer(conn, [])
+        else:
             sites = lire_sites(conn)
             previsions = ajouter_pics(
                 previsions, ratios_pic(lire_pics(conn, debut)), sites["seuil_kw"]

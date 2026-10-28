@@ -97,24 +97,42 @@ def test_mettre_a_jour_ouvre_et_termine(caplog):
     (upsert, lignes), (fermeture, parametres) = conn.requetes
     assert "INSERT INTO gold.alerte" in upsert
     assert "'modele', 'predicted_peak'" in upsert
-    # Une seule alerte en cours par site : mise à jour, début gardé s'il est plus tôt
+    # Une seule alerte en cours par site ; son début suit la prévision tant qu'il est
+    # à venir
     assert (
         "ON CONFLICT (id_site, type) WHERE source = 'modele' AND fin IS null" in upsert
     )
-    assert "least(gold.alerte.debut, excluded.debut)" in upsert
+    assert "WHEN gold.alerte.debut > now() THEN excluded.debut" in upsert
     assert [l["id_site"] for l in lignes] == ["SITE001"]
     assert lignes[0]["valeur"] == 470
 
-    assert "SET fin = greatest(debut, now())" in fermeture
+    # Fin au moment présent, jamais dans le futur ; pics passés terminés aussi
+    assert "SET fin = now(), debut = least(debut, now())" in fermeture
     assert "source = 'modele'" in fermeture
+    assert "coalesce(valeur_le, debut) + interval '1 hour' <= now()" in fermeture
     assert parametres == {"sites": ["SITE002"]}
     assert any("1 alertes en cours" in r.getMessage() for r in caplog.records)
 
 
-def test_mettre_a_jour_sans_aucun_site_evalue_ne_touche_a_rien():
+def test_seules_les_24_premieres_heures_comptent():
+    # Au-dessus du seuil à la 26e heure seulement : pas d'alerte, et le site est
+    # évalué (pic connu sur les 24 premières heures), donc son alerte est terminée
+    pics, evalues = pics_prevus(previsions("SITE001", [400] * 25 + [600]), SITES)
+    assert pics.empty
+    assert evalues == ["SITE001"]
+
+    # À la 24e heure : compte
+    pics, _ = pics_prevus(previsions("SITE001", [400] * 23 + [600, 700]), SITES)
+    assert pics.iloc[0]["debut"] == DEBUT + pd.Timedelta(hours=23)
+    assert pics.iloc[0]["valeur"] == 600
+
+
+def test_mettre_a_jour_sans_site_evalue_termine_seulement_les_pics_passes():
     conn = Connexion()
     assert mettre_a_jour(conn, previsions("SITE001", [None]), SITES) == (0, 0)
-    assert conn.requetes == []
+    ((sql, parametres),) = conn.requetes
+    assert "UPDATE gold.alerte" in sql
+    assert parametres == {"sites": []}
 
 
 def test_seule_la_fermeture_quand_aucun_pic():
