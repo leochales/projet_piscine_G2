@@ -17,8 +17,8 @@ RUN if [ -f api/requirements.txt ]; then pip install --no-cache-dir -r api/requi
 EXPOSE 8000
 
 # Lance l'API si api/main.py existe, sinon le conteneur attend (projet pas encore initialisé)
-#   --forwarded-allow-ips="*" : uvicorn croit les en-têtes X-Forwarded-* de Traefik, et
-#     construit ses redirections en https:// derrière le TLS de Traefik. Sans risque : l'API
-#     n'est joignable que par le réseau Docker de Traefik.
+#   En-têtes X-Forwarded-* ignorés (uvicorn ne les croit que de 127.0.0.1) : tout conteneur
+#     de traefik_public, autre environnement compris, pourrait les forger. L'API n'en a pas
+#     besoin : elle ne redirige pas (redirect_slashes=False) et n'utilise pas l'IP du client.
 #   --no-server-header : pas d'en-tête « Server: uvicorn »
-CMD ["sh", "-c", "if [ -f api/main.py ]; then exec uvicorn api.main:app --host 0.0.0.0 --port 8000 --forwarded-allow-ips='*' --no-server-header; else echo 'api/main.py absent : API pas encore initialisée'; exec sleep infinity; fi"]
+CMD ["sh", "-c", "if [ -f api/main.py ]; then exec uvicorn api.main:app --host 0.0.0.0 --port 8000 --no-server-header; else echo 'api/main.py absent : API pas encore initialisée'; exec sleep infinity; fi"]

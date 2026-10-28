@@ -45,6 +45,9 @@ app = FastAPI(
     docs_url=f"{API_PREFIX}/docs" if _docs else None,
     redoc_url=None,
     openapi_url=f"{API_PREFIX}/openapi.json" if _docs else None,
+    # Pas de redirection /api/x/ → /api/x : elle serait construite depuis l'en-tête Host, et
+    # en http:// derrière le TLS de Traefik. Une adresse avec slash final reçoit un 404.
+    redirect_slashes=False,
 )
 
 app.add_middleware(

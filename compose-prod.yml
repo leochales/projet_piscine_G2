@@ -83,6 +83,8 @@ services:
       # métriques restent sur le port de gestion (9000), non routé.
       - traefik.http.routers.enervision-${DEPLOY_ENV}-auth.rule=Host(`${PUBLIC_HOST:?PUBLIC_HOST manquant}`) && PathPrefix(`/auth`)
       - traefik.http.routers.enervision-${DEPLOY_ENV}-auth.entrypoints=https-${DEPLOY_ENV}
+      # En-têtes de sécurité (infra/traefik/middlewares.yml)
+      - traefik.http.routers.enervision-${DEPLOY_ENV}-auth.middlewares=auth-headers@file
       - traefik.http.services.enervision-${DEPLOY_ENV}-auth.loadbalancer.server.port=8080
     healthcheck:
       # Port de gestion (9000), sous le même chemin relatif que Keycloak
