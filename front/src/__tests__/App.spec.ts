@@ -15,6 +15,7 @@ const mountApp = () => (wrapper = mount(App, { global: { plugins: [pinia, router
 describe('App', () => {
   beforeEach(async () => {
     SOURCES.alertes = 'mock'
+    SOURCES.recommandations = 'mock'
     pinia = createPinia()
     setActivePinia(pinia)
     useUserStore(pinia).setFromToken({
@@ -31,6 +32,7 @@ describe('App', () => {
   afterEach(() => {
     wrapper?.unmount()
     SOURCES.alertes = 'api'
+    SOURCES.recommandations = 'api'
   })
 
   it("affiche la navigation, la vue d'ensemble et l'utilisateur connecté", async () => {

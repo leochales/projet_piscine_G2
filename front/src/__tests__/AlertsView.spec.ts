@@ -7,10 +7,12 @@ import AlertsView from '@/views/AlertsView.vue'
 
 beforeEach(() => {
   SOURCES.alertes = 'mock'
+  SOURCES.recommandations = 'mock'
 })
 
 afterEach(() => {
   SOURCES.alertes = 'api'
+  SOURCES.recommandations = 'api'
 })
 
 async function mountView() {

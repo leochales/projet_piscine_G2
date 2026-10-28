@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, RouterLinkStub } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 
@@ -32,8 +32,12 @@ function mountFor(siteId: string) {
 const titles = (wrapper: ReturnType<typeof mountFor>) =>
   wrapper.findAll('article h3').map((h) => h.text())
 
-afterEach(() => {
+beforeEach(() => {
   SOURCES.recommandations = 'mock'
+})
+
+afterEach(() => {
+  SOURCES.recommandations = 'api'
   vi.unstubAllGlobals()
 })
 

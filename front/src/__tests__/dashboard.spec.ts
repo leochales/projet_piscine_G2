@@ -27,11 +27,13 @@ describe('services/dashboard', () => {
   beforeEach(() => {
     SOURCES.mesures = 'mock'
     SOURCES.alertes = 'mock'
+    SOURCES.recommandations = 'mock'
   })
 
   afterEach(() => {
     SOURCES.mesures = 'api'
     SOURCES.alertes = 'api'
+    SOURCES.recommandations = 'api'
   })
 
   it('charge 24 h ou 7 jours d’historique selon la période', async () => {
@@ -93,6 +95,7 @@ describe('simulation des cas réels (?simulation=…)', () => {
   beforeEach(() => {
     SOURCES.mesures = 'mock'
     SOURCES.alertes = 'mock'
+    SOURCES.recommandations = 'mock'
   })
 
   const simulate = (value: string) => window.history.replaceState(null, '', `/?simulation=${value}`)
@@ -100,6 +103,7 @@ describe('simulation des cas réels (?simulation=…)', () => {
   afterEach(() => {
     SOURCES.mesures = 'api'
     SOURCES.alertes = 'api'
+    SOURCES.recommandations = 'api'
     window.history.replaceState(null, '', '/')
     vi.useRealTimers()
   })

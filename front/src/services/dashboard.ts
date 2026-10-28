@@ -39,9 +39,9 @@ import type {
  * Les données simulées ont le format exact de la route : passer à 'api' ne change rien d'autre.
  */
 export const SOURCES: Record<'recommandations' | 'alertes' | 'mesures' | 'etat', 'mock' | 'api'> = {
-  // GET /api/recommandations (SMARTOPS-39). À passer à 'api' une fois gold.recommandation
-  // rempli par l'ETL (SMARTOPS-40)
-  recommandations: 'mock',
+  // GET /api/recommandations (SMARTOPS-39) : gold.recommandation, rempli par l'ETL (une
+  // recommandation par alerte en cours, SMARTOPS-40)
+  recommandations: 'api',
   // GET /api/alertes (SMARTOPS-39) : gold.alerte, rempli par l'ETL (dépassements de seuil
   // et pannes de capteur, SMARTOPS-26)
   alertes: 'api',

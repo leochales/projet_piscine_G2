@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { decideRecommendation, fetchRecommendations, SOURCES } from '@/services/dashboard'
 import { login } from '@/lib/auth'
@@ -24,13 +24,17 @@ function stubFetch(status: number, body: unknown) {
   return fetchMock
 }
 
-afterEach(() => {
+beforeEach(() => {
   SOURCES.recommandations = 'mock'
+})
+
+afterEach(() => {
+  SOURCES.recommandations = 'api'
   vi.unstubAllGlobals()
 })
 
 describe('fetchRecommendations : données simulées ou API', () => {
-  it('par défaut, renvoie les recommandations simulées en cours, converties', async () => {
+  it('avec la source « mock », renvoie les recommandations simulées en cours, converties', async () => {
     const fetchMock = stubFetch(200, [])
 
     const liste = await fetchRecommendations()
