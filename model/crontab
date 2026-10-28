@@ -1,0 +1,8 @@
+# Planning des prévisions (format cron : minute heure jour mois jour-de-semaine commande)
+# Le script s'exécute depuis /app ; l'heure est celle du conteneur (UTC par défaut).
+#
+# Chaque heure à hh:05 : prévisions des 7 jours à venir dans gold.prediction
+# (SMARTOPS-33, model/prevision.py), à partir de l'heure pleine suivante. Pas à hh:00 :
+# l'ETL (toutes les minutes) doit d'abord avoir écrit dans gold la ligne de l'heure qui
+# commence, sans laquelle un site est écarté comme « sans mesure ».
+5 * * * * python -m model.prevision

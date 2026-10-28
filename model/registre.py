@@ -13,6 +13,7 @@ La génération des prévisions (SMARTOPS-33) charge la version ``production`` a
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import cloudpickle
@@ -122,10 +123,26 @@ def enregistrer(
     return version
 
 
-def charger(horizon: int) -> tuple[Any, pd.Series]:
+@dataclass
+class ModeleProduction:
+    """Version ``production`` d'un horizon, telle que la prévision l'utilise."""
+
+    modele: Any
+    # Normalisation de la consommation et liste des sites du modèle
+    moyennes: pd.Series
+    # Nom et numéro de la version, par exemple « prevision-conso-24h/3 » : écrit dans
+    # gold.prediction (version_modele) pour savoir quelle version a prévu chaque heure
+    version: str
+
+
+def charger(horizon: int) -> ModeleProduction:
     """Modèle de la version ``production`` d'un horizon, et ses moyennes par site."""
     nom = nom_modele(horizon)
+    # Version lue une seule fois : modèle et moyennes viennent de la même version,
+    # même si l'alias change pendant le chargement
     version = MlflowClient().get_model_version_by_alias(nom, ALIAS)
     modele = mlflow.sklearn.load_model(f"models:/{nom}/{version.version}")
     moyennes = mlflow.artifacts.load_dict(f"runs:/{version.run_id}/{MOYENNES}")
-    return modele, pd.Series(moyennes, dtype=float)
+    return ModeleProduction(
+        modele, pd.Series(moyennes, dtype=float), f"{nom}/{version.version}"
+    )

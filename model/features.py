@@ -183,6 +183,22 @@ def ajouter_lags(df: pd.DataFrame, horizon: int) -> pd.DataFrame:
     return pd.concat([df, calculer_sur_grille(df, "conso_norm", calculs)], axis=1)
 
 
+def derniere_mesure_par_site(historique: pd.DataFrame) -> pd.Series:
+    """Dernière heure mesurée de chaque site de l'historique (vide si aucune)."""
+    return (
+        historique["heure"]
+        .where(conso_mesuree(historique).notna())
+        .groupby(historique["id_site"])
+        .max()
+    )
+
+
+def sites_en_retard(derniere_mesure: pd.Series, debut: pd.Timestamp) -> pd.Series:
+    """Vrai pour un site sans mesure à l'heure qui précède ``debut`` : ses dernières
+    heures à prévoir porteraient sur des heures inconnues."""
+    return ~(derniere_mesure >= debut - pd.Timedelta(hours=1))
+
+
 def ajouter_heures_a_prevoir(
     historique: pd.DataFrame, debut: pd.Timestamp, horizon: int
 ) -> pd.DataFrame:
@@ -203,13 +219,8 @@ def ajouter_heures_a_prevoir(
         raise ValueError(f"Début des prévisions sans fuseau horaire : {debut}")
     if debut != debut.floor("h"):
         raise ValueError(f"Début des prévisions pas sur une heure pile : {debut}")
-    derniere_mesure = (
-        historique["heure"]
-        .where(conso_mesuree(historique).notna())
-        .groupby(historique["id_site"])
-        .max()
-    )
-    en_retard = derniere_mesure[~(derniere_mesure >= debut - pd.Timedelta(hours=1))]
+    derniere_mesure = derniere_mesure_par_site(historique)
+    en_retard = derniere_mesure[sites_en_retard(derniere_mesure, debut)]
     if not en_retard.empty:
         detail = ", ".join(
             f"{site} ({'aucune mesure' if pd.isna(h) else f'dernière mesure {h}'})"

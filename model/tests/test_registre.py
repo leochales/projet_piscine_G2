@@ -2,7 +2,6 @@ import mlflow
 import numpy as np
 import pandas as pd
 import pytest
-from mlflow import MlflowClient
 
 from model import registre
 from model.entrainement import (
@@ -18,20 +17,6 @@ from model.tests.test_entrainement import faux_jeu, moyennes_entrainement
 
 # Stockage en fichiers de MLflow (test seulement) : codecs.open, déprécié en Python 3.14
 pytestmark = pytest.mark.filterwarnings("ignore:codecs.open:DeprecationWarning")
-
-
-@pytest.fixture
-def client(tmp_path, monkeypatch):
-    """MLflow local dans un dossier temporaire, à la place du serveur, comme le test
-    de model.dataset."""
-    monkeypatch.setenv("MLFLOW_DISABLE_AGENT_HINT", "1")
-    # Stockage en fichiers : suffisant pour un test, sans les dépendances du serveur
-    monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
-    uri = (tmp_path / "mlruns").as_uri()
-    monkeypatch.setenv("MLFLOW_TRACKING_URI", uri)
-    mlflow.set_tracking_uri(uri)
-    mlflow.set_registry_uri(uri)
-    return MlflowClient()
 
 
 def resultat_et_final(bruit: float = 0.1):
@@ -60,11 +45,13 @@ def test_modele_enregistre_puis_recharge(client):
     version = registre.enregistrer(r, 24, REGLAGES[r.meilleur], "abc123", final)
     assert version == "1"
 
-    modele, moyennes = registre.charger(24)
+    production = registre.charger(24)
+    assert production.version == "prevision-conso-24h/1"
+    moyennes = production.moyennes
     pd.testing.assert_series_equal(moyennes, final[1], check_names=False)
     lignes = preparer(df, moyennes, 24)
     X = lignes[noms_variables(24, moyennes)]
-    np.testing.assert_allclose(modele.predict(X), final[0].predict(X))
+    np.testing.assert_allclose(production.modele.predict(X), final[0].predict(X))
 
     # Le run garde les paramètres, les scores et l'empreinte du jeu
     run = client.get_run(
@@ -113,9 +100,9 @@ def test_main_enregistre_les_deux_horizons(client, tmp_path):
     (tmp_path / "rapport_qualite.json").write_text('{"empreinte": "abc123"}')
     main(["--chemin", str(chemin)])
     for horizon in (24, 168):
-        modele, moyennes = registre.charger(horizon)
-        assert list(moyennes.index) == ["SITE001", "SITE002"]
-        assert hasattr(modele, "predict")
+        production = registre.charger(horizon)
+        assert list(production.moyennes.index) == ["SITE001", "SITE002"]
+        assert hasattr(production.modele, "predict")
 
 
 def test_modele_final_garde_les_sites_recents(client, tmp_path):
@@ -129,5 +116,4 @@ def test_modele_final_garde_les_sites_recents(client, tmp_path):
     resultats = main(["--chemin", str(chemin)])
     # Évaluation sur SITE001 seulement
     assert list(resultats[0].par_site.index) == ["SITE001"]
-    _, moyennes = registre.charger(24)
-    assert list(moyennes.index) == ["SITE001", "SITE002"]
+    assert list(registre.charger(24).moyennes.index) == ["SITE001", "SITE002"]
