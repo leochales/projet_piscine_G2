@@ -39,11 +39,12 @@ const depassement: AlerteApi = {
 
 beforeEach(() => {
   SOURCES.alertes = 'mock'
+  SOURCES.recommandations = 'mock'
 })
 
 afterEach(() => {
   SOURCES.alertes = 'api'
-  SOURCES.recommandations = 'mock'
+  SOURCES.recommandations = 'api'
   vi.unstubAllGlobals()
 })
 

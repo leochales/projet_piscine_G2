@@ -228,7 +228,11 @@ Recommandations des sites actifs (lues dans `app.recommandation_etat`), de la pl
 |---|---|---|---|
 | `id_site` | non | tous les sites | Recommandations d'un seul site |
 | `statut` | non | tous | `proposee`, `acceptee` ou `refusee` |
+| `alerte_en_cours` | non | toutes | `true` : alerte en cours, ou recommandation sans alerte ; `false` : alerte terminée |
+| `decidee_depuis` | non | toutes | Décidées à cette date ou après (ISO 8601 avec fuseau) |
 | `limite` | non | `100` | Nombre maximal de recommandations (1 à 500) |
+
+Le dashboard charge les recommandations à décider dont l'alerte est en cours (`statut=proposee&alerte_en_cours=true`) : comme une alerte, une recommandation disparaît quand son alerte se termine. Il charge aussi les recommandations acceptées depuis le 1er du mois (`statut=acceptee&decidee_depuis=…`), qui font les économies du mois, même si leur alerte est terminée.
 
 ```json
 [

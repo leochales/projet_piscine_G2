@@ -15,7 +15,7 @@ import {
   toConsumptionPoint,
   toSiteOverview,
 } from '@/lib/mesures'
-import { toRecommendation } from '@/lib/recommendations'
+import { ACCEPTEE_EN_COURS_JOURS, toRecommendation } from '@/lib/recommendations'
 import { getJson, postJson } from '@/services/http'
 import type {
   AlerteApi,
@@ -39,9 +39,9 @@ import type {
  * Les données simulées ont le format exact de la route : passer à 'api' ne change rien d'autre.
  */
 export const SOURCES: Record<'recommandations' | 'alertes' | 'mesures' | 'etat', 'mock' | 'api'> = {
-  // GET /api/recommandations (SMARTOPS-39). À passer à 'api' une fois gold.recommandation
-  // rempli par l'ETL (SMARTOPS-40)
-  recommandations: 'mock',
+  // GET /api/recommandations (SMARTOPS-39) : gold.recommandation, rempli par l'ETL (une
+  // recommandation par alerte en cours, SMARTOPS-40)
+  recommandations: 'api',
   // GET /api/alertes (SMARTOPS-39) : gold.alerte, rempli par l'ETL (dépassements de seuil
   // et pannes de capteur, SMARTOPS-26)
   alertes: 'api',
@@ -229,12 +229,28 @@ export async function fetchAlerts(): Promise<Alert[]> {
 const STATUTS_EN_COURS = ['proposee', 'acceptee'] as const
 
 /**
+ * Date à partir de laquelle charger les acceptées : la plus ancienne entre minuit du 1er du
+ * mois, heure locale (comme decidedThisMonth), et maintenant moins ACCEPTEE_EN_COURS_JOURS
+ * (comme isStaleAccepted)
+ */
+function accepteesDepuis(now = new Date()): string {
+  const debutDuMois = new Date(now.getFullYear(), now.getMonth(), 1)
+  const debutEnCours = new Date(now.getTime() - ACCEPTEE_EN_COURS_JOURS * 24 * 3600 * 1000)
+  return (debutDuMois < debutEnCours ? debutDuMois : debutEnCours).toISOString()
+}
+
+/**
  * Recommandations en cours de tous les sites : l'écran 3 et la page d'un site les partagent
  * (store). Les refusées ne sont pas chargées.
  *
  * Avec l'API, une requête par statut : la route renvoie au plus 500 lignes, les plus récentes
  * d'abord, et les recommandations acceptées ou refusées s'accumulent. Une seule requête finirait
  * par écarter les propositions les plus anciennes, encore à décider.
+ *  - à décider : seulement si leur alerte est en cours, comme les alertes affichées. Une
+ *    alerte terminée retire sa recommandation, qui n'a plus d'objet ;
+ *  - acceptées : même si leur alerte est terminée, celles du mois en cours et celles encore en
+ *    cours d'application (ACCEPTEE_EN_COURS_JOURS), qui restent affichées. Les économies du
+ *    mois (store) ne comptent que celles du mois (decidedThisMonth).
  */
 export async function fetchRecommendations(): Promise<Recommendation[]> {
   if (SOURCES.recommandations !== 'api') {
@@ -248,11 +264,18 @@ export async function fetchRecommendations(): Promise<Recommendation[]> {
   }
   return fromApi(async () => {
     const reponse = (
-      await Promise.all(
-        STATUTS_EN_COURS.map((statut) =>
-          getJson<RecommandationApi[]>('/recommandations', { statut, limite: 500 }),
-        ),
-      )
+      await Promise.all([
+        getJson<RecommandationApi[]>('/recommandations', {
+          statut: 'proposee',
+          alerte_en_cours: true,
+          limite: 500,
+        }),
+        getJson<RecommandationApi[]>('/recommandations', {
+          statut: 'acceptee',
+          decidee_depuis: accepteesDepuis(),
+          limite: 500,
+        }),
+      ])
     ).flat()
     return reponse.map(toRecommendation)
   }, [])

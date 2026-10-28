@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { decideRecommendation, fetchRecommendations, SOURCES } from '@/services/dashboard'
 import { login } from '@/lib/auth'
@@ -24,13 +24,20 @@ function stubFetch(status: number, body: unknown) {
   return fetchMock
 }
 
-afterEach(() => {
+beforeEach(() => {
   SOURCES.recommandations = 'mock'
-  vi.unstubAllGlobals()
 })
 
+afterEach(() => {
+  SOURCES.recommandations = 'api'
+  vi.unstubAllGlobals()
+  vi.useRealTimers()
+})
+
+const JOUR_MS = 24 * 3600 * 1000
+
 describe('fetchRecommendations : données simulées ou API', () => {
-  it('par défaut, renvoie les recommandations simulées en cours, converties', async () => {
+  it('avec la source « mock », renvoie les recommandations simulées en cours, converties', async () => {
     const fetchMock = stubFetch(200, [])
 
     const liste = await fetchRecommendations()
@@ -44,18 +51,39 @@ describe('fetchRecommendations : données simulées ou API', () => {
 
   it('avec la source « api », lit une page par statut en cours, au même format', async () => {
     SOURCES.recommandations = 'api'
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const now = new Date(2026, 9, 2, 11, 30)
+    vi.setSystemTime(now)
     const fetchMock = stubFetch(200, [recommandations[3]])
 
     const liste = await fetchRecommendations()
 
-    // Une requête par statut : la limite de 500 n'écarte pas les propositions anciennes
+    // Une requête par statut : la limite de 500 n'écarte pas les propositions anciennes.
+    // À décider : alerte en cours ; acceptées : le 2 octobre, celles du 28 septembre sont encore
+    // en cours d'application (30 jours), on remonte donc avant le 1er du mois.
+    const depuis = encodeURIComponent(new Date(now.getTime() - 30 * JOUR_MS).toISOString())
     const urls = fetchMock.mock.calls.map(([url]) => url)
     expect(urls).toEqual([
-      '/api/recommandations?statut=proposee&limite=500',
-      '/api/recommandations?statut=acceptee&limite=500',
+      '/api/recommandations?statut=proposee&alerte_en_cours=true&limite=500',
+      `/api/recommandations?statut=acceptee&decidee_depuis=${depuis}&limite=500`,
     ])
     expect(liste).toHaveLength(2)
     expect(liste[0]).toMatchObject({ id: '4', siteId: 'SITE006' })
+  })
+
+  it('avec la source « api », lit les acceptées depuis le 1er du mois s’il est plus ancien que 30 jours', async () => {
+    SOURCES.recommandations = 'api'
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date(2026, 2, 31, 11, 30))
+    const fetchMock = stubFetch(200, [])
+
+    await fetchRecommendations()
+
+    // Le 31 mars, 30 jours plus tôt tombe le 1er mars en fin de matinée : minuit du 1er est plus ancien
+    const debutDuMois = encodeURIComponent(new Date(2026, 2, 1).toISOString())
+    expect(fetchMock.mock.calls[1]![0]).toBe(
+      `/api/recommandations?statut=acceptee&decidee_depuis=${debutDuMois}&limite=500`,
+    )
   })
 
   it('avec la source « api », remonte l’erreur de la route', async () => {

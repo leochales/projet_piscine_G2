@@ -25,10 +25,12 @@ describe('useOperationsStore', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     service.SOURCES.alertes = 'mock'
+    service.SOURCES.recommandations = 'mock'
   })
 
   afterEach(() => {
     service.SOURCES.alertes = 'api'
+    service.SOURCES.recommandations = 'api'
   })
 
   it('ramène un gain hebdomadaire au mois', () => {

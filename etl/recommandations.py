@@ -1,8 +1,9 @@
 """ETL — Recommandations dans gold (gold.alerte → gold.recommandation).
 
 Les recommandations viennent de règles simples, pas du modèle : chaque alerte
-en cours (API Mock, pics de l'ETL, pics prévus par le modèle) reçoit la
-recommandation de la règle qui correspond à son type et à sa sévérité.
+en cours de gold.alerte (dépassements et pannes de capteur de l'ETL, bientôt
+pics prévus par le modèle ; celles de l'API Mock n'y sont pas reprises) reçoit
+la recommandation de la règle qui correspond à son type et à sa sévérité.
 
 Les règles et le calcul sont en base (db/18_gold_recommandations.sql), testés
 en CI par db/tests/test_gold_recommandations.sql :
