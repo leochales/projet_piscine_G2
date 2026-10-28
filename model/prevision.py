@@ -17,8 +17,18 @@ Un site sans mesure à l'heure en cours (capteur en panne, par exemple) ou incon
 modèle est écarté avec un avertissement : les autres sont prévus quand même.
 
 Fourchette : centiles 10 et 90 des prévisions des arbres du random forest. Un modèle
-Ridge n'en donne pas (bornes NULL). ``pic_prevu`` reste faux : le pic de l'heure n'est
-pas encore prévu (SMARTOPS-95).
+Ridge n'en donne pas (bornes NULL).
+
+Pic de l'heure (SMARTOPS-104) : le jeu d'entraînement n'a qu'une mesure par heure, donc
+pas de pic des minutes, et aucun modèle ne l'apprend. ``pic_prevu_kw`` est la
+consommation prévue (kWh d'une heure = kW moyens) multipliée par le rapport pic/moyenne
+du site, médiane des heures terminées de ``gold.consommation_horaire`` sur
+``HISTORIQUE_UTILE``. Ce rapport est pris par heure de la journée quand elle a assez de
+mesures, sinon pour tout le site. Sa fourchette applique le même rapport aux bornes de
+consommation. Un site sans assez d'heures mesurées n'a pas de pic prévu (NULL), avec un
+avertissement. ``pic_prevu`` est vrai quand le pic prévu atteint le seuil d'alerte du
+site (``app.site.seuil_alerte_pct`` de ``capacite_kw``), le même que la détection de
+l'ETL.
 
 Avec ``MODELE_CACHE_DIR`` (volume ``modele_cache`` du service), chaque version est
 téléchargée une seule fois : ensuite, MLflow ne sert qu'à lire le numéro de la version
@@ -49,6 +59,7 @@ from common.db import get_engine
 from common.logs import configure_logging
 from model import registre
 from model.features import (
+    HEURES,
     HISTORIQUE_UTILE,
     HORIZONS,
     ajouter_heures_a_prevoir,
@@ -70,7 +81,7 @@ SANS_VERSION = {
     ErrorCode.Name(RESOURCE_DOES_NOT_EXIST),
     ErrorCode.Name(INVALID_PARAMETER_VALUE),
 }
-# Colonnes écrites dans gold.prediction (calculee_le et pic_prevu : valeurs par défaut)
+# Colonnes des prévisions du modèle (calculee_le : valeur par défaut de gold.prediction)
 COLONNES = [
     "id_site",
     "heure_prevue",
@@ -79,6 +90,12 @@ COLONNES = [
     "consommation_haute_kwh",
     "version_modele",
 ]
+# Colonnes du pic de l'heure, ajoutées par ajouter_pics
+COLONNES_PIC = ["pic_prevu_kw", "pic_bas_kw", "pic_haut_kw", "pic_prevu"]
+# Heures mesurées nécessaires au rapport pic/moyenne d'un site, et à celui d'une heure
+# de la journée (en dessous, l'heure prend le rapport du site)
+HEURES_MIN_RATIO_SITE = 24
+HEURES_MIN_RATIO_HEURE = 3
 
 
 def debut_des_previsions(maintenant: datetime) -> pd.Timestamp:
@@ -251,22 +268,139 @@ def assembler(
     return pd.concat(morceaux, ignore_index=True)
 
 
+def lire_pics(conn: Connection, debut: pd.Timestamp) -> pd.DataFrame:
+    """Pic et moyenne des heures terminées des sites actifs, sur ``HISTORIQUE_UTILE`` :
+    de quoi calculer le rapport pic/moyenne de chaque site (``ratios_pic``)."""
+    lignes = conn.execute(
+        text(
+            """
+            SELECT c.id_site, c.heure, c.pic_kw, c.moyenne_kw
+            FROM gold.consommation_horaire AS c
+            JOIN app.site AS s ON s.id_site = c.id_site
+            WHERE s.statut = 'active'
+              AND c.heure_complete
+              AND c.pic_kw IS NOT NULL
+              AND c.moyenne_kw > 0
+              AND c.heure >= :depuis AND c.heure < :debut
+            """
+        ),
+        {"depuis": debut - HISTORIQUE_UTILE, "debut": debut},
+    ).all()
+    df = pd.DataFrame(lignes, columns=["id_site", "heure", "pic_kw", "moyenne_kw"])
+    return df.assign(
+        heure=pd.to_datetime(df["heure"], utc=True),
+        pic_kw=df["pic_kw"].astype(float),
+        moyenne_kw=df["moyenne_kw"].astype(float),
+    )
+
+
+def lire_seuils(conn: Connection) -> pd.Series:
+    """Seuil d'alerte de chaque site actif, en kW : ``seuil_alerte_pct`` % de sa
+    capacité, comme la détection des pics mesurés de l'ETL."""
+    lignes = conn.execute(
+        text(
+            """
+            SELECT id_site, capacite_kw * seuil_alerte_pct / 100
+            FROM app.site
+            WHERE statut = 'active'
+            """
+        )
+    ).all()
+    return pd.Series(
+        {id_site: float(seuil) for id_site, seuil in lignes},
+        name="seuil_kw",
+        dtype=float,
+    )
+
+
+def ratios_pic(pics: pd.DataFrame) -> pd.Series:
+    """Rapport pic/moyenne de chaque site et de chaque heure de la journée (index
+    ``id_site``, ``heure_jour``). Médiane des heures mesurées : celle de l'heure de la
+    journée si elle en a ``HEURES_MIN_RATIO_HEURE``, sinon celle du site. Un site qui
+    n'a pas ``HEURES_MIN_RATIO_SITE`` heures mesurées est absent.
+
+    L'heure de la journée est celle de l'horodatage, comme dans les variables du
+    modèle. Le rapport vaut au moins 1 : le pic d'une heure ne descend pas sous sa
+    moyenne."""
+    pics = pics.assign(
+        ratio=pics["pic_kw"] / pics["moyenne_kw"], heure_jour=pics["heure"].dt.hour
+    )
+    par_site = pics.groupby("id_site")["ratio"].agg(["median", "count"])
+    par_site = par_site.loc[par_site["count"] >= HEURES_MIN_RATIO_SITE, "median"]
+    par_heure = pics.groupby(["id_site", "heure_jour"])["ratio"].agg(
+        ["median", "count"]
+    )
+    par_heure = par_heure.loc[par_heure["count"] >= HEURES_MIN_RATIO_HEURE, "median"]
+    ratios = (
+        par_heure.unstack("heure_jour")
+        .reindex(index=par_site.index, columns=HEURES)
+        .where(lambda r: r.notna(), par_site, axis=0)
+        .clip(lower=1.0)
+    )
+    ratios.index.name = "id_site"
+    ratios.columns.name = "heure_jour"
+    return ratios.stack()
+
+
+def ajouter_pics(
+    previsions: pd.DataFrame, ratios: pd.Series, seuils: pd.Series
+) -> pd.DataFrame:
+    """Ajoute le pic prévu de chaque heure (``COLONNES_PIC``) : consommation prévue et
+    bornes multipliées par le rapport pic/moyenne du site à cette heure de la journée.
+    Le rapport est le même pour les trois valeurs : l'ordre basse <= prévue <= haute
+    exigé par la base est gardé. Sans rapport pour le site, le pic est NULL et
+    ``pic_prevu`` faux."""
+    sans_ratio = sorted(
+        set(previsions["id_site"]) - set(ratios.index.get_level_values("id_site"))
+    )
+    if sans_ratio:
+        logger.warning(
+            "sites avec moins de %d heures mesurées : pic de l'heure non prévu : %s",
+            HEURES_MIN_RATIO_SITE,
+            sans_ratio,
+        )
+    cles = pd.MultiIndex.from_arrays(
+        [previsions["id_site"], previsions["heure_prevue"].dt.hour],
+        names=["id_site", "heure_jour"],
+    )
+    ratio = ratios.reindex(cles).to_numpy(dtype=float)
+
+    def pic(colonne: str) -> np.ndarray:
+        # Arrondi de la colonne NUMERIC(10, 2), qui garde l'ordre des trois valeurs
+        return (previsions[colonne].to_numpy(dtype=float) * ratio).round(2)
+
+    pic_prevu_kw = pic("consommation_prevue_kwh")
+    seuil = previsions["id_site"].map(seuils).to_numpy(dtype=float)
+    return previsions.assign(
+        pic_prevu_kw=pic_prevu_kw,
+        pic_bas_kw=pic("consommation_basse_kwh"),
+        pic_haut_kw=pic("consommation_haute_kwh"),
+        # Pic ou seuil inconnu (NaN) : la comparaison est fausse
+        pic_prevu=pic_prevu_kw >= seuil,
+    )
+
+
 def ecrire(conn: Connection, previsions: pd.DataFrame) -> None:
     """Ajoute les prévisions à gold.prediction (l'historique est gardé pour comparer
     prévu et réel). ``calculee_le`` vaut now() : la même heure pour toute la
     transaction, donc pour toute l'exécution."""
-    # Bornes absentes (Ridge) : NULL, et non NaN
+    # Pic non calculé : NULL, et pic_prevu faux (colonne NOT NULL)
+    previsions = previsions.reindex(columns=COLONNES + COLONNES_PIC)
+    previsions["pic_prevu"] = previsions["pic_prevu"].fillna(False).astype(bool)
+    # Bornes ou pic absents (Ridge, site sans historique) : NULL, et non NaN
     lignes = previsions.astype(object).where(previsions.notna(), None)
     conn.execute(
         text(
             """
             INSERT INTO gold.prediction (
                 id_site, heure_prevue, consommation_prevue_kwh,
-                consommation_basse_kwh, consommation_haute_kwh, version_modele
+                consommation_basse_kwh, consommation_haute_kwh, version_modele,
+                pic_prevu_kw, pic_bas_kw, pic_haut_kw, pic_prevu
             )
             VALUES (
                 :id_site, :heure_prevue, :consommation_prevue_kwh,
-                :consommation_basse_kwh, :consommation_haute_kwh, :version_modele
+                :consommation_basse_kwh, :consommation_haute_kwh, :version_modele,
+                :pic_prevu_kw, :pic_bas_kw, :pic_haut_kw, :pic_prevu
             )
             """
         ),
@@ -284,6 +418,9 @@ def generer(maintenant: datetime | None = None) -> int:
     with get_engine().begin() as conn:
         previsions = assembler(lire_historique(conn, debut), modeles, debut)
         if not previsions.empty:
+            previsions = ajouter_pics(
+                previsions, ratios_pic(lire_pics(conn, debut)), lire_seuils(conn)
+            )
             ecrire(conn, previsions)
     logger.info(
         "%d prévisions écrites, %d sites, à partir de %s (%s)",
