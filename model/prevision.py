@@ -102,9 +102,10 @@ COLONNES_PIC = ["pic_prevu_kw", "pic_bas_kw", "pic_haut_kw", "pic_prevu"]
 # de la journée (en dessous, l'heure prend le rapport du site)
 HEURES_MIN_RATIO_SITE = 24
 HEURES_MIN_RATIO_HEURE = 3
-# Pic soutenu (lire_pics) : comme la détection des pics de l'ETL, plus de 5 minutes
-# sans mesure entre deux minutes mesurées coupent la série
-ECART_MAX_PIC_SOUTENU = pd.Timedelta(minutes=6)
+# Pic soutenu (lire_pics) : écart maximal entre deux minutes mesurées d'une même série.
+# Même règle que la détection des pics de l'ETL (db/17_gold_alertes.sql), qui coupe la
+# série quand l'écart dépasse 5 minutes : 10:00, 10:06, 10:12 ne sont pas une série
+ECART_MAX_PIC_SOUTENU = pd.Timedelta(minutes=5)
 
 
 def debut_des_previsions(maintenant: datetime) -> pd.Timestamp:
@@ -284,10 +285,12 @@ def lire_pics(conn: Connection, debut: pd.Timestamp) -> pd.DataFrame:
 
     ``pic_kw`` est le pic soutenu de l'heure : la plus forte valeur tenue par 3 minutes
     mesurées consécutives (``consumption_kw_raw``, jamais une valeur imputée), comme
-    les pics qui ouvrent une alerte dans l'ETL. Plus de 5 minutes sans mesure entre
-    deux d'entre elles coupent la série. Les 3 minutes sont rattachées à l'heure de la
-    dernière. Une heure compte si au moins ``COUVERTURE_MIN_MOYENNE`` de ses minutes
-    ont une consommation mesurée (imputées exclues)."""
+    les pics qui ouvrent une alerte dans l'ETL : deux minutes successives sont à
+    ``ECART_MAX_PIC_SOUTENU`` au plus. Les 3 minutes sont dans la même heure : un
+    triplet à cheval sur deux heures (10:58, 10:59, 11:00) n'est compté dans aucune,
+    pour que le pic et la moyenne de l'heure portent sur les mêmes minutes. Une heure
+    compte si au moins ``COUVERTURE_MIN_MOYENNE`` de ses minutes ont une consommation
+    mesurée (imputées exclues)."""
     lignes = conn.execute(
         text(
             """
@@ -317,6 +320,8 @@ def lire_pics(conn: Connection, debut: pd.Timestamp) -> pd.DataFrame:
                 FROM minutes
                 WHERE horodatage - horodatage_1 <= :ecart_max
                   AND horodatage_1 - horodatage_2 <= :ecart_max
+                  AND date_trunc('hour', horodatage_2, 'UTC')
+                  = date_trunc('hour', horodatage, 'UTC')
                 GROUP BY id_site, date_trunc('hour', horodatage, 'UTC')
             )
             SELECT c.id_site, c.heure, p.pic_kw, c.moyenne_kw

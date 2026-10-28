@@ -1,7 +1,9 @@
 import logging
+import re
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -492,7 +494,9 @@ def test_lire_pics_et_seuils_convertit_les_lignes_de_postgresql(debut):
     assert "nb_mesures - c.nb_imputees" in conn.sql
     assert conn.parametres["debut"] == debut
     assert conn.parametres["minutes_min"] == 48
-    assert conn.parametres["ecart_max"] == timedelta(minutes=6)
+    assert conn.parametres["ecart_max"] == prevision.ECART_MAX_PIC_SOUTENU
+    # Triplet dans une seule heure : pic et moyenne portent sur les mêmes minutes
+    assert "date_trunc('hour', horodatage_2, 'UTC')" in conn.sql
     assert str(df["heure"].dt.tz) == "UTC"
     assert df.loc[0, "pic_kw"] == 150.0
     assert df.loc[0, "moyenne_kw"] == 100.0
@@ -500,3 +504,19 @@ def test_lire_pics_et_seuils_convertit_les_lignes_de_postgresql(debut):
     seuils = prevision.lire_seuils(conn)
     assert "seuil_alerte_pct" in conn.sql
     assert seuils["SITE001"] == 180.0
+
+
+def test_ecart_du_pic_soutenu_identique_a_la_detection_de_l_etl():
+    """L'ETL coupe la série quand l'écart entre deux minutes dépasse l'intervalle de
+    db/17_gold_alertes.sql (« > INTERVAL '5 minutes' ») ; lire_pics garde une paire
+    quand l'écart vaut au plus ECART_MAX_PIC_SOUTENU : les deux doivent être égaux."""
+    sql = (Path(__file__).parents[2] / "db" / "17_gold_alertes.sql").read_text(
+        encoding="utf-8"
+    )
+    coupures = re.findall(
+        r"OVER \([^)]*\)\s*> INTERVAL '(\d+) minutes' AS coupure", sql
+    )
+    assert coupures, "règle de coupure introuvable dans db/17_gold_alertes.sql"
+    assert {pd.Timedelta(minutes=int(m)) for m in coupures} == {
+        prevision.ECART_MAX_PIC_SOUTENU
+    }
