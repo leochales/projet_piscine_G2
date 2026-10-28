@@ -228,6 +228,11 @@ export async function fetchAlerts(): Promise<Alert[]> {
 // Recommandations en cours : à décider, ou acceptées (en cours d'application)
 const STATUTS_EN_COURS = ['proposee', 'acceptee'] as const
 
+/** Minuit du 1er du mois en cours, heure locale (comme decidedThisMonth) */
+function debutDuMois(now = new Date()): string {
+  return new Date(now.getFullYear(), now.getMonth(), 1).toISOString()
+}
+
 /**
  * Recommandations en cours de tous les sites : l'écran 3 et la page d'un site les partagent
  * (store). Les refusées ne sont pas chargées.
@@ -235,6 +240,10 @@ const STATUTS_EN_COURS = ['proposee', 'acceptee'] as const
  * Avec l'API, une requête par statut : la route renvoie au plus 500 lignes, les plus récentes
  * d'abord, et les recommandations acceptées ou refusées s'accumulent. Une seule requête finirait
  * par écarter les propositions les plus anciennes, encore à décider.
+ *  - à décider : seulement si leur alerte est en cours, comme les alertes affichées. Une
+ *    alerte terminée retire sa recommandation, qui n'a plus d'objet ;
+ *  - acceptées : celles du mois en cours, même si leur alerte est terminée. Ce sont elles qui
+ *    font les économies du mois (store) ; celles des mois précédents n'y comptent plus.
  */
 export async function fetchRecommendations(): Promise<Recommendation[]> {
   if (SOURCES.recommandations !== 'api') {
@@ -248,11 +257,18 @@ export async function fetchRecommendations(): Promise<Recommendation[]> {
   }
   return fromApi(async () => {
     const reponse = (
-      await Promise.all(
-        STATUTS_EN_COURS.map((statut) =>
-          getJson<RecommandationApi[]>('/recommandations', { statut, limite: 500 }),
-        ),
-      )
+      await Promise.all([
+        getJson<RecommandationApi[]>('/recommandations', {
+          statut: 'proposee',
+          alerte_en_cours: true,
+          limite: 500,
+        }),
+        getJson<RecommandationApi[]>('/recommandations', {
+          statut: 'acceptee',
+          decidee_depuis: debutDuMois(),
+          limite: 500,
+        }),
+      ])
     ).flat()
     return reponse.map(toRecommendation)
   }, [])

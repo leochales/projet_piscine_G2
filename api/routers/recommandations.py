@@ -16,6 +16,7 @@ from api.auth import (
     utilisateur_courant,
     verifier_action_sur_site,
 )
+from api.routers.mesures import DateIso
 from api.routers.parametres import FiltreSite, IdNumerique
 from common.db import get_session
 
@@ -59,6 +60,8 @@ RECOMMANDATIONS_DU_PERIMETRE = """
            r.decide_par, r.decide_le
     FROM app.recommandation_etat AS r
     JOIN app.site AS s ON s.id_site = r.id_site
+    -- Alerte qui a déclenché la recommandation, pour le filtre alerte_en_cours
+    LEFT JOIN gold.alerte AS a ON a.id_alerte = r.id_alerte
     WHERE s.statut = 'active'
       AND (CAST(:id_client AS BIGINT) IS NULL OR s.id_client = :id_client)
       AND (CAST(:id_utilisateur_sites AS UUID) IS NULL OR EXISTS (
@@ -85,13 +88,28 @@ def lister_recommandations(
     perimetre: PerimetreCourant,
     id_site: FiltreSite = None,
     statut: Statut | None = None,
+    alerte_en_cours: Annotated[
+        bool | None,
+        Query(
+            description="true : alerte en cours ou sans alerte ; false : alerte terminée"
+        ),
+    ] = None,
+    decidee_depuis: Annotated[
+        DateIso | None, Query(description="Décidées à cette date ou après")
+    ] = None,
     limite: Annotated[int, Query(ge=1, le=500)] = 100,
 ) -> list[Recommandation]:
+    # Une recommandation sans alerte compte comme en cours (a.fin vide) : rien
+    # ne dit qu'elle n'a plus d'objet
     requete = text(
         RECOMMANDATIONS_DU_PERIMETRE
         + """
           AND (CAST(:id_site AS VARCHAR) IS NULL OR r.id_site = :id_site)
           AND (CAST(:statut AS VARCHAR) IS NULL OR r.statut = :statut)
+          AND (CAST(:alerte_en_cours AS BOOLEAN) IS NULL
+               OR (a.fin IS NULL) = :alerte_en_cours)
+          AND (CAST(:decidee_depuis AS TIMESTAMPTZ) IS NULL
+               OR r.decide_le >= :decidee_depuis)
         ORDER BY r.date_creation DESC, r.id_recommandation DESC
         LIMIT :limite
         """
@@ -100,6 +118,8 @@ def lister_recommandations(
         **perimetre.parametres,
         "id_site": id_site,
         "statut": statut,
+        "alerte_en_cours": alerte_en_cours,
+        "decidee_depuis": decidee_depuis,
         "limite": limite,
     }
     lignes = session.execute(requete, parametres).mappings().all()

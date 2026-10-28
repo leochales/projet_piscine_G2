@@ -48,18 +48,23 @@ describe('fetchRecommendations : données simulées ou API', () => {
 
   it('avec la source « api », lit une page par statut en cours, au même format', async () => {
     SOURCES.recommandations = 'api'
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date(2026, 9, 28, 11, 30))
     const fetchMock = stubFetch(200, [recommandations[3]])
 
     const liste = await fetchRecommendations()
 
-    // Une requête par statut : la limite de 500 n'écarte pas les propositions anciennes
+    // Une requête par statut : la limite de 500 n'écarte pas les propositions anciennes.
+    // À décider : alerte en cours ; acceptées : depuis le 1er du mois, heure locale.
+    const debutDuMois = encodeURIComponent(new Date(2026, 9, 1).toISOString())
     const urls = fetchMock.mock.calls.map(([url]) => url)
     expect(urls).toEqual([
-      '/api/recommandations?statut=proposee&limite=500',
-      '/api/recommandations?statut=acceptee&limite=500',
+      '/api/recommandations?statut=proposee&alerte_en_cours=true&limite=500',
+      `/api/recommandations?statut=acceptee&decidee_depuis=${debutDuMois}&limite=500`,
     ])
     expect(liste).toHaveLength(2)
     expect(liste[0]).toMatchObject({ id: '4', siteId: 'SITE006' })
+    vi.useRealTimers()
   })
 
   it('avec la source « api », remonte l’erreur de la route', async () => {

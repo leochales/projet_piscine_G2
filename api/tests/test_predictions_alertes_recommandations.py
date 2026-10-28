@@ -267,6 +267,8 @@ def test_recommandations_filtre_par_site_et_statut(client: TestClient) -> None:
         "id_utilisateur_sites": None,
         "id_site": "SITE002",
         "statut": "proposee",
+        "alerte_en_cours": None,
+        "decidee_depuis": None,
         "limite": 100,
     }
 
@@ -281,8 +283,34 @@ def test_recommandations_sans_filtre(client: TestClient) -> None:
         "id_utilisateur_sites": None,
         "id_site": None,
         "statut": None,
+        "alerte_en_cours": None,
+        "decidee_depuis": None,
         "limite": 100,
     }
+
+
+def test_recommandations_filtre_par_alerte_en_cours_et_date_de_decision(
+    client: TestClient,
+) -> None:
+    session = brancher([])
+
+    response = client.get(
+        "/api/recommandations?statut=acceptee&alerte_en_cours=true"
+        "&decidee_depuis=2026-10-01T00:00:00%2B02:00"
+    )
+
+    assert response.status_code == 200
+    assert session.parametres is not None
+    assert session.parametres["alerte_en_cours"] is True
+    assert session.parametres["decidee_depuis"] == datetime(
+        2026, 9, 30, 22, 0, tzinfo=UTC
+    )
+
+
+def test_recommandations_refuse_une_date_sans_fuseau(client: TestClient) -> None:
+    brancher([])
+    response = client.get("/api/recommandations?decidee_depuis=2026-10-01T00:00:00")
+    assert response.status_code == 422
 
 
 def test_recommandations_refuse_un_statut_inconnu(client: TestClient) -> None:
