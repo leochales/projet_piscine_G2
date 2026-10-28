@@ -38,6 +38,9 @@ npm-debug.log*
 *.tfstate
 *.tfstate.*
 *.tfplan
+
+# --- Plans d'agent (locaux, non versionnés) ---
+.plans/
 *.tfvars
 !*.tfvars.example
 backend.hcl

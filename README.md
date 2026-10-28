@@ -106,11 +106,7 @@ docker compose -f compose-local.yml exec -T db psql -v ON_ERROR_STOP=1 -U enervi
 
 ## Supervision (Prometheus, Grafana, Loki)
 
-Non démarrée par défaut (environ 1 Go de mémoire) : elle est dans le profil Compose `monitoring`.
-
-```bash
-docker compose -f compose-local.yml --profile monitoring up -d
-```
+Démarrée avec le reste de la stack (`docker compose -f compose-local.yml up -d`), environ 1 Go de mémoire en plus.
 
 Grafana : http://localhost/grafana (compte `admin`, mot de passe `GRAFANA_ADMIN_PASSWORD` du `.env`). Le tableau de bord **EnerVision : socle** montre :
 

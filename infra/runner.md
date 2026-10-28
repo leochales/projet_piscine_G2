@@ -59,6 +59,8 @@ Le dépôt est **public**, et le déploiement n'utilise pas (encore) les *GitHub
 | `DEV_SEED_PASSWORD` / `PROD_SEED_PASSWORD` | Mot de passe des comptes de démonstration (12 caractères au moins), créés par l'API à son démarrage ; facultatif, sans lui ils ne sont pas créés |
 | `DEV_RESTIC_PASSWORD` / `PROD_RESTIC_PASSWORD` | Clé de chiffrement des sauvegardes restic. **Ne jamais la changer** une fois le dépôt créé (il ne s'ouvrirait plus), et la conserver aussi hors de GitHub |
 | `DEV_AZURE_ACCOUNT_SAS` / `PROD_AZURE_ACCOUNT_SAS` | SAS du conteneur `restic-dev` / `restic-prod` du stockage des sauvegardes ([`infra/terraform`](terraform/README.md), politique d'accès `restic`). À prolonger avant son expiration |
+| `DEV_GRAFANA_ADMIN_PASSWORD` / `PROD_GRAFANA_ADMIN_PASSWORD` | Mot de passe du compte `admin` de Grafana |
+| `DEV_MONITORING_DB_PASSWORD` / `PROD_MONITORING_DB_PASSWORD` | Mot de passe du compte PostgreSQL `monitoring` (postgres-exporter), réappliqué à chaque déploiement |
 
 | Variables                                    | Obligatoire | Rôle                                          |
 |----------------------------------------------|-------------|-----------------------------------------------|
@@ -70,7 +72,7 @@ Le dépôt est **public**, et le déploiement n'utilise pas (encore) les *GitHub
 | `AZURE_ACCOUNT_NAME`                         | oui         | Compte de stockage des sauvegardes (`terraform output storage_account_name`), commun à dev et prod |
 | `DVC_STORE`                                  | non         | Dossier du stockage DVC sur la VM (défaut `/srv/enervision-dvc`) |
 
-Utiliser des mots de passe différents entre dev et prod. Les mots de passe des comptes des services (`ETL_`, `MODEL_`, `API_`, `BACKUP_`, `KEYCLOAK_DB_PASSWORD`) sont **réappliqués à chaque déploiement** par la migration de la base : pour en changer un, modifier le secret puis redéployer. Exceptions :
+Utiliser des mots de passe différents entre dev et prod. Les mots de passe des comptes des services (`ETL_`, `MODEL_`, `API_`, `BACKUP_`, `KEYCLOAK_DB_PASSWORD`, `MONITORING_DB_PASSWORD`) sont **réappliqués à chaque déploiement** par la migration de la base : pour en changer un, modifier le secret puis redéployer. Exceptions :
 - `POSTGRES_PASSWORD` (superutilisateur) n'est appliqué qu'à la **création** de la base (volume vide). Le changer ensuite : `ALTER ROLE` dans la base, puis mettre à jour le secret ;
 - `KEYCLOAK_ADMIN` et `KEYCLOAK_ADMIN_PASSWORD` ne servent qu'au premier démarrage de Keycloak, pour créer l'administrateur du realm `master`. Le modifier ensuite se fait dans la console de Keycloak ;
 - `KEYCLOAK_ADMIN_CLIENT_SECRET` n'est lu qu'à l'import du realm : le changer demande aussi une action dans Keycloak (voir [Faire évoluer le realm Keycloak](#faire-évoluer-le-realm-keycloak)).
@@ -85,13 +87,15 @@ Utiliser des mots de passe différents entre dev et prod. Les mots de passe des 
 4. **Vérifier les secrets** : toutes les variables et tous les secrets obligatoires, avant de toucher à la VM. Le job liste ceux qui manquent et s'arrête.
 5. **Récupérer les images** : `docker compose pull` des images du commit (connexion à GHCR avec le `GITHUB_TOKEN` du job, retirée juste après). La VM ne reconstruit rien : elle démarre exactement les images testées et scannées.
 6. **Migrer la base** : démarrage de Postgres, attente qu'il réponde (120 s au plus, sinon le déploiement s'arrête avec les logs de `db`), puis `db/tools/migrate.sh`, qui rejoue tous les scripts de `db/` sur la base existante : nouvelles tables, comptes, droits et mots de passe. Les scripts doivent pouvoir être rejoués sans effet (voir la section **Base de données** du README). Si un script échoue, les nouveaux conteneurs ne sont pas démarrés : l'ancienne version continue de tourner, sur une base **partiellement migrée** (les scripts précédents restent appliqués, chaque script annulant seulement ses propres changements). Le risque est faible tant que les scripts ne font qu'ajouter (tables, colonnes, droits) : l'ancienne version les ignore. Corriger le script et redéployer : la migration reprend depuis le début.
-7. **Déployer** : `up -d --no-build --remove-orphans`.
-8. **Santé** : `https://<VM_IP>:<port>/api/health` pendant 60 s, envoyé à 127.0.0.1 par `curl --resolve` (les routes Traefik n'acceptent que `PUBLIC_HOST` : `https://localhost` reçoit un 404 sur la VM). En cas d'échec, le job affiche l'état des conteneurs et les logs de l'API.
+7. **Déployer** : `up -d --no-build --remove-orphans`. Prometheus, Grafana, Loki, Alloy et postgres-exporter démarrent avec la stack. Leurs images (Docker Hub) sont téléchargées juste avant.
+8. **Santé** : `https://<VM_IP>:<port>/api/health` pendant 60 s, envoyé à 127.0.0.1 par `curl --resolve` (les routes Traefik n'acceptent que `PUBLIC_HOST` : `https://localhost` reçoit un 404 sur la VM). En cas d'échec, le job affiche l'état des conteneurs et les logs de l'API. Le même contrôle interroge ensuite `/grafana/api/health` : s'il échoue, un avertissement est écrit et le déploiement continue.
 9. **Nettoyage** : images orphelines et anciennes versions de nos images qu'aucun conteneur n'utilise. Sur GHCR, seules les 20 dernières versions de chaque image sont conservées (job `purge`, lancé après le déploiement : il ne le retarde pas). Les versions étant communes à dev et prod, la purge ne tourne qu'aux déploiements de **prod** : un déploiement de dev ne peut pas supprimer la version qui tourne en prod.
 
 Un seul déploiement à la fois par environnement. Pour **revenir en arrière** : rouvrir le run **Deploy** d'un commit précédent et relancer **uniquement le job Deploy** (icône ↻ du job). Les images de ce commit sont reprises sur GHCR telles quelles. Relancer tout le run reconstruirait les images. Au-delà des 20 dernières versions, faire un `git revert` sur la branche et redéployer.
 
 **Avertissement du navigateur** : le certificat est auto-signé. Pour le supprimer, importer `/home/github-runner/traefik-certs/cert.pem` comme autorité racine de confiance sur le poste (à refaire après chaque régénération).
+
+**Grafana** : `https://<VM_IP>:8443/grafana` en dev, `https://<VM_IP>/grafana` en prod. Compte `admin`, mot de passe `<ENV>_GRAFANA_ADMIN_PASSWORD`. Les tableaux de bord viennent du dépôt (`infra/monitoring/grafana/dashboards/`) et se rechargent au démarrage du conteneur. Aucun port de supervision n'est publié : l'accès passe par Traefik.
 
 ---
 
