@@ -27,6 +27,7 @@ import SitesTable from '@/components/overview/SitesTable.vue'
 import { useActionsNotice } from '@/lib/actions'
 import { formatEur, formatKw, formatRelativeHour, formatTonnes } from '@/lib/format'
 import { SEUIL_ALERTE_PCT } from '@/lib/indicators'
+import { predictedPeak } from '@/lib/predictions'
 import { useAutoRefresh } from '@/lib/refresh'
 import { useRequest } from '@/lib/request'
 import {
@@ -97,15 +98,29 @@ const current = computed(() => site.data.value)
 const notFound = computed(() => site.status.value === 'success' && !site.data.value)
 const seriesIsEmpty = computed(() => series.data.value?.data.mesures.length === 0)
 
-// Pic de la prédiction et position de sa borne haute par rapport au seuil
+// Prévisions du site affiché (jamais celles du site quitté, encore en mémoire)
+const predictions = computed(() => {
+  const site = current.value?.site
+  const loaded = series.data.value
+  return site && loaded?.siteId === site.id ? loaded.data.predictions : null
+})
+
+// Pic de la prédiction (maximum de l'heure, sinon moyenne horaire) et position par rapport
+// au seuil. depasseSeuil est null sans fourchette : on ne connaît pas la marge d'erreur.
 const peak = computed(() => {
   const site = current.value?.site
-  const predictions = series.data.value?.data.predictions
-  if (!site || !predictions?.length || series.data.value?.siteId !== site.id) return null
-  const top = predictions.reduce((a, b) => (b.kw > a.kw ? b : a))
+  const top = predictions.value ? predictedPeak(predictions.value) : null
+  if (!site || !top) return null
   const seuilKw = (site.capaciteKw * SEUIL_PCT) / 100
-  return { ...top, depasseSeuil: top.hauteKw > seuilKw }
+  return {
+    ...top,
+    depasseSeuil: top.hauteKw === null ? null : top.hauteKw > seuilKw,
+    valeurDepasseSeuil: top.kw > seuilKw,
+  }
 })
+
+// Mesures reçues mais aucune prévision : modèle pas encore passé, ou route en erreur
+const noPrediction = computed(() => predictions.value?.length === 0 && !seriesIsEmpty.value)
 
 const qualityText = computed(() => {
   const qualite = current.value?.qualite
@@ -272,7 +287,15 @@ const openSite = (siteId: string) => router.push({ name: 'sites', params: { site
         <p v-if="peak" class="mt-2 text-sm">
           Pic prévu {{ formatRelativeHour(peak.horodatage) }} :
           <strong>{{ formatKw(peak.kw) }}</strong>
-          ({{ formatKw(peak.basseKw) }} – {{ formatKw(peak.hauteKw) }})
+          <template v-if="peak.basseKw !== null && peak.hauteKw !== null">
+            ({{ formatKw(peak.basseKw) }} – {{ formatKw(peak.hauteKw) }})
+          </template>
+          <span v-if="peak.mesure === 'moyenne'" class="text-muted-foreground">
+            · moyenne horaire</span
+          >
+        </p>
+        <p v-else-if="noPrediction" class="mt-2 text-sm text-muted-foreground">
+          Pas de prévision disponible pour le moment.
         </p>
       </CardContent>
     </Card>
@@ -285,10 +308,16 @@ const openSite = (siteId: string) => router.push({ name: 'sites', params: { site
             La borne haute du pic dépasse {{ SEUIL_PCT }} % de la capacité : risque réel de
             dépassement, une recommandation est proposée.
           </template>
-          <template v-else-if="peak">
+          <template v-else-if="peak?.depasseSeuil === false">
             Même la borne haute du pic reste sous {{ SEUIL_PCT }} % de la capacité : pas de risque
             de dépassement.
           </template>
+          <template v-else-if="peak">
+            Cette prévision n'a pas de fourchette. Le pic prévu est
+            {{ peak.valeurDepasseSeuil ? 'au-dessus' : 'en dessous' }} de {{ SEUIL_PCT }} % de la
+            capacité, sans marge d'erreur connue.
+          </template>
+          <template v-else-if="noPrediction">Pas de prévision disponible pour le moment.</template>
         </CardContent>
       </Card>
       <Card class="gap-2">

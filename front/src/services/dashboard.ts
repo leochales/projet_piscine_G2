@@ -15,6 +15,7 @@ import {
   toConsumptionPoint,
   toSiteOverview,
 } from '@/lib/mesures'
+import { toPredictionPoint } from '@/lib/predictions'
 import { ACCEPTEE_EN_COURS_JOURS, toRecommendation } from '@/lib/recommendations'
 import { getJson, postJson } from '@/services/http'
 import type {
@@ -22,6 +23,7 @@ import type {
   ConsommationHoraireApi,
   DerniereMesureApi,
   EtatSiteApi,
+  PredictionApi,
   RecommandationApi,
 } from '@/types/api'
 import type {
@@ -45,7 +47,8 @@ export const SOURCES: Record<'recommandations' | 'alertes' | 'mesures' | 'etat',
   // GET /api/alertes (SMARTOPS-39) : gold.alerte, rempli par l'ETL (dépassements de seuil
   // et pannes de capteur, SMARTOPS-26)
   alertes: 'api',
-  // GET /api/sites/derniere-mesure et /api/sites/{id}/consommation (SMARTOPS-42)
+  // GET /api/sites/derniere-mesure, /api/sites/{id}/consommation (SMARTOPS-42) et
+  // /api/sites/{id}/predictions (US2, gold.prediction rempli chaque heure par SMARTOPS-33)
   mesures: 'api',
   // GET /api/sites/etat : transmission et capteurs (US4, vue gold.etat_site de SMARTOPS-23)
   etat: 'api',
@@ -124,6 +127,21 @@ async function fetchConsommation(siteId: string, debut: string): Promise<Consomm
   })
 }
 
+/**
+ * Prévisions des heures à venir. Sans prévision (modèle pas encore passé, route en erreur),
+ * on renvoie une liste vide : la courbe réelle reste affichée, la page signale l'absence.
+ */
+async function fetchPredictions(siteId: string, horizon: SeriesRange): Promise<PredictionApi[]> {
+  try {
+    return await getJson<PredictionApi[]>(`/sites/${encodeURIComponent(siteId)}/predictions`, {
+      horizon,
+    })
+  } catch (error) {
+    console.warn(`Prévisions de ${siteId} indisponibles`, error)
+    return []
+  }
+}
+
 /** Consommation horaire de chaque site du périmètre, depuis `debut` */
 function fetchConsommationDuParc(
   sites: readonly SiteOverview[],
@@ -190,11 +208,14 @@ export async function fetchSiteSeries(siteId: string, range: SeriesRange): Promi
   return fromApi(
     async () => {
       const heures = range === '24h' ? 24 : 7 * 24
-      const lignes = await fetchConsommation(siteId, debutAvant(heures))
+      // La période affichée sert aussi d'horizon : 24 h passées et 24 h prévues, ou 7 jours
+      const [lignes, predictions] = await Promise.all([
+        fetchConsommation(siteId, debutAvant(heures)),
+        fetchPredictions(siteId, range),
+      ])
       return {
         mesures: lignes.map(toConsumptionPoint),
-        // Prévisions : US2. On ne mélange pas une prévision simulée avec des mesures réelles.
-        predictions: [],
+        predictions: predictions.map(toPredictionPoint),
       }
     },
     { mesures: [], predictions: [] },

@@ -42,8 +42,9 @@ describe('services/dashboard', () => {
     // +1 : le point « maintenant » est inclus
     expect(day.mesures).toHaveLength(24 + 1)
     expect(week.mesures).toHaveLength(7 * 24 + 1)
-    // La prédiction couvre toujours 48 h, quelle que soit la période affichée
-    expect(day.predictions).toHaveLength(48 + 1)
+    // La prédiction couvre la même durée que la période, à partir de l'heure qui suit
+    expect(day.predictions).toHaveLength(24)
+    expect(week.predictions).toHaveLength(7 * 24)
   })
 
   it('trouve un site, ou rien si l’identifiant est inconnu', async () => {
@@ -262,6 +263,96 @@ describe('mesures : source API', () => {
     expect(series.mesures.map((point) => point.kw)).toEqual([10, null])
   })
 
+  it('demande les prévisions avec l’horizon de la période affichée', async () => {
+    const urls: string[] = []
+    stubFetch((url) => {
+      urls.push(url)
+      if (!url.includes('/predictions')) return { status: 200, body: [] }
+      return {
+        status: 200,
+        body: [
+          {
+            heure: '2026-10-27T11:00:00Z',
+            consommation_kwh: 420.5,
+            consommation_basse_kwh: 400,
+            consommation_haute_kwh: 440,
+            pic_prevu: false,
+            pic_prevu_kw: null,
+            pic_bas_kw: null,
+            pic_haut_kw: null,
+            calculee_le: '2026-10-27T10:05:00Z',
+            version_modele: 'random_forest-3',
+          },
+        ],
+      }
+    })
+
+    const series = await fetchSiteSeries('SITE001', '7j')
+
+    expect(urls).toContain('/api/sites/SITE001/predictions?horizon=7j')
+    expect(series.predictions).toEqual([
+      {
+        horodatage: '2026-10-27T11:00:00Z',
+        kw: 420.5,
+        basseKw: 400,
+        hauteKw: 440,
+        picKw: null,
+        picBasKw: null,
+        picHautKw: null,
+      },
+    ])
+  })
+
+  it('accepte une API qui ne renvoie pas encore les champs du pic', async () => {
+    stubFetch((url) => {
+      if (!url.includes('/predictions')) return { status: 200, body: [] }
+      return {
+        status: 200,
+        body: [
+          {
+            heure: '2026-10-27T11:00:00Z',
+            consommation_kwh: 420.5,
+            consommation_basse_kwh: 400,
+            consommation_haute_kwh: 440,
+            pic_prevu: false,
+            calculee_le: '2026-10-27T10:05:00Z',
+            version_modele: 'prevision-conso-24h/1',
+          },
+        ],
+      }
+    })
+
+    const series = await fetchSiteSeries('SITE001', '24h')
+
+    expect(series.predictions[0]).toMatchObject({ picKw: null, picBasKw: null, picHautKw: null })
+  })
+
+  it('garde la courbe réelle si les prévisions sont indisponibles', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    stubFetch((url) => {
+      if (url.includes('/predictions')) return { status: 503, body: { detail: 'indisponible' } }
+      return {
+        status: 200,
+        body: [
+          {
+            heure: '2026-10-27T08:00:00Z',
+            consommation_kwh: 10,
+            cout_eur: 1.4,
+            nb_imputees: 0,
+            taux_couverture: 1,
+          },
+        ],
+      }
+    })
+
+    const series = await fetchSiteSeries('SITE001', '24h')
+
+    expect(series.mesures).toHaveLength(1)
+    expect(series.predictions).toEqual([])
+    expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
+  })
+
   it('ne demande la dernière mesure et la consommation du parc qu’une fois', async () => {
     const urls: string[] = []
     stubFetch((url) => {
@@ -288,8 +379,9 @@ describe('mesures : source API', () => {
     await fetchSiteCosts('SITE001')
 
     const debut = (url: string) => new URL(url, 'http://localhost').searchParams.get('debut')
-    expect(debut(urls[0]!)).toBe('2026-10-26T10:00:00.000Z')
-    expect(debut(urls[1]!)).toBe('2026-10-20T10:00:00.000Z')
+    const consommation = urls.filter((url) => url.includes('/consommation'))
+    expect(debut(consommation[0]!)).toBe('2026-10-26T10:00:00.000Z')
+    expect(debut(consommation[1]!)).toBe('2026-10-20T10:00:00.000Z')
   })
 
   it('applique ?simulation= sans appeler l’API', async () => {

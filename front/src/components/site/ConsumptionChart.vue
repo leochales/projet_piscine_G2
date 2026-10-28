@@ -17,6 +17,7 @@ import {
 
 import { MINUTES_RECONSTITUEES_MARQUEES } from '@/lib/etat'
 import { formatAxisHour, formatEurCents, formatKwh, formatKw } from '@/lib/format'
+import { hoursBetween, predictedPeak } from '@/lib/predictions'
 import type { SiteSeries } from '@/types/energy'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler, Tooltip)
@@ -50,9 +51,33 @@ onMounted(() =>
 )
 onBeforeUnmount(() => themeObserver.disconnect())
 
-// Un seul axe horaire : les mesures, puis les prédictions.
+interface ChartPoint {
+  t: string
+  mesure: number | null
+  kwh: number | null
+  cout: number | null
+  imputees: number
+  pred: number | null
+  basse: number | null
+  haute: number | null
+  pic: number | null // maximum de l'heure prévu
+}
+
+const emptyPoint = (t: string): ChartPoint => ({
+  t,
+  mesure: null,
+  kwh: null,
+  cout: null,
+  imputees: 0,
+  pred: null,
+  basse: null,
+  haute: null,
+  pic: null,
+})
+
+// Un seul axe horaire : les mesures, les heures ni closes ni prévues, puis les prédictions.
 // Le dernier point mesuré sert aussi de départ à la prédiction, pour que les courbes se rejoignent.
-const points = computed(() => {
+const points = computed<ChartPoint[]>(() => {
   const { mesures, predictions } = props.series
   // La prévision part de la dernière heure qui a une valeur. Sinon, si cette heure
   // est vide, le trait pointillé ne rejoint plus les mesures.
@@ -63,11 +88,17 @@ const points = computed(() => {
       break
     }
   }
+
+  // L'heure en cours, ni close ni prévue, reste vide : « maintenant » tombe dans la bonne heure
+  const last = mesures[mesures.length - 1]
+  const first = predictions[0]
+  const empty = last && first ? hoursBetween(last.horodatage, first.horodatage).map(emptyPoint) : []
+
   return [
     ...mesures.map((m, i) => {
       const junction = i === junctionAt ? m.kw : null
       return {
-        t: m.horodatage,
+        ...emptyPoint(m.horodatage),
         mesure: m.kw,
         kwh: m.kwh ?? null,
         cout: m.coutEur ?? null,
@@ -77,18 +108,21 @@ const points = computed(() => {
         haute: junction,
       }
     }),
-    ...predictions.slice(1).map((p) => ({
-      t: p.horodatage,
-      mesure: null,
-      kwh: null,
-      cout: null,
-      imputees: 0,
+    ...empty,
+    ...predictions.map((p) => ({
+      ...emptyPoint(p.horodatage),
       pred: p.kw,
       basse: p.basseKw,
       haute: p.hauteKw,
+      pic: p.picKw,
     })),
   ]
 })
+
+// La fourchette n'est dessinée (et légendée) que si le modèle en donne une
+const hasBand = computed(() =>
+  props.series.predictions.some((p) => p.basseKw !== null && p.hauteKw !== null),
+)
 
 // US4 : heures dont une part notable des minutes a été reconstituée après une panne. Marquées
 // d'un point creux sur la courbe : la valeur est en partie estimée, pas mesurée. Les quelques
@@ -98,14 +132,22 @@ const isImputed = (p: { mesure: number | null; imputees: number }) =>
   p.mesure !== null && p.imputees >= MINUTES_RECONSTITUEES_MARQUEES
 const hasImputed = computed(() => points.value.some(isImputed))
 
-const nowIndex = computed(() => props.series.mesures.length - 1)
-
-const peak = computed(() => {
-  let best = { index: -1, kw: -Infinity }
-  points.value.forEach((p, index) => {
-    if (index > nowIndex.value && p.pred !== null && p.pred > best.kw) best = { index, kw: p.pred }
+// Dernière heure commencée : l'heure en cours quand elle est sur l'axe, sinon la dernière mesure
+const nowIndex = computed(() => {
+  const now = Date.now()
+  let index = -1
+  points.value.forEach((p, i) => {
+    if (new Date(p.t).getTime() <= now) index = i
   })
-  return best
+  return index
+})
+
+// Heure du pic prévu, choisie comme dans la page (maximum de l'heure, sinon moyenne).
+// Le rond est posé sur la courbe prévue, à cette heure-là.
+const peakIndex = computed(() => {
+  const peak = predictedPeak(props.series.predictions)
+  if (!peak) return -1
+  return points.value.findIndex((p) => p.t === peak.horodatage && p.mesure === null)
 })
 
 // Heure de Paris, quel que soit le fuseau du poste
@@ -119,12 +161,15 @@ const data = computed<ChartData<'line'>>(() => ({
       data: points.value.map((p) => p.basse),
       borderWidth: 0,
       pointRadius: 0,
+      // Comme la courbe prévue : la bande traverse l'heure en cours, laissée vide
+      spanGaps: true,
     },
     {
       label: 'Fourchette haute',
       data: points.value.map((p) => p.haute),
       borderWidth: 0,
       pointRadius: 0,
+      spanGaps: true,
       backgroundColor: colors.value.band,
       fill: '-1', // remplit jusqu'à la fourchette basse
     },
@@ -148,7 +193,7 @@ const data = computed<ChartData<'line'>>(() => ({
       borderDash: [6, 5],
       spanGaps: true,
       tension: 0.35,
-      pointRadius: points.value.map((_, i) => (i === peak.value.index ? 6 : 0)),
+      pointRadius: points.value.map((_, i) => (i === peakIndex.value ? 6 : 0)),
       pointBorderWidth: 2,
       pointBackgroundColor: 'transparent',
       pointBorderColor: colors.value.ink,
@@ -207,10 +252,23 @@ const options = computed<ChartOptions<'line'>>(() => ({
   plugins: {
     legend: { display: false },
     tooltip: {
-      filter: (item) => item.raw !== null && item.datasetIndex >= 2,
+      // Pas de ligne « Prédiction » sur le point de jonction : c'est la dernière mesure
+      filter: (item) =>
+        item.raw !== null &&
+        item.datasetIndex >= 2 &&
+        !(item.datasetIndex === 3 && points.value[item.dataIndex]?.mesure !== null),
       callbacks: {
         label: (item) => {
           const point = points.value[item.dataIndex]
+          // Heure prévue : moyenne, fourchette et maximum de l'heure quand ils existent
+          if (item.datasetIndex === 3 && point) {
+            const lignes = [`Prédiction : ${formatKw(Number(item.raw))} en moyenne`]
+            if (point.basse !== null && point.haute !== null) {
+              lignes.push(`fourchette : ${formatKw(point.basse)} – ${formatKw(point.haute)}`)
+            }
+            if (point.pic !== null) lignes.push(`maximum de l'heure : ${formatKw(point.pic)}`)
+            return lignes
+          }
           // Heure réelle : kWh et euros. Le tracé reste en kW (les kWh d'une heure).
           if (item.datasetIndex === 2 && point?.kwh != null) {
             const cout = point.cout == null ? '' : ` · ${formatEurCents(point.cout)}`
@@ -237,11 +295,11 @@ const options = computed<ChartOptions<'line'>>(() => ({
       <li class="flex items-center gap-2">
         <span class="h-0.5 w-5 bg-foreground" aria-hidden="true" /> mesures réelles
       </li>
-      <li class="flex items-center gap-2">
+      <li v-if="series.predictions.length" class="flex items-center gap-2">
         <span class="w-5 border-t-2 border-dashed border-foreground" aria-hidden="true" />
         prédiction
       </li>
-      <li class="flex items-center gap-2">
+      <li v-if="hasBand" class="flex items-center gap-2">
         <span class="h-3 w-5 rounded-sm bg-(--chart-canvas-band)" aria-hidden="true" /> fourchette
         (valeur basse – valeur haute)
       </li>

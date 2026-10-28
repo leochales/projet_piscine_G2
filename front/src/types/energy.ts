@@ -71,11 +71,17 @@ export interface SiteStatus {
   retablissementPrevu: string | null // ISO 8601
 }
 
+// Venue de GET /api/sites/{id}/predictions (types/api.ts), convertie par lib/predictions.ts
 export interface PredictionPoint {
-  horodatage: string
-  kw: number
-  basseKw: number // fourchette basse
-  hauteKw: number // fourchette haute
+  horodatage: string // début de l'heure prévue
+  kw: number // moyenne de l'heure
+  // Fourchette de la moyenne, null si le modèle n'en donne pas (prévision de référence)
+  basseKw: number | null
+  hauteKw: number | null
+  // Maximum de l'heure et sa fourchette, null si le modèle ne les calcule pas
+  picKw: number | null
+  picBasKw: number | null
+  picHautKw: number | null
 }
 
 /** Évolution du parc, pour les mini-courbes des KPI */
