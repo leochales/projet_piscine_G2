@@ -1,10 +1,12 @@
 -- =============================================================================
 -- EnerVision : recommandations dans gold (SMARTOPS-40)
--- 15 : règles simples, appliquées par l'ETL aux alertes en cours.
+-- 18 : règles simples, appliquées par l'ETL aux alertes en cours.
 --
--- Les recommandations ne viennent pas du modèle : chaque alerte en cours
--- (gold.alerte, quelle que soit sa source : api_mock, etl ou modele) reçoit une
--- recommandation, tirée de la règle qui correspond à son type et à sa sévérité.
+-- Les recommandations ne viennent pas du modèle : chaque alerte en cours de
+-- gold.alerte reçoit une recommandation, tirée de la règle qui correspond à son
+-- type et à sa sévérité. En pratique, les alertes de l'ETL (threshold, sensor,
+-- 17_gold_alertes.sql) et bientôt celles du modèle (predicted_peak) : celles de
+-- l'API Mock ne sont pas reprises dans gold.alerte.
 -- Rejouable sans effet (db/tools/migrate.sh).
 -- =============================================================================
 
@@ -44,7 +46,7 @@ INSERT INTO gold.regle_recommandation (
 (
     'threshold', 'threshold', null,
     'Réduire la charge',
-    'La consommation dépasse 90 % de la capacité du site. Décaler ou arrêter '
+    'La consommation dépasse le seuil d''alerte du site. Décaler ou arrêter '
     || 'les équipements non essentiels.'
 ),
 (
@@ -102,32 +104,47 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_recommandation_alerte
 ON gold.recommandation (id_alerte) WHERE id_alerte IS NOT null;
 
 
+-- L'ETL lit les décisions pour savoir quelles recommandations sont encore
+-- proposées : l'identifiant seulement, ni qui a décidé ni quand
+GRANT SELECT (id_recommandation) ON app.decision_recommandation TO etl;
+
+
 -- -----------------------------------------------------------------------------
 -- Génération, appelée chaque minute par l'ETL (etl/recommandations.py)
 --
--- Une recommandation par alerte en cours (fin vide) d'un site actif, si elle
--- n'en a pas déjà une. Une alerte terminée garde la sienne.
+-- Une recommandation par alerte en cours (fin vide) d'un site actif. Tant que
+-- personne n'a décidé (pas de ligne dans app.decision_recommandation), elle
+-- suit l'alerte : 17_gold_alertes.sql met à jour sa sévérité et sa valeur à
+-- chaque minute, donc une alerte passée en critical prend la règle critical, et
+-- son gain suit le maximum atteint. Une recommandation acceptée ou refusée ne
+-- change plus : son texte et son gain restent ceux de la décision. Une alerte
+-- terminée garde la sienne telle quelle.
 --
 -- Gain estimé (SMARTOPS-90), seulement pour les dépassements de seuil (types
 -- threshold, spike et predicted_peak, valeur au-dessus du seuil) :
 --   gain = (valeur - seuil) kW × 1 h × prix du kWh, période « unique »,
 -- soit l'énergie évitée en ramenant la consommation au seuil pendant une heure.
+-- La durée de l'alerte n'entre pas dans le calcul : une alerte de 10 minutes et
+-- une alerte de 5 heures au même maximum ont le même gain (choix du MVP).
 -- Pour les autres alertes, le gain n'est pas estimé (vide).
 --
 -- Exécutée avec les droits de l'appelant (compte etl).
--- Retourne le nombre de recommandations créées.
+-- Retourne le nombre de recommandations créées et mises à jour.
 -- -----------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION gold.generer_recommandations(prix_kwh_eur NUMERIC)
-RETURNS BIGINT
+-- Le type de retour a changé (BIGINT avant) : CREATE OR REPLACE ne peut pas
+-- le modifier
+DROP FUNCTION IF EXISTS gold.generer_recommandations(NUMERIC);
+
+CREATE FUNCTION gold.generer_recommandations(prix_kwh_eur NUMERIC)
+RETURNS TABLE (creees BIGINT, mises_a_jour BIGINT)
 -- plpgsql : même raison que gold.calculer_consommation_horaire
 -- (12_gold_horaire.sql)
 LANGUAGE plpgsql
 AS $$
-DECLARE
-    nb BIGINT;
 BEGIN
+    RETURN QUERY
     WITH ecrites AS (
-        INSERT INTO gold.recommandation (
+        INSERT INTO gold.recommandation AS rec (
             id_site, id_alerte, regle, titre, description,
             gain_estime_eur, periode_gain
         )
@@ -159,16 +176,33 @@ BEGIN
         ) AS g
         WHERE a.fin IS null
           AND s.statut = 'active'
-          AND NOT EXISTS (
-              SELECT 1 FROM gold.recommandation AS e
-              WHERE e.id_alerte = a.id_alerte
-          )
-        ON CONFLICT (id_alerte) WHERE id_alerte IS NOT null DO NOTHING
-        RETURNING 1
+        -- Déjà une recommandation : mise à jour si personne n'a décidé et si
+        -- quelque chose a changé (sinon la ligne n'est pas réécrite)
+        ON CONFLICT (id_alerte) WHERE id_alerte IS NOT null DO UPDATE SET
+            regle = excluded.regle,
+            titre = excluded.titre,
+            description = excluded.description,
+            gain_estime_eur = excluded.gain_estime_eur,
+            periode_gain = excluded.periode_gain
+        WHERE NOT EXISTS (
+            SELECT 1 FROM app.decision_recommandation AS d
+            WHERE d.id_recommandation = rec.id_recommandation
+        )
+        AND (
+            rec.regle, rec.titre, rec.description,
+            rec.gain_estime_eur, rec.periode_gain
+        ) IS DISTINCT FROM (
+            excluded.regle, excluded.titre, excluded.description,
+            excluded.gain_estime_eur, excluded.periode_gain
+        )
+        -- old : la ligne avant l'écriture, vide pour une création (PostgreSQL 18)
+        RETURNING old.id_recommandation IS null AS creee
     )
 
-    SELECT count(*) INTO nb FROM ecrites;
-    RETURN nb;
+    SELECT
+        count(*) FILTER (WHERE e.creee),
+        count(*) FILTER (WHERE NOT e.creee)
+    FROM ecrites AS e;
 END;
 $$;
 

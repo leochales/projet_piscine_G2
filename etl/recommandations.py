@@ -9,7 +9,9 @@ en CI par db/tests/test_gold_recommandations.sql :
   - table gold.regle_recommandation : règle exacte, sinon règle du type,
     sinon règle générique ;
   - fonction gold.generer_recommandations(prix) : une recommandation par
-    alerte en cours, avec un gain estimé pour les dépassements de seuil.
+    alerte en cours, avec un gain estimé pour les dépassements de seuil ;
+    tant que personne n'a décidé, elle suit la sévérité et la valeur de
+    l'alerte.
 
 Le prix du kWh vient de PRIX_KWH_EUR (common/config.py), comme pour l'API.
 """
@@ -27,13 +29,15 @@ from common.logs import configure_logging
 logger = logging.getLogger(__name__)
 
 
-def generate() -> int:
-    """Crée les recommandations des alertes en cours. Retourne leur nombre."""
-    sql = text("SELECT gold.generer_recommandations(:prix)")
+def generate() -> dict[str, int]:
+    """Crée et met à jour les recommandations des alertes en cours."""
+    sql = text("SELECT creees, mises_a_jour FROM gold.generer_recommandations(:prix)")
     with get_engine().begin() as conn:
-        nb = int(conn.execute(sql, {"prix": get_settings().prix_kwh_eur}).scalar_one())
-    logger.info("%d recommandation(s) créée(s)", nb)
-    return nb
+        row = conn.execute(sql, {"prix": get_settings().prix_kwh_eur}).one()
+    logger.info(
+        "%d recommandation(s) créée(s), %d mise(s) à jour", row.creees, row.mises_a_jour
+    )
+    return {"creees": row.creees, "mises_a_jour": row.mises_a_jour}
 
 
 if __name__ == "__main__":

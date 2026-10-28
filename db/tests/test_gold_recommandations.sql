@@ -67,11 +67,14 @@ SET ROLE etl;
 
 DO $$
 DECLARE
-    nb BIGINT;
+    creees BIGINT;
+    mises_a_jour BIGINT;
     r RECORD;
 BEGIN
-    nb := gold.generer_recommandations(0.20);
-    ASSERT nb = 5, format('5 recommandations attendues, %s', nb);
+    SELECT g.creees, g.mises_a_jour INTO creees, mises_a_jour
+    FROM gold.generer_recommandations(0.20) AS g;
+    ASSERT creees = 5, format('5 recommandations attendues, %s', creees);
+    ASSERT mises_a_jour = 0, format('aucune mise à jour attendue, %s', mises_a_jour);
 
     FOR r IN
         SELECT a.message, rec.regle, rec.gain_estime_eur, rec.periode_gain
@@ -106,13 +109,16 @@ BEGIN
 END
 $$;
 
--- 2. Rejouer ne crée pas de doublon
+-- 2. Rejouer ne crée pas de doublon et ne réécrit rien
 DO $$
 DECLARE
-    nb BIGINT;
+    creees BIGINT;
+    mises_a_jour BIGINT;
 BEGIN
-    nb := gold.generer_recommandations(0.20);
-    ASSERT nb = 0, format('aucune nouvelle recommandation attendue, %s', nb);
+    SELECT g.creees, g.mises_a_jour INTO creees, mises_a_jour
+    FROM gold.generer_recommandations(0.20) AS g;
+    ASSERT creees = 0, format('aucune nouvelle recommandation attendue, %s', creees);
+    ASSERT mises_a_jour = 0, format('aucune mise à jour attendue, %s', mises_a_jour);
     RAISE NOTICE 'OK 2 : rejouable sans doublon';
 END
 $$;
@@ -140,7 +146,61 @@ BEGIN
 END
 $$;
 
--- 4. Le compte etl lit les règles sans pouvoir les modifier, et le modèle ne
+-- 4. Tant que personne n'a décidé, la recommandation suit l'alerte ; une
+--    recommandation décidée ne change plus. 17_gold_alertes.sql fait passer
+--    r2 en critical à 600 kW, et r1, déjà acceptée, monte à 700 kW.
+RESET ROLE;
+INSERT INTO app.utilisateur (id) VALUES
+('00000000-0000-0000-0000-0000000000d1');
+INSERT INTO app.decision_recommandation (
+    id_recommandation, id_utilisateur, statut
+)
+SELECT
+    rec.id_recommandation,
+    '00000000-0000-0000-0000-0000000000d1' AS id_utilisateur,
+    'acceptee' AS statut
+FROM gold.recommandation AS rec
+INNER JOIN gold.alerte AS a ON rec.id_alerte = a.id_alerte
+WHERE a.message = 'r1';
+UPDATE gold.alerte SET severite = 'critical', valeur = 600
+WHERE message = 'r2';
+UPDATE gold.alerte SET valeur = 700
+WHERE message = 'r1';
+SET ROLE etl;
+
+DO $$
+DECLARE
+    creees BIGINT;
+    mises_a_jour BIGINT;
+    r RECORD;
+BEGIN
+    SELECT g.creees, g.mises_a_jour INTO creees, mises_a_jour
+    FROM gold.generer_recommandations(0.20) AS g;
+    ASSERT creees = 0, format('aucune nouvelle recommandation attendue, %s', creees);
+    ASSERT mises_a_jour = 1, format('1 mise à jour attendue (r2), %s', mises_a_jour);
+
+    FOR r IN
+        SELECT a.message, rec.regle, rec.titre, rec.gain_estime_eur
+        FROM gold.recommandation AS rec
+        INNER JOIN gold.alerte AS a ON rec.id_alerte = a.id_alerte
+        WHERE a.message IN ('r1', 'r2')
+    LOOP
+        CASE r.message
+            WHEN 'r1' THEN
+                -- Acceptée : gain de la décision (120 kW), pas celui de 700 kW
+                ASSERT r.gain_estime_eur = 24.00, format('r1 gain : %s', r.gain_estime_eur);
+            WHEN 'r2' THEN
+                ASSERT r.regle = 'threshold_critical', format('r2 : %s', r.regle);
+                ASSERT r.titre = 'Délestage d''urgence', format('r2 titre : %s', r.titre);
+                -- 150 kW × 1 h × 0,20 €
+                ASSERT r.gain_estime_eur = 30.00, format('r2 gain : %s', r.gain_estime_eur);
+        END CASE;
+    END LOOP;
+    RAISE NOTICE 'OK 4 : suit l''alerte tant que proposée, figée après décision';
+END
+$$;
+
+-- 5. Le compte etl lit les règles sans pouvoir les modifier, et le modèle ne
 --    peut pas générer de recommandations
 DO $$
 BEGIN
@@ -150,7 +210,7 @@ BEGIN
     EXCEPTION WHEN insufficient_privilege THEN
         NULL;  -- refus attendu
     END;
-    RAISE NOTICE 'OK 4 : etl lit les règles sans les modifier';
+    RAISE NOTICE 'OK 5 : etl lit les règles sans les modifier';
 END
 $$;
 
@@ -165,7 +225,7 @@ BEGIN
     EXCEPTION WHEN insufficient_privilege THEN
         NULL;  -- refus attendu
     END;
-    RAISE NOTICE 'OK 5 : le modèle ne génère pas de recommandations';
+    RAISE NOTICE 'OK 6 : le modèle ne génère pas de recommandations';
 END
 $$;
 
