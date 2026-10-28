@@ -56,6 +56,8 @@ jobs:
       FRONT_URL: https://localhost:8443
       # Nom d'hôte accepté par les routes Traefik (IP de la VM en déploiement)
       PUBLIC_HOST: localhost
+      # Schemathesis lit le contrat sur /api/openapi.json (masqué par défaut dans compose-prod.yml)
+      API_DOCS_ENABLED: "true"
     steps:
       # Pas de jeton dans .git/config : le job a packages: write et exécute le code de la PR
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -154,12 +156,12 @@ jobs:
           location=$(curl -sk -o /dev/null -w '%header{location}' "$base/assets")
           [ "$location" = "/assets/" ] || { echo "::error::Redirection de nginx inattendue : '$location'"; exit 1; }
           # Autre nom d'hôte : 404 de Traefik, sans redirection vers cet hôte, en HTTPS
-          # comme en HTTP (infra/traefik/redirections.yml)
+          # comme en HTTP (infra/traefik/dynamic/redirections.yml)
           for url in "$base/api/health/" "$base/assets" "$base/" http://localhost:8080/; do
             result=$(curl -sk -o /dev/null -w '%{http_code} %header{location}' -H "Host: evil.example" "$url")
             [ "$result" = "404 " ] || { echo "::error::Host: evil.example accepté sur $url : '$result'"; exit 1; }
           done
-          # En-têtes de sécurité (infra/traefik/middlewares.yml) et leur valeur, sans version
+          # En-têtes de sécurité (infra/traefik/dynamic/middlewares.yml) et leur valeur, sans version
           # dans Server. Chaque attendu est le début de la ligne d'en-tête.
           check_headers() {
             local path=$1

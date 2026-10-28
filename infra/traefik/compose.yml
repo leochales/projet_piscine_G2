@@ -37,9 +37,9 @@ services:
       - --providers.docker.endpoint=tcp://socket-proxy:2375
       - --providers.docker.exposedbydefault=false
       - --providers.docker.network=traefik_public
-      # Configuration dynamique : certificat par défaut (dynamic.yml), en-têtes de
-      # sécurité (middlewares.yml, partagé avec le Traefik local) et redirections
-      # HTTP → HTTPS pour PUBLIC_HOST seulement (redirections.yml)
+      # Configuration dynamique (dossier dynamic/) : certificat par défaut (dynamic.yml),
+      # en-têtes de sécurité (middlewares.yml, partagé avec le Traefik local) et
+      # redirections HTTP → HTTPS pour PUBLIC_HOST seulement (redirections.yml)
       - --providers.file.directory=/etc/traefik/dynamic
       - --entrypoints.http-prod.address=:80
       - --entrypoints.https-prod.address=:443
@@ -56,9 +56,10 @@ services:
       - "8080:8080"
       - "8443:8443"
     volumes:
-      - ./dynamic.yml:/etc/traefik/dynamic/dynamic.yml:ro
-      - ./middlewares.yml:/etc/traefik/dynamic/middlewares.yml:ro
-      - ./redirections.yml:/etc/traefik/dynamic/redirections.yml:ro
+      # Dossier monté en entier, pas fichier par fichier : git checkout remplace les
+      # fichiers modifiés (nouvel inode), qu'un montage de fichier ne verrait pas. Traefik
+      # surveille le dossier et recharge un changement sans redémarrer.
+      - ./dynamic:/etc/traefik/dynamic:ro
       - ${TLS_CERT_DIR:?TLS_CERT_DIR manquant}:/certs:ro
     networks:
       - public

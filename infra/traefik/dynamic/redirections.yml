@@ -10,22 +10,22 @@ http:
     http-prod:
       entryPoints: [http-prod]
       rule: 'Host(`{{ env "PUBLIC_HOST" }}`)'
-      middlewares: [https-prod]
+      middlewares: [redirect-https-prod]
       service: noop@internal
     http-dev:
       entryPoints: [http-dev]
       rule: 'Host(`{{ env "PUBLIC_HOST" }}`)'
-      middlewares: [https-dev]
+      middlewares: [redirect-https-dev]
       service: noop@internal
 
   middlewares:
     # Port 443 omis dans l'adresse, comme le fait le navigateur
-    https-prod:
+    redirect-https-prod:
       redirectScheme:
         scheme: https
         port: "443"
         permanent: true
-    https-dev:
+    redirect-https-dev:
       redirectScheme:
         scheme: https
         port: "8443"

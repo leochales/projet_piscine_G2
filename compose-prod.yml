@@ -83,7 +83,7 @@ services:
       # métriques restent sur le port de gestion (9000), non routé.
       - traefik.http.routers.enervision-${DEPLOY_ENV}-auth.rule=Host(`${PUBLIC_HOST:?PUBLIC_HOST manquant}`) && PathPrefix(`/auth`)
       - traefik.http.routers.enervision-${DEPLOY_ENV}-auth.entrypoints=https-${DEPLOY_ENV}
-      # En-têtes de sécurité (infra/traefik/middlewares.yml)
+      # En-têtes de sécurité (infra/traefik/dynamic/middlewares.yml)
       - traefik.http.routers.enervision-${DEPLOY_ENV}-auth.middlewares=auth-headers@file
       - traefik.http.services.enervision-${DEPLOY_ENV}-auth.loadbalancer.server.port=8080
     healthcheck:
@@ -125,8 +125,9 @@ services:
       KEYCLOAK_URL_INTERNE: http://keycloak-${DEPLOY_ENV}:8080/auth
       # Front et API partagent la même origine derrière Traefik : aucun appel cross-origin
       API_CORS_ORIGINS: "[]"
-      # Swagger et openapi.json en dev seulement (Schemathesis tourne en CI sur dev)
-      API_DOCS_ENABLED: ${API_DOCS_ENABLED:-true}
+      # Swagger et openapi.json masqués sauf demande explicite : true en dev (deploy.yml)
+      # et en CI, où Schemathesis lit /api/openapi.json (images.yml)
+      API_DOCS_ENABLED: ${API_DOCS_ENABLED:-false}
       # Création des comptes (client enervision-admin) et comptes de démonstration
       # (api/seed.py) ; sans SEED_PASSWORD (secret <ENV>_SEED_PASSWORD), pas de seeding
       KEYCLOAK_ADMIN_CLIENT_SECRET: ${KEYCLOAK_ADMIN_CLIENT_SECRET}
@@ -137,7 +138,7 @@ services:
       - traefik.enable=true
       - traefik.http.routers.enervision-${DEPLOY_ENV}-api.rule=Host(`${PUBLIC_HOST:?PUBLIC_HOST manquant}`) && PathPrefix(`/api`)
       - traefik.http.routers.enervision-${DEPLOY_ENV}-api.entrypoints=https-${DEPLOY_ENV}
-      # En-têtes de sécurité (infra/traefik/middlewares.yml)
+      # En-têtes de sécurité (infra/traefik/dynamic/middlewares.yml)
       - traefik.http.routers.enervision-${DEPLOY_ENV}-api.middlewares=security-headers@file
       - traefik.http.services.enervision-${DEPLOY_ENV}-api.loadbalancer.server.port=8000
     depends_on:

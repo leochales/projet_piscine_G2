@@ -21,12 +21,6 @@ def app_sans_docs(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
         importlib.reload(api.main)
 
 
-def test_swagger_et_openapi_sont_publies_par_defaut() -> None:
-    client = TestClient(api.main.app)
-    assert client.get("/api/docs").status_code == 200
-    assert client.get("/api/openapi.json").status_code == 200
-
-
 def test_swagger_et_openapi_masques_quand_les_docs_sont_desactivees(
     app_sans_docs: TestClient,
 ) -> None:

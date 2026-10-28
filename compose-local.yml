@@ -41,7 +41,7 @@ services:
     volumes:
       # Lecture seule : Traefik ne fait que lister les conteneurs et leurs labels
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./infra/traefik/middlewares.yml:/etc/traefik/middlewares.yml:ro
+      - ./infra/traefik/dynamic/middlewares.yml:/etc/traefik/middlewares.yml:ro
     networks:
       - proxy_network
 
