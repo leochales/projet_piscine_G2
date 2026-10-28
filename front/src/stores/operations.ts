@@ -5,7 +5,6 @@ import {
   acknowledgeAlert,
   decideRecommendation,
   fetchAlerts,
-  fetchPreviousSavings,
   fetchRecommendations,
 } from '@/services/dashboard'
 import { decidedThisMonth } from '@/lib/recommendations'
@@ -31,7 +30,6 @@ export function monthlyGain(rec: Recommendation) {
 export const useOperationsStore = defineStore('operations', () => {
   const alerts = ref<Alert[]>([])
   const recommendations = ref<Recommendation[]>([])
-  const previousSavings = ref(0)
   const loaded = ref(false)
   // Alertes et recommandations dont l'action est en cours d'envoi : leurs boutons sont bloqués,
   // un double clic n'envoie pas deux fois la même action
@@ -88,14 +86,12 @@ export const useOperationsStore = defineStore('operations', () => {
     if (loaded.value) return Promise.resolve()
     loading ??= (async () => {
       try {
-        const [alertList, recommendationList, previous] = await Promise.all([
+        const [alertList, recommendationList] = await Promise.all([
           fetchLatestAlerts(),
           fetchLatestRecommendations(),
-          fetchPreviousSavings(),
         ])
         if (alertList) alerts.value = alertList
         if (recommendationList) recommendations.value = recommendationList
-        previousSavings.value = previous
         loaded.value = true
       } finally {
         loading = null
@@ -178,14 +174,12 @@ export const useOperationsStore = defineStore('operations', () => {
     () => pendingAlerts.value.filter((a) => a.gravite === 'critique').length,
   )
 
-  // Économies du mois = déjà réalisées + gains mensuels des recommandations acceptées ce
-  // mois-ci. Une recommandation acceptée un mois précédent ne compte plus.
-  const savings = computed(
-    () =>
-      previousSavings.value +
-      recommendations.value
-        .filter((r) => r.statut === 'acceptee' && decidedThisMonth(r))
-        .reduce((total, r) => total + monthlyGain(r), 0),
+  // Économies du mois : gains des recommandations acceptées depuis le 1er (un gain
+  // hebdomadaire est ramené au mois). Une acceptée un mois précédent ne compte plus.
+  const savings = computed(() =>
+    recommendations.value
+      .filter((r) => r.statut === 'acceptee' && decidedThisMonth(r))
+      .reduce((total, r) => total + monthlyGain(r), 0),
   )
 
   return {
