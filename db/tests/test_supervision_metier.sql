@@ -70,15 +70,17 @@ BEGIN
         coalesce(sum(c.consommation_kwh), 0)
     INTO somme_ecarts, somme_reelle
     FROM (
-        SELECT DISTINCT ON (id_site, heure_prevue)
-            id_site,
-            heure_prevue,
-            consommation_prevue_kwh
-        FROM gold.prediction
+        SELECT DISTINCT ON (p.id_site, p.heure_prevue)
+            p.id_site,
+            p.heure_prevue,
+            p.consommation_prevue_kwh
+        FROM gold.prediction AS p
+        INNER JOIN app.site AS s ON p.id_site = s.id_site
         WHERE
-            heure_prevue >= date_trunc('hour', now()) - interval '24 hours'
-            AND heure_prevue < date_trunc('hour', now())
-        ORDER BY id_site ASC, heure_prevue ASC, calculee_le DESC
+            s.statut = 'active'
+            AND p.heure_prevue >= date_trunc('hour', now()) - interval '24 hours'
+            AND p.heure_prevue < date_trunc('hour', now())
+        ORDER BY p.id_site ASC, p.heure_prevue ASC, p.calculee_le DESC
     ) AS p
     INNER JOIN gold.consommation_horaire AS c
         ON p.id_site = c.id_site AND p.heure_prevue = c.heure
@@ -101,12 +103,18 @@ BEGIN
     -- Minute la plus récente, enregistrée il y a 2 jours : ce n'est pas
     -- la dernière collecte, et elle est hors des 24 h comptées.
     -- Minute ancienne rattrapée maintenant : c'est la collecte, et elle compte.
-    -- Le site inactif a un enregistrement encore plus récent : ignoré.
+    -- Le site inactif a été enregistré il y a une minute (jamais dans le
+    -- futur) : il est dans les 24 h, et il ne compte pas.
     INSERT INTO bronze.raw_readings (id_site, horodatage, ingested_at, payload)
     VALUES
     ('SITE-SUP', now(), ingestion_recente - interval '2 days', '{}'),
     ('SITE-SUP', now() - interval '1 day', ingestion_recente, '{}'),
-    ('SITE-OFF', now(), ingestion_recente + interval '1 hour', '{}');
+    (
+        'SITE-OFF',
+        ingestion_recente - interval '1 minute',
+        ingestion_recente - interval '1 minute',
+        '{}'
+    );
 
     INSERT INTO gold.derniere_mesure (
         id_site, horodatage, consommation_kw, data_quality
@@ -133,7 +141,9 @@ BEGIN
     ('SITE-SUP', heure_passee, 500, 'test', now() - interval '1 hour'),
     ('SITE-SUP', heure_passee, 110, 'test', now()),
     ('SITE-SUP', heure_passee - interval '1 hour', 999, 'test', now()),
-    ('SITE-SUP', heure_ancienne, 999, 'test', now());
+    ('SITE-SUP', heure_ancienne, 999, 'test', now()),
+    -- Site inactif, heure complète récente : hors de l'écart.
+    ('SITE-OFF', heure_passee, 999, 'test', now());
 
     INSERT INTO gold.alerte (id_site, source, type, severite, debut)
     VALUES
@@ -149,12 +159,12 @@ BEGIN
     taux_attendu := (
         100 * (somme_imputees + 12) / (somme_mesures + 60)
     )::double precision;
-    ASSERT apres.valeurs_imputees = taux_attendu,
+    ASSERT apres.taux_imputation_pct = taux_attendu,
     'le taux d''imputation ignore l''heure ancienne, l''incomplète et le site inactif';
     ASSERT apres.puissance_kw = avant.puissance_kw + 80,
     'la puissance ignore le site inactif et celui qui ne transmet plus';
-    ASSERT apres.previsions_ecrites = avant.previsions_ecrites + 4,
-    'les quatre prévisions insérées doivent être comptées';
+    ASSERT apres.previsions_ecrites = avant.previsions_ecrites + 5,
+    'les cinq prévisions insérées doivent être comptées';
     ASSERT apres.alertes_en_cours = avant.alertes_en_cours + 1,
     'l''alerte du site inactif ne compte pas';
     ASSERT apres.derniere_collecte_epoch = extract(EPOCH FROM ingestion_recente),
@@ -162,7 +172,8 @@ BEGIN
     ASSERT apres.dernier_calcul_epoch IS NOT null,
     'le dernier calcul doit avoir un horodatage';
     -- 110 prévu, 100 réel : +10 au numérateur, +100 au dénominateur.
-    -- L'heure incomplète, l'heure ancienne et la prévision périmée restent dehors.
+    -- L'heure incomplète, l'heure ancienne, la prévision périmée et le site
+    -- inactif restent dehors.
     ecart_attendu := (
         100 * (somme_ecarts + 10) / (somme_reelle + 100)
     )::double precision;

@@ -90,7 +90,7 @@
       "id": 4,
       "type": "stat",
       "title": "Taux d'imputation",
-      "description": "Part des minutes imputées sur les heures complètes des dernières 24 h, sites actifs. Une heure incomplète ou trop ancienne ne compte pas.",
+      "description": "Part des minutes imputées sur les heures complètes des dernières 24 h, sites actifs. Une heure incomplète ou trop ancienne ne compte pas. Orange à partir de 10 %, rouge à partir de 30 %.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 5, "w": 6, "x": 12, "y": 1 },
       "fieldConfig": {
@@ -101,7 +101,11 @@
           "color": { "mode": "thresholds" },
           "thresholds": {
             "mode": "absolute",
-            "steps": [{ "color": "purple", "value": null }]
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 10 },
+              { "color": "red", "value": 30 }
+            ]
           }
         },
         "overrides": []
@@ -115,7 +119,7 @@
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "enervision_valeurs_imputees",
+          "expr": "enervision_taux_imputation_pct",
           "instant": true
         }
       ]

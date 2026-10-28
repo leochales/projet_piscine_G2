@@ -8,7 +8,7 @@ enervision:
     SELECT
         mesures_collectees,
         derniere_collecte_epoch,
-        valeurs_imputees,
+        taux_imputation_pct,
         puissance_kw,
         previsions_ecrites,
         dernier_calcul_epoch,
@@ -26,7 +26,7 @@ enervision:
     - derniere_collecte_epoch:
         usage: "GAUGE"
         description: "Horodatage Unix du dernier enregistrement dans bronze"
-    - valeurs_imputees:
+    - taux_imputation_pct:
         usage: "GAUGE"
         description: "Part des minutes imputées sur les heures complètes des dernières 24 h, en %"
     - puissance_kw:

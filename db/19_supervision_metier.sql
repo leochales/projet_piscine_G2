@@ -7,43 +7,66 @@
 -- s'exécute avec les droits de son propriétaire, pas avec ceux de monitoring.
 --
 -- Ce qui grossit avec l'historique est borné à 24 h (collecte, imputation,
--- écart prévu/réel) : une dérive récente reste visible, et la lecture ne
--- trie plus toutes les prévisions ni ne compte bronze et silver en entier.
--- La puissance ne garde que les sites actifs dont la mesure a moins de
--- 5 minutes, comme « transmet » dans gold.etat_site. Le nombre de
--- prévisions et la date du dernier calcul restent globaux : gold.prediction
--- est horaire, et le tableau veut ce stock. postgres-exporter met le
--- résultat en cache 60 s (cache_seconds de queries.yaml).
+-- écart prévu/réel) : une dérive récente reste visible. Collecte et
+-- prévisions sont lues pour chaque site actif sur la clé (id_site, …) :
+-- le filtre de 24 h seul ne peut pas utiliser la clé de gold.prediction,
+-- qui commence par id_site. L'imputation se lit dans
+-- gold.consommation_horaire. La puissance ne garde que les sites actifs
+-- dont la mesure a moins de 5 minutes, comme « transmet » dans
+-- gold.etat_site. Le nombre de prévisions et la date du dernier calcul
+-- restent globaux : gold.prediction est horaire, et le tableau veut ce
+-- stock. postgres-exporter met le résultat en cache 60 s
+-- (cache_seconds de queries.yaml).
 --
--- Rejouable (db/tools/migrate.sh) : CREATE OR REPLACE, index IF NOT EXISTS,
--- GRANT.
+-- Rejouable (db/tools/migrate.sh). L'index est créé hors transaction :
+-- CONCURRENTLY est refusé dans un BEGIN, et un index classique bloquerait
+-- les écritures de l'ETL sur bronze pendant toute sa construction. La vue
+-- est détruite puis recréée : CREATE OR REPLACE refuse de renommer une
+-- colonne. Puis GRANT.
 -- =============================================================================
-
-BEGIN;
 
 -- Dernière ingestion et volume des 24 h : une lecture d'index par site actif.
 -- ingested_at, pas horodatage : un rattrapage de minutes anciennes a une
 -- vieille minute de mesure, mais une date d'enregistrement récente.
-CREATE INDEX IF NOT EXISTS idx_raw_readings_site_ingested
+-- Au déploiement suivant, IF NOT EXISTS ne reconstruit pas l'index.
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_raw_readings_site_ingested
 ON bronze.raw_readings (id_site, ingested_at DESC);
 
-CREATE OR REPLACE VIEW gold.supervision_metier AS
+BEGIN;
+
+-- valeurs_imputees est devenu un pourcentage : autre nom, pour ne pas
+-- mélanger d'anciens totaux et des pourcentages dans la même série Prometheus.
+DROP VIEW IF EXISTS gold.supervision_metier;
+
+CREATE VIEW gold.supervision_metier AS
 WITH bornes AS (
     SELECT
         date_trunc('hour', now()) AS heure_courante,
         date_trunc('hour', now()) - interval '24 hours' AS depuis
 ),
 
--- Dernière prévision de chaque heure déjà écoulée, sur 24 h seulement.
+-- Dernière prévision de chaque heure déjà écoulée, sur 24 h.
+-- Un site à la fois : la clé (id_site, heure_prevue, calculee_le) sert.
 derniere_prevision AS (
-    SELECT DISTINCT ON (p.id_site, p.heure_prevue)
-        p.id_site,
+    SELECT
+        s.id_site,
         p.heure_prevue,
         p.consommation_prevue_kwh
-    FROM gold.prediction AS p
+    FROM app.site AS s
     CROSS JOIN bornes AS b
-    WHERE p.heure_prevue >= b.depuis AND p.heure_prevue < b.heure_courante
-    ORDER BY p.id_site ASC, p.heure_prevue ASC, p.calculee_le DESC
+    CROSS JOIN
+        LATERAL (
+            SELECT DISTINCT ON (pr.heure_prevue)
+                pr.heure_prevue,
+                pr.consommation_prevue_kwh
+            FROM gold.prediction AS pr
+            WHERE
+                pr.id_site = s.id_site
+                AND pr.heure_prevue >= b.depuis
+                AND pr.heure_prevue < b.heure_courante
+            ORDER BY pr.heure_prevue ASC, pr.calculee_le DESC
+        ) AS p
+    WHERE s.statut = 'active'
 ),
 
 derniere_collecte AS (
@@ -96,7 +119,7 @@ SELECT
             AND h.heure_complete
             AND h.heure >= b.depuis
             AND h.heure < b.heure_courante
-    ) AS valeurs_imputees,
+    ) AS taux_imputation_pct,
     (
         SELECT coalesce(sum(d.consommation_kw), 0)
         FROM gold.derniere_mesure AS d
