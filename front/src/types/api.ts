@@ -6,6 +6,7 @@ export interface DerniereMesureApi {
   nom: string
   type: string
   capacite_kw: number
+  seuil_alerte_pct: number // seuil d'alerte du site, en % de la capacité
   horodatage: string
   consommation_kw: number | null
   data_quality: 'good' | 'partial' | 'degraded' | 'critical'

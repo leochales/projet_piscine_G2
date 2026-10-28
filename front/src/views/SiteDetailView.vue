@@ -43,8 +43,6 @@ import { useOperationsStore } from '@/stores/operations'
 const props = defineProps<{ siteId?: string }>()
 const router = useRouter()
 
-const SEUIL_PCT = SEUIL_ALERTE_PCT
-
 const range = ref<SeriesRange>('24h')
 
 // En type="single", recliquer sur le bouton actif le désélectionne : on garde alors le choix
@@ -95,6 +93,9 @@ const actionsNotice = useActionsNotice()
 const freshness = useAutoRefresh([siteList, site, costs, series, statuses, alerts, recommendations])
 
 const current = computed(() => site.data.value)
+// Seuil du site, celui de l'ETL et du modèle : comparer à 90 % partout ferait annoncer un
+// risque sur un data center (seuil 100 %) sans qu'aucune alerte ne soit jamais créée
+const seuilPct = computed(() => current.value?.site.seuilAlertePct ?? SEUIL_ALERTE_PCT)
 const notFound = computed(() => site.status.value === 'success' && !site.data.value)
 const seriesIsEmpty = computed(() => series.data.value?.data.mesures.length === 0)
 
@@ -111,7 +112,7 @@ const peak = computed(() => {
   const site = current.value?.site
   const top = predictions.value ? predictedPeak(predictions.value) : null
   if (!site || !top) return null
-  const seuilKw = (site.capaciteKw * SEUIL_PCT) / 100
+  const seuilKw = (site.capaciteKw * seuilPct.value) / 100
   return {
     ...top,
     depasseSeuil: top.hauteKw === null ? null : top.hauteKw > seuilKw,
@@ -278,7 +279,7 @@ const openSite = (siteId: string) => router.push({ name: 'sites', params: { site
           v-else-if="series.data.value"
           :series="series.data.value.data"
           :capacite-kw="current.site.capaciteKw"
-          :seuil-pct="SEUIL_PCT"
+          :seuil-pct="seuilPct"
         />
         <div v-else role="status" aria-live="polite">
           <span class="sr-only">Chargement de la courbe…</span>
@@ -305,16 +306,16 @@ const openSite = (siteId: string) => router.push({ name: 'sites', params: { site
         <CardHeader><CardTitle>Ce que dit la fourchette</CardTitle></CardHeader>
         <CardContent class="text-sm text-muted-foreground">
           <template v-if="peak?.depasseSeuil">
-            La borne haute du pic dépasse {{ SEUIL_PCT }} % de la capacité : risque réel de
+            La borne haute du pic dépasse {{ seuilPct }} % de la capacité : risque réel de
             dépassement, une recommandation est proposée.
           </template>
           <template v-else-if="peak?.depasseSeuil === false">
-            Même la borne haute du pic reste sous {{ SEUIL_PCT }} % de la capacité : pas de risque
-            de dépassement.
+            Même la borne haute du pic reste sous {{ seuilPct }} % de la capacité : pas de risque de
+            dépassement.
           </template>
           <template v-else-if="peak">
             Cette prévision n'a pas de fourchette. Le pic prévu est
-            {{ peak.valeurDepasseSeuil ? 'au-dessus' : 'en dessous' }} de {{ SEUIL_PCT }} % de la
+            {{ peak.valeurDepasseSeuil ? 'au-dessus' : 'en dessous' }} de {{ seuilPct }} % de la
             capacité, sans marge d'erreur connue.
           </template>
           <template v-else-if="noPrediction">Pas de prévision disponible pour le moment.</template>

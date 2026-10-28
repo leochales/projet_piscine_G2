@@ -10,6 +10,9 @@ export interface Site {
   // Libellé connu (SiteType) ou le type renvoyé par l'API s'il n'est pas encore traduit
   type: SiteType | (string & {})
   capaciteKw: number
+  // Seuil d'alerte en % de la capacité, propre au site (100 pour un data center, 98 pour une
+  // usine, 90 sinon). Absent des données simulées : SEUIL_ALERTE_PCT (lib/indicators.ts).
+  seuilAlertePct?: number
 }
 
 export type DataQuality =

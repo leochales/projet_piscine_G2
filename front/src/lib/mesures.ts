@@ -46,6 +46,7 @@ export function toSiteOverview(api: DerniereMesureApi): SiteOverview {
       nom: api.nom,
       type: SITE_TYPES[api.type] ?? api.type,
       capaciteKw: api.capacite_kw,
+      seuilAlertePct: api.seuil_alerte_pct,
     },
     consommationKw: api.consommation_kw,
     mesureLe: api.horodatage,
@@ -56,13 +57,24 @@ export function toSiteOverview(api: DerniereMesureApi): SiteOverview {
 }
 
 /**
- * Heure présente : kWh et coût. Les kWh d'une heure sont la puissance moyenne, en kW.
- * Une heure sans mesure est gardée (kw null) : la courbe s'interrompt à cet endroit.
+ * Puissance moyenne de l'heure, en kW, sur les minutes reçues. gold additionne les kW de
+ * chaque minute × 1/60 h : avec 52 minutes sur 60, les kWh sont sous-estimés d'environ 13 %
+ * et la courbe plongerait sans que le site ait moins consommé. Diviser par la couverture
+ * redonne la moyenne réelle. Les kWh et le coût, eux, restent ceux reçus.
+ */
+function puissanceMoyenne(api: ConsommationHoraireApi): number | null {
+  if (api.consommation_kwh === null || api.taux_couverture <= 0) return api.consommation_kwh
+  return api.consommation_kwh / api.taux_couverture
+}
+
+/**
+ * Heure présente : kWh, coût et puissance moyenne. Une heure sans mesure est gardée
+ * (kw null) : la courbe s'interrompt à cet endroit.
  */
 export function toConsumptionPoint(api: ConsommationHoraireApi): ConsumptionPoint {
   return {
     horodatage: api.heure,
-    kw: api.consommation_kwh,
+    kw: puissanceMoyenne(api),
     kwh: api.consommation_kwh,
     coutEur: api.cout_eur,
     minutesImputees: api.nb_imputees,

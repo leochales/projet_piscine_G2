@@ -159,6 +159,7 @@ describe('mesures : source API', () => {
     nom: 'Bureau Paris La Défense',
     type: 'office',
     capacite_kw: 200,
+    seuil_alerte_pct: 90,
     horodatage: '2026-10-27T09:05:00Z',
     consommation_kw: 120,
     data_quality: 'good',

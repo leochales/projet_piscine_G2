@@ -17,6 +17,7 @@ const mesure = (partiel: Partial<DerniereMesureApi> = {}): DerniereMesureApi => 
   nom: 'Usine Lyon Vénissieux',
   type: 'factory',
   capacite_kw: 1000,
+  seuil_alerte_pct: 98,
   horodatage: '2026-10-27T09:05:00Z',
   consommation_kw: 640,
   data_quality: 'good',
@@ -26,7 +27,13 @@ const mesure = (partiel: Partial<DerniereMesureApi> = {}): DerniereMesureApi => 
 describe('dernière mesure', () => {
   it('reprend le site, la puissance et l’heure', () => {
     expect(toSiteOverview(mesure())).toMatchObject({
-      site: { id: 'SITE002', nom: 'Usine Lyon Vénissieux', type: 'usine', capaciteKw: 1000 },
+      site: {
+        id: 'SITE002',
+        nom: 'Usine Lyon Vénissieux',
+        type: 'usine',
+        capaciteKw: 1000,
+        seuilAlertePct: 98,
+      },
       consommationKw: 640,
       mesureLe: '2026-10-27T09:05:00Z',
       picPrevu: null,
@@ -82,6 +89,17 @@ describe('consommation horaire', () => {
       minutesImputees: 0,
       couverture: 0,
     })
+  })
+
+  it('trace la puissance moyenne des minutes reçues, sans changer kWh ni coût', () => {
+    // 52 minutes sur 60 à 490 kW : gold additionne 424,67 kWh pour l'heure
+    const partielle = { ...heure('2026-10-28T12:00:00Z', 424.67, 59.45), taux_couverture: 52 / 60 }
+
+    const point = toConsumptionPoint(partielle)
+
+    expect(point.kw).toBeCloseTo(490, 1)
+    expect(point.kwh).toBe(424.67)
+    expect(point.coutEur).toBe(59.45)
   })
 
   it('garde le nombre de minutes reconstituées après une panne (US4)', () => {
