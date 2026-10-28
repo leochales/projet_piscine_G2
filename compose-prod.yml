@@ -227,6 +227,27 @@ services:
     networks:
       - mlflow_network
 
+  # Entraînement du modèle sur le jeu du volume dataset_data et enregistrement dans le
+  # MLflow de l'environnement (SMARTOPS-32), lancé par le workflow Dataset après le jeu.
+  # Même image que dataset : le déploiement la garde déjà.
+  entrainement:
+    image: ${IMAGE_REPO:?IMAGE_REPO manquant}/enervision-model:${IMAGE_TAG:?IMAGE_TAG manquant}
+    build:
+      context: .
+      dockerfile: model/Dockerfile
+    profiles: ["jobs"]
+    command: ["python", "-m", "model.entrainement"]
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000/mlflow
+      DATASET_OUTPUT_DIR: /data/processed
+    volumes:
+      - dataset_data:/data/processed:ro
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    networks:
+      - mlflow_network
+
   front:
     image: ${IMAGE_REPO:?IMAGE_REPO manquant}/enervision-front:${IMAGE_TAG:?IMAGE_TAG manquant}
     build:

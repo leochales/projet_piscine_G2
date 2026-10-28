@@ -175,30 +175,67 @@ Pour chaque horizon (24 h et 7 jours), le script :
 4. les compare sur la `validation`, avec les prévisions de référence, et retient celui qui a le plus petit WAPE ;
 5. mesure le modèle retenu une seule fois sur le `test`, au total et site par site.
 
-Il affiche les scores, le modèle retenu et le nombre d'heures concernées. Si le modèle retenu ne fait pas mieux que la référence sur le test, il le signale : c'est la règle de SMARTOPS-30, et SMARTOPS-32 n'enregistrera dans MLflow que les modèles qui la respectent (`Resultat.bat_reference`).
+Il affiche les scores, le modèle retenu et le nombre d'heures concernées. Si le modèle retenu ne fait pas mieux que la référence sur la validation, il le signale et ne l'enregistre pas (voir « Enregistrement dans MLflow »).
 
 ### Règles
 
 - Pas de fuite de données : les moyennes par site viennent de l'entraînement, le choix du modèle de la validation, et le test ne sert qu'une fois, à la fin.
+- Règle de SMARTOPS-30 : le modèle retenu doit faire mieux que la semaine précédente, en WAPE global, sur la validation (`Resultat.bat_reference`). Les scores par site servent à vérifier les sites un par un, la règle porte sur le score global. La décision ne se prend pas sur le test : en relançant jusqu'à ce qu'un modèle passe, le test servirait plusieurs fois.
 - Le modèle prévoit `conso_norm` (consommation divisée par la moyenne du site), qu'on remultiplie par la moyenne du site pour revenir en kWh. Un seul modèle sert ainsi aux sites de toutes les tailles.
 - Une heure dont une variable manque (un lag pendant une panne, par exemple) est apprise et prévue quand même, comme en production. Le random forest accepte les cases vides. Pour Ridge, une case vide est remplacée par la moyenne de la colonne sur l'entraînement.
 - Modèles et références sont notés sur les mêmes heures, avec le même calcul que la prévision de référence (`scores`) : celles où les références valables pour l'horizon existent. À 24 h, la veille et la semaine précédente. À 7 jours, la semaine précédente seulement : la veille n'est pas encore connue 7 jours à l'avance, elle n'est ni affichée ni utilisée pour écarter des heures. La référence retenue pour la règle de SMARTOPS-30 est la semaine précédente, valable aux deux horizons.
 - Un site sans heure mesurée dans l'entraînement (mis en service après la date de coupure, par exemple) est écarté avec un message : il n'a pas de moyenne, le modèle ne peut pas le prévoir, mais il ne bloque pas les autres.
-- Réglages simples, sans recherche : Ridge avec `alpha=1`, random forest de 100 arbres, au moins 5 lignes par feuille, `random_state=0` pour des résultats reproductibles.
+- Réglages simples, sans recherche : Ridge avec `alpha=1`, random forest de 100 arbres, au moins 50 lignes par feuille, `random_state=0` pour des résultats reproductibles. 50 lignes par feuille plutôt que 5 : sur la validation, le WAPE est égal ou meilleur (15,15 % contre 15,41 % à 24 h, 15,70 % contre 15,82 % à 7 jours) et le modèle pèse 12 Mo au lieu de 124, ce qui compte pour le stockage de MLflow (SMARTOPS-32).
 
 ### Résultats
 
-Jeu d'empreinte `f2ee5c19efdb`. Le random forest est retenu aux deux horizons (validation : 15,4 % de WAPE à 24 h et 15,8 % à 7 jours, contre 19,5 % et 20,1 % pour Ridge).
+Jeu d'empreinte `f2ee5c19efdb`. Le random forest est retenu aux deux horizons (validation : 15,2 % de WAPE à 24 h et 15,7 % à 7 jours, contre 19,5 % et 20,1 % pour Ridge).
 
 Sur le test, sur les mêmes heures que la référence :
 
 | Horizon | Semaine précédente | Random forest |
 |---|---|---|
-| 24 h | 115,6 kWh de MAE, **23,40 %** de WAPE | 81,6 kWh, **16,51 %** |
-| 7 jours | 115,4 kWh, **23,35 %** | 82,8 kWh, **16,76 %** |
+| 24 h | 115,6 kWh de MAE, **23,40 %** de WAPE | 79,9 kWh, **16,18 %** |
+| 7 jours | 115,4 kWh, **23,35 %** | 81,5 kWh, **16,50 %** |
 
-Le modèle fait environ 30 % d'erreur en moins que la référence, et il fait mieux sur chacun des 7 sites (WAPE à 24 h de 12,8 % pour SITE005 à 20,4 % pour SITE002). Le 7 jours est presque aussi bon que le 24 h : la consommation suit surtout un rythme par semaine, que les deux modèles voient.
+Le modèle fait environ 30 % d'erreur en moins que la référence, et il fait mieux sur chacun des 7 sites (WAPE à 24 h de 12,5 % pour SITE005 à 19,8 % pour SITE002). Le 7 jours est presque aussi bon que le 24 h : la consommation suit surtout un rythme par semaine, que les deux modèles voient.
 
 Sur 17 980 heures mesurées du test, 2 013 ont une variable manquante à 24 h (1 639 à 7 jours) et sont prévues quand même. Celles qui n'ont pas de référence sont exclues de la comparaison : 843 à 24 h (veille ou semaine précédente manquante), 431 à 7 jours (semaine précédente manquante). À 7 jours, la référence retrouve donc les 23,35 % de SMARTOPS-30.
 
 L'erreur restante vient surtout des anomalies du jeu (pics, chutes, coupures), imprévisibles : le RMSE vaut plus du double de la MAE, signe de quelques heures très ratées plutôt que d'une petite erreur partout.
+
+## Enregistrement dans MLflow (SMARTOPS-32)
+
+`python -m model.entrainement` enregistre aussi les modèles dans MLflow, comme `model.dataset` enregistre le jeu. Sans `MLFLOW_TRACKING_URI` ni `--sans-mlflow`, la commande s'arrête : MLflow écrirait sinon dans un dossier `mlruns` local.
+
+Avec Docker, la stack locale démarrée et le jeu construit :
+
+```bash
+docker compose -f compose-local.yml run --rm --build entrainement
+```
+
+Sans Docker, avec le MLflow local (http://localhost/mlflow) :
+
+```bash
+MLFLOW_TRACKING_URI=http://localhost/mlflow python -m model.entrainement
+```
+
+Sous Windows (PowerShell) : `$env:MLFLOW_TRACKING_URI="http://localhost/mlflow"`, puis la commande, avec `$env:PYTHONIOENCODING="utf-8"` (voir le jeu d'entraînement).
+
+Sur la VM, le workflow **Dataset** (Actions → Dataset → Run workflow) entraîne et enregistre le modèle juste après avoir construit le jeu, dans le MLflow de l'environnement (service `entrainement` de `compose-prod.yml`, voir `infra/runner.md`).
+
+Pour chaque horizon, dans l'expérience `prevision-consommation` :
+
+1. un run `prevision-24h` ou `prevision-168h`, toujours : modèle retenu et réglages, scores de validation et de test du modèle et des références (`validation_random_forest_WAPE`, `test_baseline_semaine_MAE`…), empreinte du jeu (`empreinte_jeu`, lue dans `rapport_qualite.json`), tag `bat_reference` et une description qui rappelle d'où viennent les scores ;
+2. si le modèle bat la référence sur la validation, il est réentraîné sur toutes les données (entraînement, validation et test) et enregistré comme nouvelle version du modèle `prevision-conso-24h` ou `prevision-conso-168h`. Les moyennes par site, recalculées sur ces données, sont enregistrées dans le même run (`moyennes_par_site.json`) ;
+3. l'alias `production` passe sur cette nouvelle version. Sinon, aucune version n'est créée et l'alias ne bouge pas.
+
+La génération des prévisions (SMARTOPS-33) charge la version `production` :
+
+```python
+from model.registre import charger
+
+modele, moyennes = charger(24)  # ou 168
+```
+
+Les moyennes servent à `construire_variables` (normalisation et liste des sites), puis `modele.predict` donne `conso_norm`, à remultiplier par la moyenne du site.

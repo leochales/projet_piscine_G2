@@ -231,6 +231,13 @@ services:
       --static-prefix /mlflow
     volumes:
       - mlflow_data:/mlflow
+    # Comme compose-prod.yml : les jobs dataset et entrainement attendent que MLflow
+    # réponde, pas seulement que son conteneur soit démarré
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/mlflow/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
     labels:
       - traefik.enable=true
       - traefik.http.routers.mlflow.rule=PathPrefix(`/mlflow`)
@@ -252,7 +259,27 @@ services:
       - ./data/raw:/data/raw:ro
       - ./data/processed:/data/processed
     depends_on:
-      - mlflow
+      mlflow:
+        condition: service_healthy
+    networks:
+      - proxy_network
+
+  # Entraînement du modèle et enregistrement dans MLflow (SMARTOPS-32), à lancer à la
+  # main après le service dataset : docker compose -f compose-local.yml run --rm --build entrainement
+  entrainement:
+    build:
+      context: .
+      dockerfile: model/Dockerfile
+    profiles: ["jobs"]
+    command: ["python", "-m", "model.entrainement"]
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000/mlflow
+      DATASET_OUTPUT_DIR: /data/processed
+    volumes:
+      - ./data/processed:/data/processed:ro
+    depends_on:
+      mlflow:
+        condition: service_healthy
     networks:
       - proxy_network
 
