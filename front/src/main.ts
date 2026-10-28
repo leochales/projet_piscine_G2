@@ -12,7 +12,7 @@ async function start() {
   const claims = await initAuth()
   // Le routeur mémorise l'adresse à sa création : créé avant la connexion, il remettrait dans
   // l'adresse le #state=…&code=… que keycloak-js vient de retirer
-  const { default: router } = await import('./router')
+  const { default: router, routeApresConnexion } = await import('./router')
 
   const app = createApp(App)
   const pinia = createPinia()
@@ -28,13 +28,21 @@ async function start() {
     user.unlinked = true
     void router.replace({ name: 'unlinked-account' })
   })
-  // Sites attribués : un GESTION-SITE n'agit que sur ceux-là (US7)
-  onAccountChecked((moi) => (user.sites = moi.sites))
+  // Sites attribués : un GESTION-SITE n'agit que sur ceux-là (US7).
+  // Si /api/moi répond après l'affichage (délai dépassé au démarrage), on
+  // redirige seulement tant que l'utilisateur est encore sur la vue d'ensemble.
+  onAccountChecked((moi) => {
+    user.sites = moi.sites
+    const route = router.currentRoute.value
+    const arrivee = routeApresConnexion(route.name, moi.sites, user.roles, route.query, route.hash)
+    if (arrivee) void router.replace(arrivee)
+  })
   // Avant le premier affichage : l'API accepte-t-elle le jeton et connaît-elle le compte ?
   // Sans réponse, l'application s'affiche quand même et l'appel est relancé en arrière-plan
   if ((await checkAccount()) === 'unavailable') void retryAccountCheck()
 
   app.use(router)
+  await router.isReady()
   app.mount('#app')
 }
 
