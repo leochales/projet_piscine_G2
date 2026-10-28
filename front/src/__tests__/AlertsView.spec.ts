@@ -1,8 +1,17 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, RouterLinkStub } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 
+import { SOURCES } from '@/services/dashboard'
 import AlertsView from '@/views/AlertsView.vue'
+
+beforeEach(() => {
+  SOURCES.alertes = 'mock'
+})
+
+afterEach(() => {
+  SOURCES.alertes = 'api'
+})
 
 async function mountView() {
   const wrapper = mount(AlertsView, {

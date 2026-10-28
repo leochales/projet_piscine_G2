@@ -22,7 +22,14 @@ const rec = (over: Partial<Recommendation>): Recommendation => ({
 })
 
 describe('useOperationsStore', () => {
-  beforeEach(() => setActivePinia(createPinia()))
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    service.SOURCES.alertes = 'mock'
+  })
+
+  afterEach(() => {
+    service.SOURCES.alertes = 'api'
+  })
 
   it('ramène un gain hebdomadaire au mois', () => {
     expect(monthlyGain(rec({ periodeGain: 'unique' }))).toBe(100)
