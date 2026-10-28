@@ -166,6 +166,10 @@ class Resultat:
     # décision ne se prend pas sur le test, qui ne sert qu'au score affiché : sinon, en
     # relançant jusqu'à ce qu'un modèle passe, le test servirait plusieurs fois.
     bat_reference: bool
+    # Information seulement : le modèle retenu fait aussi mieux que la référence sur
+    # le test. S'il perd, il est quand même enregistré (la règle est sur la
+    # validation), mais un avertissement le signale, en console et dans MLflow.
+    bat_reference_test: bool
     # Heures mesurées du test : toutes, avec au moins une variable manquante
     # (prévues quand même), et sans référence (exclues de la comparaison)
     heures_test: int
@@ -197,6 +201,9 @@ def entrainer_horizon(df: pd.DataFrame, moyennes: pd.Series, horizon: int) -> Re
         par_site=wape_par_site(d, [REFERENCE, meilleur]),
         bat_reference=bool(
             validation.loc[meilleur, "WAPE_%"] < validation.loc[REFERENCE, "WAPE_%"]
+        ),
+        bat_reference_test=bool(
+            test.loc[meilleur, "WAPE_%"] < test.loc[REFERENCE, "WAPE_%"]
         ),
         heures_test=len(heures_test),
         variables_incompletes=int(heures_test[noms].isna().any(axis=1).sum()),
@@ -249,6 +256,11 @@ def afficher(horizon: int, r: Resultat) -> None:
             f"ATTENTION : {r.meilleur} ne fait pas mieux que {REFERENCE} sur la "
             "validation. Ce modèle ne sera pas enregistré."
         )
+    elif not r.bat_reference_test:
+        print(
+            f"ATTENTION : {r.meilleur} bat {REFERENCE} sur la validation mais pas sur "
+            "le test. Il sera enregistré : à vérifier avant de l'utiliser."
+        )
 
 
 def main(argv: list[str] | None = None) -> list[Resultat]:
@@ -261,28 +273,30 @@ def main(argv: list[str] | None = None) -> list[Resultat]:
     # Sans adresse, MLflow écrirait dans un dossier mlruns local, sans prévenir
     if not args.sans_mlflow and not os.environ.get("MLFLOW_TRACKING_URI"):
         parser.error("MLFLOW_TRACKING_URI manquant (serveur MLflow), ou --sans-mlflow")
-    if not args.sans_mlflow:
-        # Importé ici : sans MLflow, le reste du module n'en a pas besoin
-        from model import registre
-
-        # Sans empreinte, le modèle enregistré ne serait relié à aucun jeu
-        empreinte = lire_empreinte(args.chemin)
-        if empreinte is None:
-            parser.error(
-                "empreinte du jeu introuvable (rapport_qualite.json absent ou "
-                "illisible à côté du jeu) : relancer model.dataset, ou --sans-mlflow"
-            )
+    # None avec --sans-mlflow : rien ne sera enregistré
+    empreinte = None if args.sans_mlflow else lire_empreinte(args.chemin)
+    # Sans empreinte, le modèle enregistré ne serait relié à aucun jeu
+    if not args.sans_mlflow and empreinte is None:
+        parser.error(
+            "empreinte du jeu introuvable (rapport_qualite.json absent ou "
+            "illisible à côté du jeu) : relancer model.dataset, ou --sans-mlflow"
+        )
 
     df = ajouter_baselines(charger(args.chemin))
     moyennes = moyennes_par_site(df[df["jeu"] == "entrainement"])
-    df = garder_sites_connus(df, moyennes)
+    # Pas de filtre des sites ici : entrainer_horizon écarte ceux sans entraînement
+    # pour l'évaluation, mais le modèle final apprend tous les sites, y compris ceux
+    # mis en service après la date de coupure
     resultats = []
     for horizon in HORIZONS:
         r = entrainer_horizon(df, moyennes, horizon)
         resultats.append(r)
         afficher(horizon, r)
-        if args.sans_mlflow:
+        if empreinte is None:
             continue
+        # Importé ici : sans MLflow, le reste du module n'en a pas besoin
+        from model import registre
+
         final = (
             entrainer_modele_final(df, horizon, r.meilleur) if r.bat_reference else None
         )

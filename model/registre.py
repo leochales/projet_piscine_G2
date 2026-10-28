@@ -56,10 +56,13 @@ def description(resultat: Resultat) -> str:
         "la validation et mesuré une seule fois sur le test. "
     )
     if resultat.bat_reference:
-        return texte + (
+        texte += (
             "Modèle enregistré : le même, réentraîné sur toutes les données "
             "(entraînement, validation et test)."
         )
+        if not resultat.bat_reference_test:
+            texte += " ATTENTION : il ne bat pas la référence sur le test."
+        return texte
     return texte + (
         "Aucun modèle enregistré : il ne bat pas la référence sur la validation."
     )
@@ -91,6 +94,7 @@ def enregistrer(
             | metriques(resultat.test, "test")
         )
         mlflow.set_tag("bat_reference", str(resultat.bat_reference).lower())
+        mlflow.set_tag("bat_reference_test", str(resultat.bat_reference_test).lower())
         # Description du run, affichée par l'interface de MLflow
         mlflow.set_tag("mlflow.note.content", description(resultat))
         if not resultat.bat_reference or final is None:

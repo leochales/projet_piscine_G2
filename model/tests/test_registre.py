@@ -75,6 +75,7 @@ def test_modele_enregistre_puis_recharge(client):
     assert run.data.params["empreinte_jeu"] == "abc123"
     assert run.data.params["modele"] == r.meilleur
     assert run.data.tags["bat_reference"] == "true"
+    assert run.data.tags["bat_reference_test"] == "true"
     assert "réentraîné sur toutes les données" in run.data.tags["mlflow.note.content"]
     assert f"validation_{REFERENCE}_WAPE" in run.data.metrics
     assert f"test_{r.meilleur}_WAPE" in run.data.metrics
@@ -115,3 +116,18 @@ def test_main_enregistre_les_deux_horizons(client, tmp_path):
         modele, moyennes = registre.charger(horizon)
         assert list(moyennes.index) == ["SITE001", "SITE002"]
         assert hasattr(modele, "predict")
+
+
+def test_modele_final_garde_les_sites_recents(client, tmp_path):
+    """Un site mis en service après la date de coupure n'est pas évalué, mais le
+    modèle de production l'apprend : SMARTOPS-33 pourra le prévoir."""
+    df = faux_jeu().drop(columns=["baseline_veille", REFERENCE])
+    recent = (df["id_site"] == "SITE002") & (df["jeu"] == "entrainement")
+    chemin = tmp_path / "dataset.parquet"
+    df[~recent].to_parquet(chemin)
+    (tmp_path / "rapport_qualite.json").write_text('{"empreinte": "abc123"}')
+    resultats = main(["--chemin", str(chemin)])
+    # Évaluation sur SITE001 seulement
+    assert list(resultats[0].par_site.index) == ["SITE001"]
+    _, moyennes = registre.charger(24)
+    assert list(moyennes.index) == ["SITE001", "SITE002"]

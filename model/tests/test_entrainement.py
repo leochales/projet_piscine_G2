@@ -161,6 +161,7 @@ def test_bat_la_reference_sur_un_motif_simple(horizon):
     assert r.meilleur == wape_validation.idxmin()
     # Règle de SMARTOPS-30, décidée sur la validation
     assert r.bat_reference
+    assert r.bat_reference_test
     assert (
         r.validation.loc[r.meilleur, "WAPE_%"] < r.validation.loc[REFERENCE, "WAPE_%"]
     )
