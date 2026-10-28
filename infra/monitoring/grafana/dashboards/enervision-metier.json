@@ -233,7 +233,7 @@
       "id": 9,
       "type": "stat",
       "title": "Écart prévu / réel",
-      "description": "Sur les heures déjà passées : 100 × |prévu − réel| / réel. Vide tant qu'une heure prévue n'est pas encore écoulée. Ce n'est pas le WAPE d'entraînement.",
+      "description": "Sur les heures complètes déjà passées : 100 × |prévu − réel| / réel. Une heure incomplète a des kWh sous-estimés, elle ne compte pas. Vide tant qu'aucune de ces heures n'est écoulée. Ce n'est pas le WAPE d'entraînement.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 5, "w": 6, "x": 12, "y": 7 },
       "fieldConfig": {

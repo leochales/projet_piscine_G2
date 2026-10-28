@@ -1,6 +1,8 @@
 # Totaux de gold.supervision_metier (db/19_supervision_metier.sql).
 # postgres-exporter préfixe chaque colonne par le nom de la requête :
-# enervision_mesures_collectees, etc. Une colonne NULL n'est pas exportée.
+# enervision_mesures_collectees, etc.
+# Une colonne NULL part en NaN. Les panneaux Grafana l'écartent
+# (epoch > 0, ou x == x) pour afficher l'état vide.
 enervision:
   query: |
     SELECT
@@ -14,6 +16,9 @@ enervision:
         ecart_prevu_reel_pct
     FROM gold.supervision_metier
   master: true
+  # Comptages sur des tables qui grossissent : une fois par minute,
+  # pas à chaque scrape Prometheus (15 s).
+  cache_seconds: 60
   metrics:
     - mesures_collectees:
         usage: "GAUGE"
@@ -38,4 +43,4 @@ enervision:
         description: "Alertes ouvertes"
     - ecart_prevu_reel_pct:
         usage: "GAUGE"
-        description: "Écart entre prévu et réel sur les heures déjà passées, en %"
+        description: "Écart prévu/réel sur les heures complètes déjà passées, en %"

@@ -2,8 +2,12 @@
 -- Tests de la vue de supervision (db/19_supervision_metier.sql)
 --
 -- Le compte monitoring lit les totaux et ne lit pas les tables métier.
--- Tout est annulé (ROLLBACK).
+-- L'ETL commit chaque minute pendant la CI. Cette transaction ne voit pas
+-- ces commits entre ses deux lectures de la vue. Tout est annulé (ROLLBACK).
 -- =============================================================================
+
+-- Vaut pour la transaction ouverte juste après. Remis à la fin du script.
+SET default_transaction_isolation TO 'repeatable read';
 
 BEGIN;
 
@@ -24,6 +28,12 @@ DO $$
 DECLARE
     avant gold.supervision_metier%ROWTYPE;
     apres gold.supervision_metier%ROWTYPE;
+    -- Heure pleine déjà écoulée : la vue ignore l'heure en cours.
+    heure_passee CONSTANT timestamptz
+        := date_trunc('hour', now()) - interval '1 hour';
+    somme_ecarts numeric;
+    somme_reelle numeric;
+    ecart_attendu double precision;
     interdites CONSTANT text[] := ARRAY[
         'SELECT * FROM bronze.raw_readings',
         'SELECT * FROM silver.silver_readings',
@@ -35,29 +45,58 @@ DECLARE
 BEGIN
     SELECT * INTO avant FROM gold.supervision_metier;
 
+    -- Même périmètre que la vue, avant les lignes de ce test : le pourcentage
+    -- attendu se recalcule même si gold a déjà des heures complètes.
+    SELECT
+        coalesce(
+            sum(abs(p.consommation_prevue_kwh - c.consommation_kwh)),
+            0
+        ),
+        coalesce(sum(c.consommation_kwh), 0)
+    INTO somme_ecarts, somme_reelle
+    FROM (
+        SELECT DISTINCT ON (id_site, heure_prevue)
+            id_site,
+            heure_prevue,
+            consommation_prevue_kwh
+        FROM gold.prediction
+        WHERE heure_prevue < date_trunc('hour', now())
+        ORDER BY id_site ASC, heure_prevue ASC, calculee_le DESC
+    ) AS p
+    INNER JOIN gold.consommation_horaire AS c
+        ON p.id_site = c.id_site AND p.heure_prevue = c.heure
+    WHERE
+        c.consommation_kwh IS NOT null
+        AND c.heure_complete;
+
     INSERT INTO bronze.raw_readings (id_site, horodatage, payload)
-    VALUES ('SITE-SUP', '2026-10-28 10:00+00', '{}');
+    VALUES ('SITE-SUP', heure_passee, '{}');
 
     INSERT INTO silver.silver_readings (
         id_site, horodatage, imputation_method, data_quality
     ) VALUES (
-        'SITE-SUP', '2026-10-28 10:00+00', 'linear_interpolation', 'good'
+        'SITE-SUP', heure_passee, 'linear_interpolation', 'good'
     );
 
     INSERT INTO gold.derniere_mesure (
         id_site, horodatage, consommation_kw, data_quality
-    ) VALUES ('SITE-SUP', '2026-10-28 10:00+00', 80, 'good');
+    ) VALUES ('SITE-SUP', heure_passee, 80, 'good');
 
     INSERT INTO gold.consommation_horaire (
-        id_site, heure, consommation_kwh, nb_mesures
-    ) VALUES ('SITE-SUP', '2026-10-28 09:00+00', 100, 60);
+        id_site, heure, consommation_kwh, nb_mesures, heure_complete
+    ) VALUES
+    ('SITE-SUP', heure_passee, 100, 60, true),
+    -- 999 prévu pour 100 réel : ne doit pas entrer dans l'écart.
+    ('SITE-SUP', heure_passee - interval '1 hour', 100, 10, false);
 
     INSERT INTO gold.prediction (
         id_site, heure_prevue, consommation_prevue_kwh, version_modele
-    ) VALUES ('SITE-SUP', '2026-10-28 09:00+00', 110, 'test');
+    ) VALUES
+    ('SITE-SUP', heure_passee, 110, 'test'),
+    ('SITE-SUP', heure_passee - interval '1 hour', 999, 'test');
 
     INSERT INTO gold.alerte (id_site, source, type, severite, debut)
-    VALUES ('SITE-SUP', 'etl', 'threshold', 'high', '2026-10-28 10:00+00');
+    VALUES ('SITE-SUP', 'etl', 'threshold', 'high', heure_passee);
 
     SET ROLE monitoring;
     SELECT * INTO apres FROM gold.supervision_metier;
@@ -68,18 +107,21 @@ BEGIN
     'l''imputation doit compter la ligne silver';
     ASSERT apres.puissance_kw = avant.puissance_kw + 80,
     'la puissance doit ajouter les 80 kW du site';
-    ASSERT apres.previsions_ecrites = avant.previsions_ecrites + 1,
-    'la prévision insérée doit être comptée';
+    ASSERT apres.previsions_ecrites = avant.previsions_ecrites + 2,
+    'les deux prévisions insérées doivent être comptées';
     ASSERT apres.alertes_en_cours = avant.alertes_en_cours + 1,
     'l''alerte ouverte doit être comptée';
     ASSERT apres.derniere_collecte_epoch IS NOT null,
     'la dernière collecte doit avoir un horodatage';
     ASSERT apres.dernier_calcul_epoch IS NOT null,
     'le dernier calcul doit avoir un horodatage';
-    IF avant.ecart_prevu_reel_pct IS null THEN
-        ASSERT apres.ecart_prevu_reel_pct = 10,
-        '110 prévu pour 100 réel : écart de 10 %';
-    END IF;
+    -- 110 prévu, 100 réel : +10 au numérateur, +100 au dénominateur.
+    -- L'heure incomplète (999 prévu) reste dehors.
+    ecart_attendu := (
+        100 * (somme_ecarts + 10) / (somme_reelle + 100)
+    )::double precision;
+    ASSERT apres.ecart_prevu_reel_pct = ecart_attendu,
+    'l''écart ne compte que l''heure complète : 110 prévu pour 100 réel';
 
     FOREACH requete IN ARRAY interdites LOOP
         BEGIN
@@ -95,3 +137,5 @@ END
 $$;
 
 ROLLBACK;
+
+RESET default_transaction_isolation;
