@@ -53,6 +53,8 @@ export interface ConsumptionPoint {
   coutEur?: number | null
   // Minutes de l'heure reconstituées après une panne (US4) : la valeur est en partie estimée
   minutesImputees?: number
+  // Part des 60 minutes qui ont une consommation, mesurée ou reconstituée (0 à 1)
+  couverture?: number
 }
 
 export type Sensor = 'consommation' | 'electrique' | 'temperature' | 'humidite' | 'reseau'

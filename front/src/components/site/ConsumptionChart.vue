@@ -17,6 +17,7 @@ import {
 
 import { MINUTES_RECONSTITUEES_MARQUEES } from '@/lib/etat'
 import { formatAxisHour, formatEurCents, formatKwh, formatKw } from '@/lib/format'
+import { junctionIndex } from '@/lib/mesures'
 import { hoursBetween, predictedPeak } from '@/lib/predictions'
 import type { SiteSeries } from '@/types/energy'
 
@@ -79,15 +80,9 @@ const emptyPoint = (t: string): ChartPoint => ({
 // Le dernier point mesuré sert aussi de départ à la prédiction, pour que les courbes se rejoignent.
 const points = computed<ChartPoint[]>(() => {
   const { mesures, predictions } = props.series
-  // La prévision part de la dernière heure qui a une valeur. Sinon, si cette heure
-  // est vide, le trait pointillé ne rejoint plus les mesures.
-  let junctionAt = -1
-  for (let i = mesures.length - 1; i >= 0; i--) {
-    if (mesures[i]?.kw != null) {
-      junctionAt = i
-      break
-    }
-  }
+  // La prévision part de la dernière heure bien mesurée (lib/mesures.ts). Une heure de panne,
+  // avec peu de minutes, ferait plonger puis remonter le pointillé sans raison.
+  const junctionAt = junctionIndex(mesures)
 
   // L'heure en cours, ni close ni prévue, reste vide : « maintenant » tombe dans la bonne heure
   const last = mesures[mesures.length - 1]

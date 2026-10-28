@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest'
 import {
   costsFrom,
   fleetFrom,
+  isReliableHour,
+  junctionIndex,
   kpisFrom,
   parisMidnight,
   toConsumptionPoint,
@@ -70,6 +72,7 @@ describe('consommation horaire', () => {
       kwh: 500,
       coutEur: 70,
       minutesImputees: 0,
+      couverture: 1,
     })
     expect(toConsumptionPoint(heure('2026-10-27T09:00:00Z', null, null))).toEqual({
       horodatage: '2026-10-27T09:00:00Z',
@@ -77,6 +80,7 @@ describe('consommation horaire', () => {
       kwh: null,
       coutEur: null,
       minutesImputees: 0,
+      couverture: 0,
     })
   })
 
@@ -160,5 +164,32 @@ describe('consommation horaire', () => {
     expect(trend.coutEurJours7).toHaveLength(7)
     expect(trend.coutEurJours7[0]).toBe(8)
     expect(trend.coutEurJours7[6]).toBe(4)
+  })
+})
+
+describe('départ de la courbe prévue', () => {
+  const point = (kw: number | null, couverture?: number, minutesImputees = 0) => ({
+    horodatage: '2026-10-28T12:00:00Z',
+    kw,
+    couverture,
+    minutesImputees,
+  })
+
+  it('part de la dernière heure bien mesurée', () => {
+    // Dernière heure : 10 minutes mesurées pendant une panne, sa moyenne chute
+    expect(junctionIndex([point(490, 1), point(495, 1), point(422, 10 / 60)])).toBe(1)
+  })
+
+  it('écarte une heure surtout reconstituée', () => {
+    expect(junctionIndex([point(490, 1), point(430, 1, 40)])).toBe(0)
+  })
+
+  it('garde la dernière valeur si aucune heure n’est bien mesurée', () => {
+    expect(junctionIndex([point(null, 0), point(420, 0.2), point(410, 0.1)])).toBe(2)
+  })
+
+  it('considère les données simulées, sans couverture, comme fiables', () => {
+    expect(junctionIndex([point(490), point(480)])).toBe(1)
+    expect(isReliableHour(point(null))).toBe(false)
   })
 })
