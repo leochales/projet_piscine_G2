@@ -485,8 +485,14 @@ def test_lire_pics_et_seuils_convertit_les_lignes_de_postgresql(debut):
 
     conn = Connexion()
     df = prevision.lire_pics(conn, debut)
+    # Pic soutenu lu dans silver (valeurs mesurées), heures terminées et bien mesurées
+    assert "silver.silver_readings" in conn.sql
+    assert "consumption_kw_raw" in conn.sql
     assert "heure_complete" in conn.sql
+    assert "nb_mesures - c.nb_imputees" in conn.sql
     assert conn.parametres["debut"] == debut
+    assert conn.parametres["minutes_min"] == 48
+    assert conn.parametres["ecart_max"] == timedelta(minutes=6)
     assert str(df["heure"].dt.tz) == "UTC"
     assert df.loc[0, "pic_kw"] == 150.0
     assert df.loc[0, "moyenne_kw"] == 100.0

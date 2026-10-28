@@ -22,13 +22,18 @@ Ridge n'en donne pas (bornes NULL).
 Pic de l'heure (SMARTOPS-104) : le jeu d'entraînement n'a qu'une mesure par heure, donc
 pas de pic des minutes, et aucun modèle ne l'apprend. ``pic_prevu_kw`` est la
 consommation prévue (kWh d'une heure = kW moyens) multipliée par le rapport pic/moyenne
-du site, médiane des heures terminées de ``gold.consommation_horaire`` sur
-``HISTORIQUE_UTILE``. Ce rapport est pris par heure de la journée quand elle a assez de
-mesures, sinon pour tout le site. Sa fourchette applique le même rapport aux bornes de
-consommation. Un site sans assez d'heures mesurées n'a pas de pic prévu (NULL), avec un
+du site, médiane sur ``HISTORIQUE_UTILE``. Le pic d'une heure passée est son « pic
+soutenu » : la plus forte valeur tenue 3 minutes mesurées consécutives (silver), selon
+la règle de la détection des pics de l'ETL (``db/17_gold_alertes.sql``). Le pic d'une
+seule minute dépasserait le seuil bien plus souvent que les alertes réelles. Seules les
+heures terminées et mesurées sur au moins ``COUVERTURE_MIN_MOYENNE`` de leurs minutes
+comptent : une heure en panne ou imputée a un pic proche de sa moyenne.
+
+Le rapport est pris par heure de la journée quand elle a assez d'heures mesurées, sinon
+pour tout le site. Sa fourchette applique le même rapport aux bornes de consommation.
+Un site sans assez d'heures mesurées n'a pas de pic prévu (NULL), avec un
 avertissement. ``pic_prevu`` est vrai quand le pic prévu atteint le seuil d'alerte du
-site (``app.site.seuil_alerte_pct`` de ``capacite_kw``), le même que la détection de
-l'ETL.
+site (``app.site.seuil_alerte_pct`` de ``capacite_kw``), le même que l'ETL.
 
 Avec ``MODELE_CACHE_DIR`` (volume ``modele_cache`` du service), chaque version est
 téléchargée une seule fois : ensuite, MLflow ne sert qu'à lire le numéro de la version
@@ -59,6 +64,7 @@ from common.db import get_engine
 from common.logs import configure_logging
 from model import registre
 from model.features import (
+    COUVERTURE_MIN_MOYENNE,
     HEURES,
     HISTORIQUE_UTILE,
     HORIZONS,
@@ -96,6 +102,9 @@ COLONNES_PIC = ["pic_prevu_kw", "pic_bas_kw", "pic_haut_kw", "pic_prevu"]
 # de la journée (en dessous, l'heure prend le rapport du site)
 HEURES_MIN_RATIO_SITE = 24
 HEURES_MIN_RATIO_HEURE = 3
+# Pic soutenu (lire_pics) : comme la détection des pics de l'ETL, plus de 5 minutes
+# sans mesure entre deux minutes mesurées coupent la série
+ECART_MAX_PIC_SOUTENU = pd.Timedelta(minutes=6)
 
 
 def debut_des_previsions(maintenant: datetime) -> pd.Timestamp:
@@ -269,22 +278,62 @@ def assembler(
 
 
 def lire_pics(conn: Connection, debut: pd.Timestamp) -> pd.DataFrame:
-    """Pic et moyenne des heures terminées des sites actifs, sur ``HISTORIQUE_UTILE`` :
-    de quoi calculer le rapport pic/moyenne de chaque site (``ratios_pic``)."""
+    """Pic soutenu et moyenne des heures terminées et bien mesurées des sites actifs,
+    sur ``HISTORIQUE_UTILE`` : de quoi calculer le rapport pic/moyenne de chaque site
+    (``ratios_pic``).
+
+    ``pic_kw`` est le pic soutenu de l'heure : la plus forte valeur tenue par 3 minutes
+    mesurées consécutives (``consumption_kw_raw``, jamais une valeur imputée), comme
+    les pics qui ouvrent une alerte dans l'ETL. Plus de 5 minutes sans mesure entre
+    deux d'entre elles coupent la série. Les 3 minutes sont rattachées à l'heure de la
+    dernière. Une heure compte si au moins ``COUVERTURE_MIN_MOYENNE`` de ses minutes
+    ont une consommation mesurée (imputées exclues)."""
     lignes = conn.execute(
         text(
             """
-            SELECT c.id_site, c.heure, c.pic_kw, c.moyenne_kw
+            WITH minutes AS (
+                SELECT
+                    r.id_site,
+                    r.horodatage,
+                    lag(r.horodatage, 1) OVER w AS horodatage_1,
+                    lag(r.horodatage, 2) OVER w AS horodatage_2,
+                    least(
+                        r.consumption_kw_raw,
+                        lag(r.consumption_kw_raw, 1) OVER w,
+                        lag(r.consumption_kw_raw, 2) OVER w
+                    ) AS soutenu_kw
+                FROM silver.silver_readings AS r
+                JOIN app.site AS s ON s.id_site = r.id_site
+                WHERE s.statut = 'active'
+                  AND r.consumption_kw_raw IS NOT NULL
+                  AND r.horodatage >= :depuis AND r.horodatage < :debut
+                WINDOW w AS (PARTITION BY r.id_site ORDER BY r.horodatage)
+            ),
+            soutenus AS (
+                SELECT
+                    id_site,
+                    date_trunc('hour', horodatage, 'UTC') AS heure,
+                    max(soutenu_kw) AS pic_kw
+                FROM minutes
+                WHERE horodatage - horodatage_1 <= :ecart_max
+                  AND horodatage_1 - horodatage_2 <= :ecart_max
+                GROUP BY id_site, date_trunc('hour', horodatage, 'UTC')
+            )
+            SELECT c.id_site, c.heure, p.pic_kw, c.moyenne_kw
             FROM gold.consommation_horaire AS c
-            JOIN app.site AS s ON s.id_site = c.id_site
-            WHERE s.statut = 'active'
-              AND c.heure_complete
-              AND c.pic_kw IS NOT NULL
+            JOIN soutenus AS p ON p.id_site = c.id_site AND p.heure = c.heure
+            WHERE c.heure_complete
               AND c.moyenne_kw > 0
+              AND c.nb_mesures - c.nb_imputees >= :minutes_min
               AND c.heure >= :depuis AND c.heure < :debut
             """
         ),
-        {"depuis": debut - HISTORIQUE_UTILE, "debut": debut},
+        {
+            "depuis": debut - HISTORIQUE_UTILE,
+            "debut": debut,
+            "ecart_max": ECART_MAX_PIC_SOUTENU.to_pytimedelta(),
+            "minutes_min": int(np.ceil(60 * COUVERTURE_MIN_MOYENNE)),
+        },
     ).all()
     df = pd.DataFrame(lignes, columns=["id_site", "heure", "pic_kw", "moyenne_kw"])
     return df.assign(
@@ -296,11 +345,11 @@ def lire_pics(conn: Connection, debut: pd.Timestamp) -> pd.DataFrame:
 
 def lire_seuils(conn: Connection) -> pd.Series:
     """Seuil d'alerte de chaque site actif, en kW : ``seuil_alerte_pct`` % de sa
-    capacité, comme la détection des pics mesurés de l'ETL."""
+    capacité, arrondi comme dans la détection des pics mesurés de l'ETL."""
     lignes = conn.execute(
         text(
             """
-            SELECT id_site, capacite_kw * seuil_alerte_pct / 100
+            SELECT id_site, round(capacite_kw * seuil_alerte_pct / 100, 2)
             FROM app.site
             WHERE statut = 'active'
             """
