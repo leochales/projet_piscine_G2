@@ -270,6 +270,10 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: model
       POSTGRES_PASSWORD: ${MODEL_DB_PASSWORD}
+      # Versions des modèles téléchargées une seule fois, gardées entre deux lancements
+      MODELE_CACHE_DIR: /cache
+    volumes:
+      - modele_cache:/cache
     depends_on:
       db:
         condition: service_healthy
@@ -299,6 +303,7 @@ services:
 volumes:
   postgresql_data:
   mlflow_data:
+  modele_cache:
   dataset_data:
   backup_cache:
 

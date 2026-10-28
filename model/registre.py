@@ -13,7 +13,11 @@ La génération des prévisions (SMARTOPS-33) charge la version ``production`` a
 
 from __future__ import annotations
 
+import json
+import shutil
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import cloudpickle
@@ -25,6 +29,8 @@ import sklearn
 from mlflow import MlflowClient
 
 if TYPE_CHECKING:
+    from mlflow.entities.model_registry import ModelVersion
+
     from model.entrainement import Resultat
 
 EXPERIENCE = "prevision-consommation"
@@ -135,14 +141,63 @@ class ModeleProduction:
     version: str
 
 
-def charger(horizon: int) -> ModeleProduction:
-    """Modèle de la version ``production`` d'un horizon, et ses moyennes par site."""
+def charger(horizon: int, cache: Path | None = None) -> ModeleProduction:
+    """Modèle de la version ``production`` d'un horizon, et ses moyennes par site.
+
+    Avec ``cache`` (un dossier), la version est téléchargée une seule fois : MLflow
+    ne sert ensuite qu'à lire le numéro de la version ``production``. Sans, le modèle
+    est lu dans MLflow à chaque appel."""
     nom = nom_modele(horizon)
     # Version lue une seule fois : modèle et moyennes viennent de la même version,
     # même si l'alias change pendant le chargement
     version = MlflowClient().get_model_version_by_alias(nom, ALIAS)
-    modele = mlflow.sklearn.load_model(f"models:/{nom}/{version.version}")
-    moyennes = mlflow.artifacts.load_dict(f"runs:/{version.run_id}/{MOYENNES}")
+    if cache is None:
+        modele = mlflow.sklearn.load_model(f"models:/{nom}/{version.version}")
+        moyennes = mlflow.artifacts.load_dict(f"runs:/{version.run_id}/{MOYENNES}")
+    else:
+        dossier = telecharger(nom, version, cache)
+        modele = mlflow.sklearn.load_model(str(dossier / "modele"))
+        moyennes = json.loads((dossier / MOYENNES).read_text(encoding="utf-8"))
     return ModeleProduction(
         modele, pd.Series(moyennes, dtype=float), f"{nom}/{version.version}"
     )
+
+
+def telecharger(nom: str, version: ModelVersion, cache: Path) -> Path:
+    """Dossier local d'une version (``cache/<nom>/<numéro>-<run>``) : le modèle et ses
+    moyennes, téléchargés s'ils n'y sont pas encore. Les autres versions du même
+    modèle sont supprimées : le cache ne garde que la version en service.
+
+    Le run fait partie du nom : un modèle supprimé puis enregistré à nouveau
+    recommence à la version 1, et l'ancien fichier ne doit pas resservir.
+
+    Le téléchargement se fait dans un dossier temporaire, renommé à la fin : un
+    téléchargement interrompu ne laisse jamais une version incomplète dans le cache."""
+    dossier = cache / nom / f"{version.version}-{version.run_id}"
+    if not dossier.exists():
+        dossier.parent.mkdir(parents=True, exist_ok=True)
+        temporaire = Path(tempfile.mkdtemp(dir=dossier.parent, prefix=".en-cours-"))
+        try:
+            mlflow.artifacts.download_artifacts(
+                artifact_uri=f"models:/{nom}/{version.version}",
+                dst_path=str(temporaire / "modele"),
+            )
+            mlflow.artifacts.download_artifacts(
+                run_id=version.run_id,
+                artifact_path=MOYENNES,
+                dst_path=str(temporaire),
+            )
+            try:
+                temporaire.rename(dossier)
+            except OSError:
+                # Un lancement en parallèle l'a mise en cache juste avant
+                if not dossier.exists():
+                    raise
+        finally:
+            # Échec, ou version déjà mise en cache entre-temps par un autre lancement
+            shutil.rmtree(temporaire, ignore_errors=True)
+    # Anciennes versions, et dossiers temporaires d'un lancement tué en cours de route
+    for autre in dossier.parent.iterdir():
+        if autre != dossier:
+            shutil.rmtree(autre, ignore_errors=True)
+    return dossier

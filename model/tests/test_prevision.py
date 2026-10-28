@@ -179,7 +179,7 @@ def test_sans_aucun_modele(historique, debut):
 
 
 def erreur_mlflow(code):
-    def charger(horizon):
+    def charger(horizon, cache=None):
         raise MlflowException("erreur", code)
 
     return charger
@@ -198,6 +198,16 @@ def test_mlflow_injoignable_arrete_le_job(monkeypatch):
     monkeypatch.setattr(registre, "charger", erreur_mlflow(INTERNAL_ERROR))
     with pytest.raises(MlflowException):
         charger_production(24)
+
+
+def test_cache_lu_dans_l_environnement(monkeypatch, tmp_path):
+    vus = []
+    monkeypatch.setattr(registre, "charger", lambda h, cache=None: vus.append(cache))
+    monkeypatch.delenv("MODELE_CACHE_DIR", raising=False)
+    charger_production(24)
+    monkeypatch.setenv("MODELE_CACHE_DIR", str(tmp_path))
+    charger_production(24)
+    assert vus == [None, tmp_path]
 
 
 # Stockage en fichiers de MLflow (test seulement) : codecs.open, déprécié en Python 3.14

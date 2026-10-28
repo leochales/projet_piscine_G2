@@ -68,6 +68,81 @@ def test_modele_enregistre_puis_recharge(client):
     assert f"test_{r.meilleur}_WAPE" in run.data.metrics
 
 
+def test_cache_telecharge_une_seule_fois(client, tmp_path, monkeypatch):
+    """Avec un cache, la version est téléchargée au premier appel, puis lue sur le
+    disque : MLflow ne sert plus qu'à lire le numéro de la version production."""
+    df, r, final = resultat_et_final()
+    registre.enregistrer(r, 24, REGLAGES[r.meilleur], "abc123", final)
+    cache = tmp_path / "cache"
+    premiere = registre.charger(24, cache)
+    (dossier,) = (cache / "prevision-conso-24h").iterdir()
+    assert dossier.name.startswith("1-")
+    assert (dossier / registre.MOYENNES).exists()
+
+    def pas_de_telechargement(*args, **kwargs):
+        raise AssertionError("version déjà en cache : rien à télécharger")
+
+    monkeypatch.setattr(mlflow.artifacts, "download_artifacts", pas_de_telechargement)
+    seconde = registre.charger(24, cache)
+    assert seconde.version == premiere.version == "prevision-conso-24h/1"
+    pd.testing.assert_series_equal(seconde.moyennes, final[1], check_names=False)
+    lignes = preparer(df, seconde.moyennes, 24)
+    X = lignes[noms_variables(24, seconde.moyennes)]
+    np.testing.assert_allclose(seconde.modele.predict(X), final[0].predict(X))
+
+
+def test_cache_garde_seulement_la_version_en_production(client, tmp_path):
+    _, r, final = resultat_et_final()
+    cache = tmp_path / "cache"
+    registre.enregistrer(r, 24, REGLAGES[r.meilleur], "v1", final)
+    registre.charger(24, cache)
+    # Dossier temporaire d'un lancement tué en plein téléchargement
+    (cache / "prevision-conso-24h" / ".en-cours-abc").mkdir()
+    registre.enregistrer(r, 24, REGLAGES[r.meilleur], "v2", final)
+    assert registre.charger(24, cache).version == "prevision-conso-24h/2"
+    restants = [d.name for d in (cache / "prevision-conso-24h").iterdir()]
+    assert len(restants) == 1
+    assert restants[0].startswith("2-")
+
+
+def test_cache_modele_reenregistre_depuis_la_version_1(client, tmp_path):
+    """Un modèle supprimé puis réenregistré repart à la version 1 : le cache ne doit
+    pas resservir l'ancienne version 1."""
+    df, r, final = resultat_et_final()
+    cache = tmp_path / "cache"
+    registre.enregistrer(r, 24, REGLAGES[r.meilleur], "ancien", final)
+    registre.charger(24, cache)
+    client.delete_registered_model(registre.nom_modele(24))
+    autre_modele, moyennes = entrainer_modele_final(df, 24, "ridge")
+    registre.enregistrer(
+        r, 24, REGLAGES[r.meilleur], "nouveau", (autre_modele, moyennes)
+    )
+    production = registre.charger(24, cache)
+    assert production.version == "prevision-conso-24h/1"
+    assert type(production.modele) is type(autre_modele)
+
+
+def test_cache_sans_version_incomplete(client, tmp_path, monkeypatch):
+    """Un téléchargement qui échoue ne laisse rien dans le cache : le lancement
+    suivant retélécharge la version entière."""
+    _, r, final = resultat_et_final()
+    registre.enregistrer(r, 24, REGLAGES[r.meilleur], "abc123", final)
+    vrai = mlflow.artifacts.download_artifacts
+
+    def echec_sur_les_moyennes(*args, **kwargs):
+        if kwargs.get("artifact_path") == registre.MOYENNES:
+            raise OSError("connexion coupée")
+        return vrai(*args, **kwargs)
+
+    monkeypatch.setattr(mlflow.artifacts, "download_artifacts", echec_sur_les_moyennes)
+    cache = tmp_path / "cache"
+    with pytest.raises(OSError):
+        registre.charger(24, cache)
+    assert list((cache / "prevision-conso-24h").iterdir()) == []
+    monkeypatch.setattr(mlflow.artifacts, "download_artifacts", vrai)
+    assert registre.charger(24, cache).version == "prevision-conso-24h/1"
+
+
 def test_nouvelle_version_prend_l_alias(client):
     _, r, final = resultat_et_final()
     registre.enregistrer(r, 24, REGLAGES[r.meilleur], "v1", final)

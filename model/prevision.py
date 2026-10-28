@@ -20,13 +20,19 @@ Fourchette : centiles 10 et 90 des prévisions des arbres du random forest. Un m
 Ridge n'en donne pas (bornes NULL). ``pic_prevu`` reste faux : le pic de l'heure n'est
 pas encore prévu (SMARTOPS-95).
 
+Avec ``MODELE_CACHE_DIR`` (volume ``modele_cache`` du service), chaque version est
+téléchargée une seule fois : ensuite, MLflow ne sert qu'à lire le numéro de la version
+``production``, et le modèle est lu sur le disque.
+
     python -m model.prevision
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from datetime import UTC, datetime
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -194,8 +200,9 @@ def prevoir(
 def charger_production(horizon: int) -> registre.ModeleProduction | None:
     """Version ``production`` d'un horizon, ou None si aucune n'est enregistrée (avant
     le premier entraînement, par exemple)."""
+    cache = os.environ.get("MODELE_CACHE_DIR")
     try:
-        return registre.charger(horizon)
+        return registre.charger(horizon, Path(cache) if cache else None)
     except MlflowException as erreur:
         if erreur.error_code not in SANS_VERSION:
             raise
