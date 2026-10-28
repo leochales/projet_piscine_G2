@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
-import router, { routeApresConnexion } from '@/router'
+import router, { redirectionInitiale, routeApresConnexion } from '@/router'
 import { useUserStore } from '@/stores/user'
 
 const signIn = (roles: string[]) =>
@@ -43,15 +43,50 @@ describe('protection des routes', () => {
     }
   })
 
-  it('à la connexion, un seul site ouvre sa page, plusieurs restent sur la vue d’ensemble', () => {
-    expect(routeApresConnexion('overview', ['SITE002'])).toEqual({
+  it('à la connexion, un rôle site avec un seul site ouvre sa page', () => {
+    const page = {
+      name: 'sites' as const,
+      params: { siteId: 'SITE002' },
+      query: { periode: '7j' },
+      hash: '#courbe',
+      replace: true as const,
+    }
+    expect(
+      routeApresConnexion('overview', ['SITE002'], ['CONSULT-SITE'], { periode: '7j' }, '#courbe'),
+    ).toEqual(page)
+    expect(
+      routeApresConnexion('overview', ['SITE002'], ['GESTION-SITE'], { periode: '7j' }, '#courbe'),
+    ).toEqual(page)
+    expect(
+      routeApresConnexion('overview', ['SITE002', 'SITE007'], ['CONSULT-SITE']),
+    ).toBeUndefined()
+    expect(routeApresConnexion('overview', [], ['CONSULT-SITE'])).toBeUndefined()
+    expect(routeApresConnexion('overview', null, ['CONSULT-SITE'])).toBeUndefined()
+    expect(routeApresConnexion('alerts', ['SITE002'], ['CONSULT-SITE'])).toBeUndefined()
+  })
+
+  it('un rôle client reste sur la vue d’ensemble, même avec un site attribué', () => {
+    for (const roles of [
+      ['GESTION-CLIENT'],
+      ['CONSULT-CLIENT'],
+      ['GESTION-CLIENT', 'GESTION-SITE'],
+    ]) {
+      expect(routeApresConnexion('overview', ['SITE002'], roles)).toBeUndefined()
+    }
+  })
+
+  it('ne redirige que la première navigation, et garde la query', () => {
+    const to = { name: 'overview' as const, query: { periode: '7j' }, hash: '#courbe' }
+    expect(redirectionInitiale(to, { matched: [] }, ['SITE002'], ['CONSULT-SITE'])).toEqual({
       name: 'sites',
       params: { siteId: 'SITE002' },
+      query: { periode: '7j' },
+      hash: '#courbe',
+      replace: true,
     })
-    expect(routeApresConnexion('overview', ['SITE002', 'SITE007'])).toBeUndefined()
-    expect(routeApresConnexion('overview', [])).toBeUndefined()
-    expect(routeApresConnexion('overview', null)).toBeUndefined()
-    expect(routeApresConnexion('alerts', ['SITE002'])).toBeUndefined()
+    expect(
+      redirectionInitiale(to, { matched: [{}] }, ['SITE002'], ['CONSULT-SITE']),
+    ).toBeUndefined()
   })
 
   it('un clic ultérieur sur la vue d’ensemble n’y renvoie pas', async () => {
