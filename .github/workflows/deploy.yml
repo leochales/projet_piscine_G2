@@ -239,20 +239,24 @@ jobs:
 
       # Console d'administration exposée : le realm master bloque un compte après 5 mots de
       # passe faux (15 min, puis plus longtemps). Le realm enervision n'est importé qu'au
-      # premier démarrage : son thème de connexion (en français seul) est donc aussi appliqué ici. Un échec (mot
-      # de passe administrateur changé dans Keycloak depuis le premier démarrage) n'arrête
-      # pas le déploiement.
+      # premier démarrage : son thème de connexion (en français seul) est donc aussi
+      # appliqué ici. Un échec (Keycloak pas démarré, mot de passe administrateur changé
+      # dans Keycloak depuis le premier démarrage) n'arrête pas le déploiement.
       - name: Configurer les realms Keycloak
         continue-on-error: true
         run: |
-          # Keycloak recréé (thème modifié) : jusqu'à 5 min de démarrage avant de répondre
+          # Keycloak recréé (thème modifié) : son healthcheck (compose-prod.yml) reste à
+          # « starting » tant qu'il démarre, jusqu'à 5 min (start_period) puis 30 sondes de
+          # 10 s avant « unhealthy ». On attend tant qu'il démarre, 12 min au plus.
           keycloak_id=$(docker compose -p "enervision-${DEPLOY_ENV}" ps -q keycloak)
-          for _ in $(seq 60); do
-            [ "$(docker inspect -f '{{.State.Health.Status}}' "$keycloak_id")" = healthy ] && break
+          etat_keycloak() { docker inspect -f '{{.State.Health.Status}}' "$keycloak_id"; }
+          for _ in $(seq 144); do
+            [ "$(etat_keycloak)" = starting ] || break
             sleep 5
           done
-          if [ "$(docker inspect -f '{{.State.Health.Status}}' "$keycloak_id")" != healthy ]; then
-            echo "::warning::Keycloak ($DEPLOY_ENV) pas prêt après 5 min : realms master et enervision non configurés"
+          etat=$(etat_keycloak)
+          if [ "$etat" != healthy ]; then
+            echo "::warning::Keycloak ($DEPLOY_ENV) à l'état « $etat » : realms master et enervision non configurés"
             exit 1
           fi
           kcadm() {

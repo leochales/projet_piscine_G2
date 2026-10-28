@@ -12,7 +12,9 @@
   font-style: normal;
   font-display: swap;
   font-weight: 100 900;
-  src: url('../fonts/inter-latin-wght-normal.woff2') format('woff2-variations');
+  /* format('woff2') : compris par tous les navigateurs ; les graisses variables restent
+     disponibles (« woff2-variations » est une ancienne syntaxe) */
+  src: url('../fonts/inter-latin-wght-normal.woff2') format('woff2');
 }
 
 :root {
