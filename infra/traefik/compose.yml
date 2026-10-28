@@ -47,6 +47,12 @@ services:
       - --entrypoints.http-dev.address=:8080
       - --entrypoints.https-dev.address=:8443
       - --entrypoints.https-dev.http.tls=true
+      # Métriques Prometheus sur un entrypoint interne (port 8082, non publié).
+      # Prometheus lit les métriques sur traefik:8082.
+      - --metrics.prometheus=true
+      - --metrics.prometheus.entrypoint=metrics
+      - --metrics.prometheus.addrouterslabels=true
+      - --entrypoints.metrics.address=:8082
     environment:
       # Seul nom d'hôte redirigé vers HTTPS (redirections.yml) : IP de la VM, localhost en CI
       PUBLIC_HOST: ${PUBLIC_HOST:?PUBLIC_HOST manquant}

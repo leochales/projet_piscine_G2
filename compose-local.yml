@@ -4,13 +4,12 @@
 # Point d'entrée unique : Traefik sur http://localhost
 #   /         -> front (nginx)
 #   /api      -> API FastAPI (Swagger : /api/docs)
-#   /grafana  -> Grafana (profil monitoring)
+#   /grafana  -> Grafana
 #   /auth     -> Keycloak (console : /auth/admin)
 # Tableau de bord Traefik : http://localhost:8080
 #
-# Supervision (Prometheus, Grafana, Loki, Alloy, postgres-exporter) : profil « monitoring »,
-# non démarré par défaut (~1 Go de mémoire). L'activer avec :
-#   docker compose -f compose-local.yml --profile monitoring up -d
+# Supervision (Prometheus, Grafana, Loki, Alloy, postgres-exporter) : démarrée avec
+# le reste de la stack (~1 Go de mémoire).
 #
 # Sauvegarde (restic) : profil « backup », dans un dépôt local (volume backup_home).
 # Lancer une sauvegarde tout de suite :
@@ -341,12 +340,11 @@ services:
       - proxy_network             # pas d'accès à la base
 
   # ---------------------------------------------------------------------------
-  # Supervision (profil monitoring)
+  # Supervision : démarre avec le reste de la stack
   # ---------------------------------------------------------------------------
   prometheus:
     image: prom/prometheus:v3.15.0
     container_name: prometheus
-    profiles: [monitoring]
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.retention.time=15d
@@ -360,7 +358,6 @@ services:
   postgres-exporter:
     image: prometheuscommunity/postgres-exporter:v0.20.1
     container_name: postgres-exporter
-    profiles: [monitoring]
     environment:
       DATA_SOURCE_URI: db:5432/${POSTGRES_DB}?sslmode=disable
       DATA_SOURCE_USER: monitoring
@@ -379,7 +376,6 @@ services:
   loki:
     image: grafana/loki:3.7.8
     container_name: loki
-    profiles: [monitoring]
     command: -config.file=/etc/loki/config.yml
     volumes:
       - ./infra/monitoring/loki/config.yml:/etc/loki/config.yml:ro
@@ -390,7 +386,6 @@ services:
   alloy:
     image: grafana/alloy:v1.20.1
     container_name: alloy
-    profiles: [monitoring]
     command: run /etc/alloy/config.alloy --storage.path=/var/lib/alloy/data
     volumes:
       - ./infra/monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
@@ -404,7 +399,6 @@ services:
   grafana:
     image: grafana/grafana:13.2.3
     container_name: grafana
-    profiles: [monitoring]
     environment:
       # Servi sous /grafana par Traefik (sans retirer le préfixe)
       GF_SERVER_ROOT_URL: http://localhost:${HTTP_PORT:-80}/grafana/

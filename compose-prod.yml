@@ -11,6 +11,8 @@
 #   - pas de pgAdmin ni de Traefik : le Traefik partagé (infra/traefik/compose.yml) sert
 #     tous les environnements en HTTPS, chacun sur son entrypoint (https-<DEPLOY_ENV>)
 #   - Postgres n'est pas exposé hors du réseau Docker
+#   - la supervision (Prometheus, Grafana, Loki, Alloy, postgres-exporter) démarre
+#     avec le reste. Grafana est sur ${FRONT_URL}/grafana, aucun port publié.
 #
 # Les routes Traefik n'acceptent que les requêtes adressées à PUBLIC_HOST (IP de la VM,
 # localhost en CI) : un autre en-tête Host reçoit le 404 de Traefik, sans redirection vers
@@ -34,6 +36,8 @@ services:
       API_DB_PASSWORD: ${API_DB_PASSWORD}
       BACKUP_DB_PASSWORD: ${BACKUP_DB_PASSWORD}
       KEYCLOAK_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+      # postgres-exporter s'en sert. db/07_passwords.sh ne pose le mot de passe que s'il est défini.
+      MONITORING_DB_PASSWORD: ${MONITORING_DB_PASSWORD:-}
     volumes:
       - postgresql_data:/var/lib/postgresql
       # Scripts d'init : exécutés seulement au premier démarrage (volume vide)
@@ -316,16 +320,114 @@ services:
     networks:
       - traefik_public
 
+  # ---------------------------------------------------------------------------
+  # Supervision : démarre avec le reste de la stack. Même pile que
+  # compose-local.yml. Aucun port publié : Grafana passe par le Traefik
+  # partagé, sous /grafana.
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+    volumes:
+      - ./infra/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - monitoring_network
+      # Cibles traefik:8082 (Traefik partagé) et api:8000
+      - traefik_public
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.20.1
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_URI: db:5432/${POSTGRES_DB}?sslmode=disable
+      DATA_SOURCE_USER: monitoring
+      DATA_SOURCE_PASS: ${MONITORING_DB_PASSWORD:-}
+      # Totaux métier (db/19_supervision_metier.sql), en plus des stats PostgreSQL
+      PG_EXPORTER_EXTEND_QUERY_PATH: /etc/postgres_exporter/queries.yaml
+    volumes:
+      - ./infra/monitoring/postgres-exporter/queries.yaml:/etc/postgres_exporter/queries.yaml:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - postgres_network
+      - monitoring_network
+
+  loki:
+    image: grafana/loki:3.7.8
+    restart: unless-stopped
+    command: -config.file=/etc/loki/config.yml
+    volumes:
+      - ./infra/monitoring/loki/config.yml:/etc/loki/config.yml:ro
+      - loki_data:/loki
+    networks:
+      - monitoring_network
+
+  alloy:
+    image: grafana/alloy:v1.20.1
+    restart: unless-stopped
+    command: run /etc/alloy/config.alloy --storage.path=/var/lib/alloy/data
+    volumes:
+      - ./infra/monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      # Lecture seule : Alloy liste les conteneurs et lit leurs logs.
+      # Le proxy de socket de Traefik ne sert pas les logs (SMARTOPS-82).
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - loki
+    networks:
+      - monitoring_network
+
+  grafana:
+    image: grafana/grafana:13.2.3
+    restart: unless-stopped
+    environment:
+      # Servi sous /grafana par Traefik (sans retirer le préfixe).
+      # FRONT_URL : https://<VM_IP>:8443 en dev, https://<VM_IP> en prod.
+      GF_SERVER_ROOT_URL: ${FRONT_URL}/grafana/
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+    volumes:
+      # Sources de données et tableaux de bord décrits dans le dépôt
+      - ./infra/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.enervision-${DEPLOY_ENV}-grafana.rule=Host(`${PUBLIC_HOST:?PUBLIC_HOST manquant}`) && PathPrefix(`/grafana`)
+      - traefik.http.routers.enervision-${DEPLOY_ENV}-grafana.entrypoints=https-${DEPLOY_ENV}
+      - traefik.http.services.enervision-${DEPLOY_ENV}-grafana.loadbalancer.server.port=3000
+    depends_on:
+      - prometheus
+      - loki
+    networks:
+      - monitoring_network
+      - traefik_public
+
 volumes:
   postgresql_data:
   mlflow_data:
   modele_cache:
   dataset_data:
   backup_cache:
+  prometheus_data:
+  loki_data:
+  grafana_data:
 
 networks:
   postgres_network:
   mlflow_network:
+  # Prometheus, Grafana, Loki, Alloy et postgres-exporter. Propre au projet
+  # Compose : dev et prod ne partagent pas cette supervision.
+  monitoring_network:
   # Créé par infra/traefik/compose.yml
   traefik_public:
     external: true

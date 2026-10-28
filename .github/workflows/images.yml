@@ -53,6 +53,8 @@ jobs:
       SEED_PASSWORD: ci-comptes-demo-mot-de-passe
       # Sauvegarde : testée dans un dépôt local du conteneur, pas sur Azure
       RESTIC_PASSWORD: ci-restic
+      GRAFANA_ADMIN_PASSWORD: ci-grafana
+      MONITORING_DB_PASSWORD: ci-monitoring
       FRONT_URL: https://localhost:8443
       # Nom d'hôte accepté par les routes Traefik (IP de la VM en déploiement)
       PUBLIC_HOST: localhost
