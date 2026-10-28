@@ -27,6 +27,10 @@ class Prediction(BaseModel):
     consommation_basse_kwh: float | None
     consommation_haute_kwh: float | None
     pic_prevu: bool
+    # Maximum de l'heure et sa fourchette : null si le modèle ne les calcule pas
+    pic_prevu_kw: float | None
+    pic_bas_kw: float | None
+    pic_haut_kw: float | None
     calculee_le: datetime
     version_modele: str
 
@@ -60,7 +64,8 @@ def lister_predictions(
                heure_prevue AS heure,
                consommation_prevue_kwh AS consommation_kwh,
                consommation_basse_kwh, consommation_haute_kwh,
-               pic_prevu, calculee_le, version_modele
+               pic_prevu, pic_prevu_kw, pic_bas_kw, pic_haut_kw,
+               calculee_le, version_modele
         FROM gold.prediction
         WHERE id_site = :id_site AND heure_prevue >= :debut AND heure_prevue < :fin
           -- Site d'un autre client : aucune ligne, comme un site inconnu

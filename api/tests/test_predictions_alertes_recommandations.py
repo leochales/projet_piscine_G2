@@ -43,6 +43,9 @@ PREDICTION: dict[str, Any] = {
     "consommation_basse_kwh": Decimal("1700.000"),
     "consommation_haute_kwh": Decimal("1870.000"),
     "pic_prevu": True,
+    "pic_prevu_kw": Decimal("460.00"),
+    "pic_bas_kw": Decimal("440.00"),
+    "pic_haut_kw": Decimal("480.00"),
     "calculee_le": datetime(2026, 10, 26, 14, 5, tzinfo=UTC),
     "version_modele": "rf-3",
 }
@@ -53,12 +56,19 @@ def test_predictions_renvoie_la_fourchette(client: TestClient) -> None:
         "heure": datetime(2026, 10, 26, 16, 0, tzinfo=UTC),
         "consommation_basse_kwh": None,
         "consommation_haute_kwh": None,
+        "pic_prevu": False,
+        "pic_prevu_kw": None,
+        "pic_bas_kw": None,
+        "pic_haut_kw": None,
     }
-    brancher([PREDICTION, sans_fourchette])
+    session = brancher([PREDICTION, sans_fourchette])
 
     response = client.get("/api/sites/SITE001/predictions")
 
     assert response.status_code == 200
+    assert "pic_prevu_kw" in session.requete
+    assert "pic_bas_kw" in session.requete
+    assert "pic_haut_kw" in session.requete
     corps = response.json()
     assert corps[0] == {
         "heure": "2026-10-26T15:00:00Z",
@@ -66,10 +76,14 @@ def test_predictions_renvoie_la_fourchette(client: TestClient) -> None:
         "consommation_basse_kwh": 1700.0,
         "consommation_haute_kwh": 1870.0,
         "pic_prevu": True,
+        "pic_prevu_kw": 460.0,
+        "pic_bas_kw": 440.0,
+        "pic_haut_kw": 480.0,
         "calculee_le": "2026-10-26T14:05:00Z",
         "version_modele": "rf-3",
     }
     assert corps[1]["consommation_basse_kwh"] is None
+    assert corps[1]["pic_prevu_kw"] is None
 
 
 @pytest.mark.parametrize(

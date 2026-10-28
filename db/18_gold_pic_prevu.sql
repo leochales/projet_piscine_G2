@@ -1,10 +1,10 @@
 -- =============================================================================
 -- EnerVision : pic prévu en kW (SMARTOPS-95)
 -- 18 : gold.prediction ne connaît que la consommation moyenne de l'heure et un
---      booléen pic_prevu. Une moyenne horaire dépasse rarement 90 % de la
---      capacité, même quand dix minutes de l'heure sont un vrai pic. Le modèle
---      prédit donc aussi le maximum de l'heure, comparé au même seuil que
---      l'ETL.
+--      booléen pic_prevu. Une moyenne horaire dépasse rarement le seuil du
+--      site, même quand dix minutes de l'heure sont un vrai pic. Le modèle
+--      prédit donc aussi le maximum de l'heure, comparé à
+--      app.site.seuil_alerte_pct (pas à un 90 % fixe).
 --
 -- Rejouable sans effet (db/tools/migrate.sh) : met à niveau une base créée
 -- avant ce changement, et ne fait rien sur une base à jour.
@@ -26,7 +26,9 @@ ADD COLUMN IF NOT EXISTS pic_haut_kw NUMERIC(10, 2);
 COMMENT ON COLUMN gold.prediction.pic_prevu_kw IS
 'Puissance maximale prévue sur l''heure, en kW. NULL si le modèle ne prédit '
 'que la consommation. Le modèle met pic_prevu à vrai quand cette valeur '
-'atteint 90 % de app.site.capacite_kw, le même seuil que l''ETL.';
+'atteint app.site.seuil_alerte_pct pour cent de capacite_kw : 100 pour un '
+'datacenter, 98 pour une usine, 90 pour les autres. Le compte model lit '
+'cette colonne (GRANT de 17_gold_alertes.sql).';
 COMMENT ON COLUMN gold.prediction.pic_bas_kw IS
 'Borne basse du pic prévu, NULL si le modèle ne donne pas de fourchette';
 COMMENT ON COLUMN gold.prediction.pic_haut_kw IS
@@ -53,6 +55,26 @@ BEGIN
                 AND pic_bas_kw <= pic_prevu_kw
                 AND pic_prevu_kw <= pic_haut_kw
             )
+        );
+    END IF;
+END
+$$;
+
+-- Une puissance prévue ne peut pas être négative. NULL reste accepté :
+-- les prédictions déjà en base n'ont pas de pic.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'prediction_pic_positif_check'
+          AND conrelid = 'gold.prediction'::regclass
+    ) THEN
+        ALTER TABLE gold.prediction
+        ADD CONSTRAINT prediction_pic_positif_check
+        CHECK (
+            (pic_prevu_kw IS NULL OR pic_prevu_kw >= 0)
+            AND (pic_bas_kw IS NULL OR pic_bas_kw >= 0)
+            AND (pic_haut_kw IS NULL OR pic_haut_kw >= 0)
         );
     END IF;
 END
