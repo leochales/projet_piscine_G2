@@ -178,8 +178,17 @@ jobs:
           check_headers / "X-Frame-Options: DENY" "Content-Security-Policy: default-src 'self';"
           check_headers /page-inexistante "X-Frame-Options: DENY" "Content-Security-Policy: default-src 'self';"
           check_headers /auth/realms/enervision
-          # Front utilisable sous la CSP (default-src 'self') : aucun script en ligne dans la
-          # page, et chaque script qu'elle charge vient de la même origine
+          # Ce contrôle ne charge pas la page dans un navigateur : il vérifie la CSP du front
+          # telle qu'écrite. Styles en ligne autorisés (attributs style, feuille du toaster),
+          # scripts laissés sur default-src 'self'
+          csp=$(curl -sk -o /dev/null -D - "$base/" | tr -d '\r' | grep -i '^Content-Security-Policy:')
+          grep -qE "style-src[^;]*'unsafe-inline'" <<< "$csp" \
+            || { echo "::error::style-src sans 'unsafe-inline' : styles en ligne du front refusés"; echo "$csp"; exit 1; }
+          if grep -q "script-src" <<< "$csp"; then
+            echo "::error::script-src défini : les scripts doivent rester sur default-src 'self'"; echo "$csp"; exit 1
+          fi
+          # Aucun script en ligne dans la page, et chaque script qu'elle charge vient de la
+          # même origine
           page=$(curl -fsSk "$base/")
           inline=$(grep -oiE '<script[^>]*>' <<< "$page" | grep -viE '[[:space:]]src=' || true)
           [ -z "$inline" ] || { echo "::error::Script en ligne refusé par la CSP : $inline"; exit 1; }
