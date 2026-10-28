@@ -2,7 +2,7 @@
 // le dashboard, et choix du pic prévu (US2).
 
 import type { PredictionApi } from '@/types/api'
-import type { PredictionPoint } from '@/types/energy'
+import type { PredictedPeak as PicTableau, PredictionPoint } from '@/types/energy'
 
 /**
  * Une heure prévue. Les kWh d'une heure sont la puissance moyenne, en kW, comme pour les
@@ -86,4 +86,20 @@ export function predictedPeak(predictions: readonly PredictionPoint[]): Predicte
     if (best === null || peak.kw > best.kw) best = peak
   }
   return best
+}
+
+/**
+ * Pic affiché dans le tableau des sites : le même que sur la page d'un site, seulement
+ * s'il atteint le seuil d'alerte. Atteindre le seuil compte comme le dépasser.
+ */
+export function picAuSeuil(
+  predictions: readonly PredictionPoint[],
+  capaciteKw: number,
+  seuilAlertePct: number,
+): PicTableau | null {
+  const peak = predictedPeak(predictions)
+  if (peak === null || capaciteKw <= 0) return null
+  const pourcentageCapacite = (peak.kw / capaciteKw) * 100
+  if (pourcentageCapacite < seuilAlertePct) return null
+  return { horodatage: peak.horodatage, pourcentageCapacite }
 }

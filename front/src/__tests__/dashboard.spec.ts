@@ -189,19 +189,70 @@ describe('mesures : source API', () => {
   })
 
   it('lit la dernière mesure de chaque site', async () => {
+    const urls: string[] = []
     stubFetch((url) => {
-      expect(url).toBe('/api/sites/derniere-mesure')
-      return { status: 200, body: [derniere] }
+      urls.push(url)
+      if (url.includes('derniere-mesure')) return { status: 200, body: [derniere] }
+      return { status: 200, body: [] }
     })
 
     const sites = await fetchOverview()
 
+    expect(urls).toContain('/api/sites/derniere-mesure')
+    expect(urls).toContain('/api/sites/SITE001/predictions?horizon=24h')
     expect(sites).toHaveLength(1)
     expect(sites[0]).toMatchObject({
       site: { id: 'SITE001', nom: 'Bureau Paris La Défense', type: 'bureaux' },
       consommationKw: 120,
       mesureLe: '2026-10-27T09:05:00Z',
+      picPrevu: null,
     })
+  })
+
+  it('affiche le pic des 24 h quand il atteint le seuil du site', async () => {
+    stubFetch((url) => {
+      if (url.includes('derniere-mesure')) return { status: 200, body: [derniere] }
+      return {
+        status: 200,
+        body: [
+          {
+            heure: '2026-10-28T14:00:00Z',
+            consommation_kwh: 100,
+            consommation_basse_kwh: 90,
+            consommation_haute_kwh: 110,
+            pic_prevu: true,
+            pic_prevu_kw: 190,
+            pic_bas_kw: 180,
+            pic_haut_kw: 200,
+            calculee_le: '2026-10-27T10:05:00Z',
+            version_modele: 'random_forest-3',
+          },
+        ],
+      }
+    })
+
+    const sites = await fetchOverview()
+
+    // 190 kW / 200 kW = 95 %, au-dessus du seuil 90 %
+    expect(sites[0]?.picPrevu).toEqual({
+      horodatage: '2026-10-28T14:00:00Z',
+      pourcentageCapacite: 95,
+    })
+  })
+
+  it('garde le site si les prévisions du tableau sont indisponibles', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    stubFetch((url) => {
+      if (url.includes('derniere-mesure')) return { status: 200, body: [derniere] }
+      return { status: 503, body: { detail: 'indisponible' } }
+    })
+
+    const sites = await fetchOverview()
+
+    expect(sites).toHaveLength(1)
+    expect(sites[0]?.picPrevu).toBeNull()
+    expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
   })
 
   it('lit la transmission et les capteurs de chaque site (US4)', async () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { hoursBetween, predictedPeak } from '@/lib/predictions'
+import { hoursBetween, picAuSeuil, predictedPeak } from '@/lib/predictions'
 import type { PredictionPoint } from '@/types/energy'
 
 const heure = (horodatage: string, valeurs: Partial<PredictionPoint> = {}): PredictionPoint => ({
@@ -49,6 +49,29 @@ describe('lib/predictions', () => {
 
   it('ne donne pas de pic sans prévision', () => {
     expect(predictedPeak([])).toBeNull()
+  })
+
+  it('retient le pic du tableau quand il atteint le seuil du site', () => {
+    // Moyenne plus haute à 12 h, mais la pointe de 13 h est le pic, comme sur la page du site
+    const pic = picAuSeuil(
+      [
+        heure('2026-10-28T12:00:00Z', { kw: 900, picKw: 910 }),
+        heure('2026-10-28T13:00:00Z', { kw: 800, picKw: 940 }),
+      ],
+      1000,
+      90,
+    )
+
+    expect(pic).toEqual({ horodatage: '2026-10-28T13:00:00Z', pourcentageCapacite: 94 })
+  })
+
+  it('garde un pic juste au seuil, et rien en dessous ou sans prévision', () => {
+    expect(picAuSeuil([heure('2026-10-28T12:00:00Z', { kw: 900 })], 1000, 90)).toEqual({
+      horodatage: '2026-10-28T12:00:00Z',
+      pourcentageCapacite: 90,
+    })
+    expect(picAuSeuil([heure('2026-10-28T12:00:00Z', { kw: 899 })], 1000, 90)).toBeNull()
+    expect(picAuSeuil([], 1000, 90)).toBeNull()
   })
 
   it('garde l’heure en cours entre la dernière mesure et la première prévision', () => {

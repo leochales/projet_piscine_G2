@@ -15,7 +15,8 @@ import {
   toConsumptionPoint,
   toSiteOverview,
 } from '@/lib/mesures'
-import { toPredictionPoint } from '@/lib/predictions'
+import { SEUIL_ALERTE_PCT } from '@/lib/indicators'
+import { picAuSeuil, toPredictionPoint } from '@/lib/predictions'
 import { ACCEPTEE_EN_COURS_JOURS, toRecommendation } from '@/lib/recommendations'
 import { ApiError, getJson, postJson } from '@/services/http'
 import type {
@@ -176,7 +177,22 @@ export async function fetchKpis(): Promise<FleetKpis> {
 
 export async function fetchOverview(): Promise<SiteOverview[]> {
   if (SOURCES.mesures !== 'api') return respond(mocks.overview, [])
-  return fromApi(() => fetchDernieresMesures(), [])
+  return fromApi(async () => {
+    const sites = await fetchDernieresMesures()
+    // Même pic que la page d'un site sur 24 h. Une prévision en panne laisse la ligne sans pic.
+    const pics = await Promise.all(
+      sites.map((site) =>
+        fetchPredictions(site.site.id, '24h').then((lignes) =>
+          picAuSeuil(
+            lignes.map(toPredictionPoint),
+            site.site.capaciteKw,
+            site.site.seuilAlertePct ?? SEUIL_ALERTE_PCT,
+          ),
+        ),
+      ),
+    )
+    return sites.map((site, index) => ({ ...site, picPrevu: pics[index] ?? null }))
+  }, [])
 }
 
 export async function fetchFleetTrend(): Promise<FleetTrend> {
