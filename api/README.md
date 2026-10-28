@@ -176,13 +176,16 @@ Prévisions horaires d'un site (lues dans `gold.prediction`) pour les heures à 
     "consommation_basse_kwh": 1700.0,
     "consommation_haute_kwh": 1870.0,
     "pic_prevu": true,
+    "pic_prevu_kw": 460.0,
+    "pic_bas_kw": 440.0,
+    "pic_haut_kw": 480.0,
     "calculee_le": "2026-10-26T14:05:00Z",
     "version_modele": "rf-3"
   }
 ]
 ```
 
-La fourchette (`consommation_basse_kwh`, `consommation_haute_kwh`) vaut `null` si le modèle n'en donne pas.
+La fourchette de consommation (`consommation_basse_kwh`, `consommation_haute_kwh`) et celle du pic (`pic_bas_kw`, `pic_haut_kw`) valent `null` si le modèle ne les donne pas. `pic_prevu_kw` aussi : `pic_prevu` est alors faux. Le modèle met `pic_prevu` à vrai quand `pic_prevu_kw` atteint le seuil du site (`app.site.seuil_alerte_pct`), pas un 90 % fixe.
 
 ### `GET /api/alertes`
 
