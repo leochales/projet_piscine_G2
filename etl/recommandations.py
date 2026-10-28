@@ -4,7 +4,7 @@ Les recommandations viennent de règles simples, pas du modèle : chaque alerte
 en cours (API Mock, pics de l'ETL, pics prévus par le modèle) reçoit la
 recommandation de la règle qui correspond à son type et à sa sévérité.
 
-Les règles et le calcul sont en base (db/15_gold_recommandations.sql), testés
+Les règles et le calcul sont en base (db/18_gold_recommandations.sql), testés
 en CI par db/tests/test_gold_recommandations.sql :
   - table gold.regle_recommandation : règle exacte, sinon règle du type,
     sinon règle générique ;

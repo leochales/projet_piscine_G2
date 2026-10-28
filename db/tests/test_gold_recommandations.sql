@@ -1,5 +1,5 @@
 -- =============================================================================
--- Tests des recommandations (db/15_gold_recommandations.sql) et des droits du
+-- Tests des recommandations (db/18_gold_recommandations.sql) et des droits du
 -- compte etl
 --
 -- Lancé par la CI (.github/workflows/images.yml) sur une base neuve, avec
@@ -28,24 +28,38 @@ CROSS JOIN (
 ) AS v (id_site, nom, statut)
 WHERE c.nom = 'Client test recommandations';
 
--- Alertes en cours, une par cas à vérifier, et une alerte terminée
+-- Alertes en cours, une par cas à vérifier, et une alerte terminée. Débuts
+-- décalés : l'ETL n'a qu'une alerte par site, type, capteur et début
+-- (uq_alerte_etl, db/17_gold_alertes.sql), et un capteur pour une alerte sensor
 INSERT INTO gold.alerte (
-    id_site, source, type, severite, message, debut, fin, valeur, seuil
+    id_site, source, type, capteur, severite, message, debut, fin, valeur, seuil
 ) VALUES
 -- Règle exacte (threshold, critical), dépassement de 120 kW
-('SITE-R', 'etl', 'threshold', 'critical', 'r1', now(), null, 570, 450),
+('SITE-R', 'etl', 'threshold', null, 'critical', 'r1', now(), null, 570, 450),
 -- Règle du type (threshold, sans sévérité), dépassement de 50 kW
-('SITE-R', 'etl', 'threshold', 'high', 'r2', now(), null, 500, 450),
+(
+    'SITE-R', 'etl', 'threshold', null, 'high', 'r2',
+    now() - interval '1 minute', null, 500, 450
+),
 -- Pic prévu par le modèle, dépassement de 10 kW
-('SITE-R', 'modele', 'predicted_peak', 'high', 'r3', now(), null, 460, 450),
+(
+    'SITE-R', 'modele', 'predicted_peak', null, 'high', 'r3',
+    now(), null, 460, 450
+),
 -- Pas de gain : type sans dépassement de seuil
-('SITE-R', 'etl', 'sensor', 'medium', 'r4', now(), null, null, null),
+(
+    'SITE-R', 'etl', 'sensor', 'consumption', 'medium', 'r4',
+    now(), null, null, null
+),
 -- Pas de gain : valeur sous le seuil
-('SITE-R', 'etl', 'spike', 'high', 'r5', now(), null, 400, 450),
+('SITE-R', 'etl', 'spike', null, 'high', 'r5', now(), null, 400, 450),
 -- Alerte terminée : pas de recommandation
-('SITE-R', 'etl', 'threshold', 'high', 'r6', now(), now(), 500, 450),
+(
+    'SITE-R', 'etl', 'threshold', null, 'high', 'r6',
+    now() - interval '2 minutes', now(), 500, 450
+),
 -- Site inactif : pas de recommandation
-('SITE-RI', 'etl', 'threshold', 'high', 'r7', now(), null, 500, 450);
+('SITE-RI', 'etl', 'threshold', null, 'high', 'r7', now(), null, 500, 450);
 
 -- 1. Une recommandation par alerte en cours d'un site actif, avec la bonne
 --    règle et le bon gain
