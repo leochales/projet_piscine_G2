@@ -155,6 +155,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: etl
       POSTGRES_PASSWORD: ${ETL_DB_PASSWORD}
+      # Prix du kWh pour le gain estimé des recommandations (même valeur que l'API)
+      PRIX_KWH_EUR: ${PRIX_KWH_EUR:-0.14}
     depends_on:
       db:
         condition: service_healthy
