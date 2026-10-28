@@ -22,6 +22,13 @@ describe('capacité', () => {
     expect(capacityLevel(SEUIL_ALERTE_PCT)).toBe('critique')
     expect(capacityLevel(120)).toBe('critique') // dépassement de la capacité
   })
+
+  it('suit le seuil d’alerte du site : 92 % n’est pas critique pour un data center', () => {
+    // Data center : seuil à 100 %, charge élevée à partir de 95 %
+    expect(capacityLevel(92, 100)).toBe('normal')
+    expect(capacityLevel(95, 100)).toBe('eleve')
+    expect(capacityLevel(100, 100)).toBe('critique')
+  })
 })
 
 describe('tendance', () => {

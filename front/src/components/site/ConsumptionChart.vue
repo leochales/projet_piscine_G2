@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, useTemplateRef, watch } from 'vue'
 import { Line } from 'vue-chartjs'
-import { useMediaQuery } from '@vueuse/core'
+import { useIntervalFn, useMediaQuery, useNow } from '@vueuse/core'
 import {
   CategoryScale,
   Chart as ChartJS,
@@ -17,6 +17,7 @@ import {
 
 import { MINUTES_RECONSTITUEES_MARQUEES } from '@/lib/etat'
 import { formatAxisHour, formatEurCents, formatKwh, formatKw } from '@/lib/format'
+import { buildChartPoints, nowIndexOf, peakOnAxis } from '@/lib/chartPoints'
 import type { SiteSeries } from '@/types/energy'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler, Tooltip)
@@ -50,45 +51,13 @@ onMounted(() =>
 )
 onBeforeUnmount(() => themeObserver.disconnect())
 
-// Un seul axe horaire : les mesures, puis les prédictions.
-// Le dernier point mesuré sert aussi de départ à la prédiction, pour que les courbes se rejoignent.
-const points = computed(() => {
-  const { mesures, predictions } = props.series
-  // La prévision part de la dernière heure qui a une valeur. Sinon, si cette heure
-  // est vide, le trait pointillé ne rejoint plus les mesures.
-  let junctionAt = -1
-  for (let i = mesures.length - 1; i >= 0; i--) {
-    if (mesures[i]?.kw != null) {
-      junctionAt = i
-      break
-    }
-  }
-  return [
-    ...mesures.map((m, i) => {
-      const junction = i === junctionAt ? m.kw : null
-      return {
-        t: m.horodatage,
-        mesure: m.kw,
-        kwh: m.kwh ?? null,
-        cout: m.coutEur ?? null,
-        imputees: m.minutesImputees ?? 0,
-        pred: junction,
-        basse: junction,
-        haute: junction,
-      }
-    }),
-    ...predictions.slice(1).map((p) => ({
-      t: p.horodatage,
-      mesure: null,
-      kwh: null,
-      cout: null,
-      imputees: 0,
-      pred: p.kw,
-      basse: p.basseKw,
-      haute: p.hauteKw,
-    })),
-  ]
-})
+// Axe horaire : mesures, heure en cours, prévisions (lib/chartPoints.ts)
+const points = computed(() => buildChartPoints(props.series))
+
+// La fourchette n'est dessinée (et légendée) que si le modèle en donne une
+const hasBand = computed(() =>
+  props.series.predictions.some((p) => p.basseKw !== null && p.hauteKw !== null),
+)
 
 // US4 : heures dont une part notable des minutes a été reconstituée après une panne. Marquées
 // d'un point creux sur la courbe : la valeur est en partie estimée, pas mesurée. Les quelques
@@ -98,71 +67,88 @@ const isImputed = (p: { mesure: number | null; imputees: number }) =>
   p.mesure !== null && p.imputees >= MINUTES_RECONSTITUEES_MARQUEES
 const hasImputed = computed(() => points.value.some(isImputed))
 
-const nowIndex = computed(() => props.series.mesures.length - 1)
+// Horloge relue chaque minute : « maintenant » passe à l'heure suivante même si les données
+// ne sont pas encore rechargées
+const now = useNow({ scheduler: (cb) => useIntervalFn(cb, 60_000) })
+const nowIndex = computed(() => nowIndexOf(points.value, now.value.getTime()))
+// La ligne est dessinée par un plugin : Chart.js ne la redessine que si on le lui demande
+const chart = useTemplateRef<{ chart?: ChartJS<'line'> }>('chart')
+watch(nowIndex, () => chart.value?.chart?.update('none'))
 
-const peak = computed(() => {
-  let best = { index: -1, kw: -Infinity }
-  points.value.forEach((p, index) => {
-    if (index > nowIndex.value && p.pred !== null && p.pred > best.kw) best = { index, kw: p.pred }
-  })
-  return best
-})
+// Pic prévu : à son heure et à sa valeur, celle du texte sous le graphique (maximum de
+// l'heure quand le modèle le donne, donc au-dessus de la courbe moyenne)
+const peak = computed(() => peakOnAxis(points.value, props.series))
 
 // Heure de Paris, quel que soit le fuseau du poste
 const labels = computed(() => points.value.map((p) => formatAxisHour(p.t)))
 
-const data = computed<ChartData<'line'>>(() => ({
-  labels: labels.value,
-  datasets: [
-    {
-      label: 'Fourchette basse',
-      data: points.value.map((p) => p.basse),
-      borderWidth: 0,
-      pointRadius: 0,
-    },
-    {
-      label: 'Fourchette haute',
-      data: points.value.map((p) => p.haute),
-      borderWidth: 0,
-      pointRadius: 0,
-      backgroundColor: colors.value.band,
-      fill: '-1', // remplit jusqu'à la fourchette basse
-    },
-    {
-      label: 'Mesures réelles',
-      data: points.value.map((p) => p.mesure),
-      borderColor: colors.value.ink,
-      borderWidth: 2,
-      pointRadius: points.value.map((p) => (isImputed(p) ? 3 : 0)),
-      pointBorderWidth: 1.5,
-      pointBackgroundColor: 'transparent',
-      pointBorderColor: colors.value.ink,
-      tension: 0.2,
-      spanGaps: false,
-    },
-    {
-      label: 'Prédiction',
-      data: points.value.map((p) => p.pred),
-      borderColor: colors.value.ink,
-      borderWidth: 2,
-      borderDash: [6, 5],
-      spanGaps: true,
-      tension: 0.35,
-      pointRadius: points.value.map((_, i) => (i === peak.value.index ? 6 : 0)),
-      pointBorderWidth: 2,
-      pointBackgroundColor: 'transparent',
-      pointBorderColor: colors.value.ink,
-    },
-    {
-      label: `${props.seuilPct ?? 90} % de la capacité`,
-      data: points.value.map(() => seuil.value),
-      borderColor: colors.value.muted,
-      borderWidth: 1,
-      borderDash: [4, 4],
-      pointRadius: 0,
-    },
-  ],
-}))
+const data = computed<ChartData<'line'>>(() => {
+  const peakPoint = peak.value
+  return {
+    labels: labels.value,
+    datasets: [
+      {
+        label: 'Fourchette basse',
+        data: points.value.map((p) => p.basse),
+        borderWidth: 0,
+        pointRadius: 0,
+        // Comme la courbe prévue : la bande traverse l'heure en cours, laissée vide
+        spanGaps: true,
+      },
+      {
+        label: 'Fourchette haute',
+        data: points.value.map((p) => p.haute),
+        borderWidth: 0,
+        pointRadius: 0,
+        spanGaps: true,
+        backgroundColor: colors.value.band,
+        fill: '-1', // remplit jusqu'à la fourchette basse
+      },
+      {
+        label: 'Mesures réelles',
+        data: points.value.map((p) => p.mesure),
+        borderColor: colors.value.ink,
+        borderWidth: 2,
+        pointRadius: points.value.map((p) => (isImputed(p) ? 3 : 0)),
+        pointBorderWidth: 1.5,
+        pointBackgroundColor: 'transparent',
+        pointBorderColor: colors.value.ink,
+        tension: 0.2,
+        spanGaps: false,
+      },
+      {
+        label: 'Prédiction',
+        data: points.value.map((p) => p.pred),
+        borderColor: colors.value.ink,
+        borderWidth: 2,
+        borderDash: [6, 5],
+        spanGaps: true,
+        tension: 0.35,
+        pointRadius: 0,
+      },
+      {
+        label: `${props.seuilPct ?? 90} % de la capacité`,
+        data: points.value.map(() => seuil.value),
+        borderColor: colors.value.muted,
+        borderWidth: 1,
+        borderDash: [4, 4],
+        pointRadius: 0,
+      },
+      {
+        // Rond du pic prévu, seul point de ce jeu de données
+        label: 'Pic prévu',
+        data: points.value.map((_, i) =>
+          peakPoint && i === peakPoint.index ? peakPoint.kw : null,
+        ),
+        showLine: false,
+        pointRadius: 6,
+        pointBorderWidth: 2,
+        pointBackgroundColor: 'transparent',
+        pointBorderColor: colors.value.ink,
+      },
+    ],
+  }
+})
 
 // Ligne verticale « maintenant » (pas besoin du plugin d'annotations pour un seul trait)
 const nowLine: Plugin<'line'> = {
@@ -207,10 +193,25 @@ const options = computed<ChartOptions<'line'>>(() => ({
   plugins: {
     legend: { display: false },
     tooltip: {
-      filter: (item) => item.raw !== null && item.datasetIndex >= 2,
+      // Pas de ligne « Prédiction » sur le point de jonction : c'est la dernière mesure
+      // Ni le rond du pic (5) : l'infobulle de la prédiction donne déjà le maximum de l'heure
+      filter: (item) =>
+        item.raw !== null &&
+        item.datasetIndex >= 2 &&
+        item.datasetIndex !== 5 &&
+        !(item.datasetIndex === 3 && points.value[item.dataIndex]?.mesure !== null),
       callbacks: {
         label: (item) => {
           const point = points.value[item.dataIndex]
+          // Heure prévue : moyenne, fourchette et maximum de l'heure quand ils existent
+          if (item.datasetIndex === 3 && point) {
+            const lignes = [`Prédiction : ${formatKw(Number(item.raw))} en moyenne`]
+            if (point.basse !== null && point.haute !== null) {
+              lignes.push(`fourchette : ${formatKw(point.basse)} – ${formatKw(point.haute)}`)
+            }
+            if (point.pic !== null) lignes.push(`maximum de l'heure : ${formatKw(point.pic)}`)
+            return lignes
+          }
           // Heure réelle : kWh et euros. Le tracé reste en kW (les kWh d'une heure).
           if (item.datasetIndex === 2 && point?.kwh != null) {
             const cout = point.cout == null ? '' : ` · ${formatEurCents(point.cout)}`
@@ -231,19 +232,23 @@ const options = computed<ChartOptions<'line'>>(() => ({
 <template>
   <div>
     <div class="h-72 sm:h-80">
-      <Line :data="data" :options="options" :plugins="[nowLine]" />
+      <Line ref="chart" :data="data" :options="options" :plugins="[nowLine]" />
     </div>
     <ul class="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-sm text-muted-foreground">
       <li class="flex items-center gap-2">
         <span class="h-0.5 w-5 bg-foreground" aria-hidden="true" /> mesures réelles
       </li>
-      <li class="flex items-center gap-2">
+      <li v-if="series.predictions.length" class="flex items-center gap-2">
         <span class="w-5 border-t-2 border-dashed border-foreground" aria-hidden="true" />
         prédiction
       </li>
-      <li class="flex items-center gap-2">
+      <li v-if="hasBand" class="flex items-center gap-2">
         <span class="h-3 w-5 rounded-sm bg-(--chart-canvas-band)" aria-hidden="true" /> fourchette
         (valeur basse – valeur haute)
+      </li>
+      <li v-if="peak" class="flex items-center gap-2">
+        <span class="mx-1 size-3 rounded-full border-2 border-foreground" aria-hidden="true" />
+        pic prévu
       </li>
       <li v-if="hasImputed" class="flex items-center gap-2">
         <span

@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest'
 import {
   costsFrom,
   fleetFrom,
+  isReliableHour,
+  junctionIndex,
   kpisFrom,
   parisMidnight,
   toConsumptionPoint,
@@ -15,6 +17,7 @@ const mesure = (partiel: Partial<DerniereMesureApi> = {}): DerniereMesureApi => 
   nom: 'Usine Lyon Vénissieux',
   type: 'factory',
   capacite_kw: 1000,
+  seuil_alerte_pct: 98,
   horodatage: '2026-10-27T09:05:00Z',
   consommation_kw: 640,
   data_quality: 'good',
@@ -24,7 +27,13 @@ const mesure = (partiel: Partial<DerniereMesureApi> = {}): DerniereMesureApi => 
 describe('dernière mesure', () => {
   it('reprend le site, la puissance et l’heure', () => {
     expect(toSiteOverview(mesure())).toMatchObject({
-      site: { id: 'SITE002', nom: 'Usine Lyon Vénissieux', type: 'usine', capaciteKw: 1000 },
+      site: {
+        id: 'SITE002',
+        nom: 'Usine Lyon Vénissieux',
+        type: 'usine',
+        capaciteKw: 1000,
+        seuilAlertePct: 98,
+      },
       consommationKw: 640,
       mesureLe: '2026-10-27T09:05:00Z',
       picPrevu: null,
@@ -70,6 +79,7 @@ describe('consommation horaire', () => {
       kwh: 500,
       coutEur: 70,
       minutesImputees: 0,
+      couverture: 1,
     })
     expect(toConsumptionPoint(heure('2026-10-27T09:00:00Z', null, null))).toEqual({
       horodatage: '2026-10-27T09:00:00Z',
@@ -77,7 +87,19 @@ describe('consommation horaire', () => {
       kwh: null,
       coutEur: null,
       minutesImputees: 0,
+      couverture: 0,
     })
+  })
+
+  it('trace la puissance moyenne des minutes reçues, sans changer kWh ni coût', () => {
+    // 52 minutes sur 60 à 490 kW : gold additionne 424,67 kWh pour l'heure
+    const partielle = { ...heure('2026-10-28T12:00:00Z', 424.67, 59.45), taux_couverture: 52 / 60 }
+
+    const point = toConsumptionPoint(partielle)
+
+    expect(point.kw).toBeCloseTo(490, 1)
+    expect(point.kwh).toBe(424.67)
+    expect(point.coutEur).toBe(59.45)
   })
 
   it('garde le nombre de minutes reconstituées après une panne (US4)', () => {
@@ -160,5 +182,32 @@ describe('consommation horaire', () => {
     expect(trend.coutEurJours7).toHaveLength(7)
     expect(trend.coutEurJours7[0]).toBe(8)
     expect(trend.coutEurJours7[6]).toBe(4)
+  })
+})
+
+describe('départ de la courbe prévue', () => {
+  const point = (kw: number | null, couverture?: number, minutesImputees = 0) => ({
+    horodatage: '2026-10-28T12:00:00Z',
+    kw,
+    couverture,
+    minutesImputees,
+  })
+
+  it('part de la dernière heure bien mesurée', () => {
+    // Dernière heure : 10 minutes mesurées pendant une panne, sa moyenne chute
+    expect(junctionIndex([point(490, 1), point(495, 1), point(422, 10 / 60)])).toBe(1)
+  })
+
+  it('écarte une heure surtout reconstituée', () => {
+    expect(junctionIndex([point(490, 1), point(430, 1, 40)])).toBe(0)
+  })
+
+  it('garde la dernière valeur si aucune heure n’est bien mesurée', () => {
+    expect(junctionIndex([point(null, 0), point(420, 0.2), point(410, 0.1)])).toBe(2)
+  })
+
+  it('considère les données simulées, sans couverture, comme fiables', () => {
+    expect(junctionIndex([point(490), point(480)])).toBe(1)
+    expect(isReliableHour(point(null))).toBe(false)
   })
 })

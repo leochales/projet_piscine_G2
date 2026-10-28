@@ -27,6 +27,7 @@ import SitesTable from '@/components/overview/SitesTable.vue'
 import { useActionsNotice } from '@/lib/actions'
 import { formatEur, formatKw, formatRelativeHour, formatTonnes } from '@/lib/format'
 import { SEUIL_ALERTE_PCT } from '@/lib/indicators'
+import { predictedPeak } from '@/lib/predictions'
 import { useAutoRefresh } from '@/lib/refresh'
 import { useRequest } from '@/lib/request'
 import {
@@ -41,8 +42,6 @@ import { useOperationsStore } from '@/stores/operations'
 
 const props = defineProps<{ siteId?: string }>()
 const router = useRouter()
-
-const SEUIL_PCT = SEUIL_ALERTE_PCT
 
 const range = ref<SeriesRange>('24h')
 
@@ -94,18 +93,37 @@ const actionsNotice = useActionsNotice()
 const freshness = useAutoRefresh([siteList, site, costs, series, statuses, alerts, recommendations])
 
 const current = computed(() => site.data.value)
+// Seuil du site, celui de l'ETL et du modèle : comparer à 90 % partout ferait annoncer un
+// risque sur un data center (seuil 100 %) sans qu'aucune alerte ne soit jamais créée
+const seuilPct = computed(() => current.value?.site.seuilAlertePct ?? SEUIL_ALERTE_PCT)
 const notFound = computed(() => site.status.value === 'success' && !site.data.value)
 const seriesIsEmpty = computed(() => series.data.value?.data.mesures.length === 0)
 
-// Pic de la prédiction et position de sa borne haute par rapport au seuil
-const peak = computed(() => {
+// Prévisions du site affiché (jamais celles du site quitté, encore en mémoire)
+const predictions = computed(() => {
   const site = current.value?.site
-  const predictions = series.data.value?.data.predictions
-  if (!site || !predictions?.length || series.data.value?.siteId !== site.id) return null
-  const top = predictions.reduce((a, b) => (b.kw > a.kw ? b : a))
-  const seuilKw = (site.capaciteKw * SEUIL_PCT) / 100
-  return { ...top, depasseSeuil: top.hauteKw > seuilKw }
+  const loaded = series.data.value
+  return site && loaded?.siteId === site.id ? loaded.data.predictions : null
 })
+
+// Pic de la prédiction : maximum de l'heure, sinon moyenne horaire
+const peak = computed(() => (predictions.value ? predictedPeak(predictions.value) : null))
+
+// Première heure où le modèle prévoit un pic au-dessus du seuil du site (pic_prevu). C'est
+// sa décision, celle qui lève l'alerte de pic prévu : la page ne la recalcule pas, sinon les
+// deux pourraient se contredire.
+const firstAlert = computed(() => predictions.value?.find((p) => p.picPrevu) ?? null)
+
+// Sans alerte du modèle, la borne haute du pic dit s'il reste une marge d'erreur à surveiller.
+// Atteindre le seuil compte comme le dépasser (>=), comme dans le modèle et l'ETL.
+const borneHauteAuSeuil = computed(() => {
+  const site = current.value?.site
+  if (!site || peak.value?.hauteKw == null) return null
+  return peak.value.hauteKw >= (site.capaciteKw * seuilPct.value) / 100
+})
+
+// Mesures reçues mais aucune prévision : modèle pas encore passé, ou route en erreur
+const noPrediction = computed(() => predictions.value?.length === 0 && !seriesIsEmpty.value)
 
 const qualityText = computed(() => {
   const qualite = current.value?.qualite
@@ -263,7 +281,7 @@ const openSite = (siteId: string) => router.push({ name: 'sites', params: { site
           v-else-if="series.data.value"
           :series="series.data.value.data"
           :capacite-kw="current.site.capaciteKw"
-          :seuil-pct="SEUIL_PCT"
+          :seuil-pct="seuilPct"
         />
         <div v-else role="status" aria-live="polite">
           <span class="sr-only">Chargement de la courbe…</span>
@@ -272,7 +290,15 @@ const openSite = (siteId: string) => router.push({ name: 'sites', params: { site
         <p v-if="peak" class="mt-2 text-sm">
           Pic prévu {{ formatRelativeHour(peak.horodatage) }} :
           <strong>{{ formatKw(peak.kw) }}</strong>
-          ({{ formatKw(peak.basseKw) }} – {{ formatKw(peak.hauteKw) }})
+          <template v-if="peak.basseKw !== null && peak.hauteKw !== null">
+            ({{ formatKw(peak.basseKw) }} – {{ formatKw(peak.hauteKw) }})
+          </template>
+          <span v-if="peak.mesure === 'moyenne'" class="text-muted-foreground">
+            · moyenne horaire</span
+          >
+        </p>
+        <p v-else-if="noPrediction" class="mt-2 text-sm text-muted-foreground">
+          Pas de prévision disponible pour le moment.
         </p>
       </CardContent>
     </Card>
@@ -281,14 +307,23 @@ const openSite = (siteId: string) => router.push({ name: 'sites', params: { site
       <Card class="gap-2">
         <CardHeader><CardTitle>Ce que dit la fourchette</CardTitle></CardHeader>
         <CardContent class="text-sm text-muted-foreground">
-          <template v-if="peak?.depasseSeuil">
-            La borne haute du pic dépasse {{ SEUIL_PCT }} % de la capacité : risque réel de
-            dépassement, une recommandation est proposée.
+          <template v-if="firstAlert">
+            Le modèle prévoit un pic au-dessus de {{ seuilPct }} % de la capacité,
+            {{ formatRelativeHour(firstAlert.horodatage) }} : risque de dépassement.
+          </template>
+          <template v-else-if="borneHauteAuSeuil">
+            Le modèle ne prévoit pas de pic au-dessus de {{ seuilPct }} % de la capacité, mais la
+            borne haute l'atteint : dépassement possible, à surveiller.
+          </template>
+          <template v-else-if="borneHauteAuSeuil === false">
+            Même la borne haute du pic reste sous {{ seuilPct }} % de la capacité : pas de risque de
+            dépassement.
           </template>
           <template v-else-if="peak">
-            Même la borne haute du pic reste sous {{ SEUIL_PCT }} % de la capacité : pas de risque
-            de dépassement.
+            Le modèle ne prévoit pas de pic au-dessus de {{ seuilPct }} % de la capacité. Cette
+            prévision n'a pas de fourchette : sa marge d'erreur n'est pas connue.
           </template>
+          <template v-else-if="noPrediction">Pas de prévision disponible pour le moment.</template>
         </CardContent>
       </Card>
       <Card class="gap-2">

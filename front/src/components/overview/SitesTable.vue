@@ -88,7 +88,7 @@ function onMobileSort(event: Event) {
             {{ formatRelativeDateTime(row.mesureLe) }}
           </span>
         </span>
-        <CapacityBar :pourcentage="pourcentage(row)" />
+        <CapacityBar :pourcentage="pourcentage(row)" :seuil="row.site.seuilAlertePct" />
       </div>
       <p v-if="row.picPrevu" class="flex items-center gap-1 text-sm font-semibold">
         <TriangleAlert class="size-4" aria-hidden="true" />
@@ -149,7 +149,9 @@ function onMobileSort(event: Event) {
             {{ formatRelativeDateTime(row.mesureLe) }}
           </span>
         </TableCell>
-        <TableCell><CapacityBar :pourcentage="pourcentage(row)" /></TableCell>
+        <TableCell>
+          <CapacityBar :pourcentage="pourcentage(row)" :seuil="row.site.seuilAlertePct" />
+        </TableCell>
         <TableCell>
           <span v-if="row.picPrevu" class="inline-flex items-center gap-1 font-semibold">
             <TriangleAlert class="size-4" aria-hidden="true" />

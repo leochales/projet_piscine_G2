@@ -46,6 +46,7 @@ export function toSiteOverview(api: DerniereMesureApi): SiteOverview {
       nom: api.nom,
       type: SITE_TYPES[api.type] ?? api.type,
       capaciteKw: api.capacite_kw,
+      seuilAlertePct: api.seuil_alerte_pct,
     },
     consommationKw: api.consommation_kw,
     mesureLe: api.horodatage,
@@ -56,17 +57,59 @@ export function toSiteOverview(api: DerniereMesureApi): SiteOverview {
 }
 
 /**
- * Heure présente : kWh et coût. Les kWh d'une heure sont la puissance moyenne, en kW.
- * Une heure sans mesure est gardée (kw null) : la courbe s'interrompt à cet endroit.
+ * Puissance moyenne de l'heure, en kW, sur les minutes reçues. gold additionne les kW de
+ * chaque minute × 1/60 h : avec 52 minutes sur 60, les kWh sont sous-estimés d'environ 13 %
+ * et la courbe plongerait sans que le site ait moins consommé. Diviser par la couverture
+ * redonne la moyenne réelle. Les kWh et le coût, eux, restent ceux reçus.
+ */
+function puissanceMoyenne(api: ConsommationHoraireApi): number | null {
+  if (api.consommation_kwh === null || api.taux_couverture <= 0) return api.consommation_kwh
+  return api.consommation_kwh / api.taux_couverture
+}
+
+/**
+ * Heure présente : kWh, coût et puissance moyenne. Une heure sans mesure est gardée
+ * (kw null) : la courbe s'interrompt à cet endroit.
  */
 export function toConsumptionPoint(api: ConsommationHoraireApi): ConsumptionPoint {
   return {
     horodatage: api.heure,
-    kw: api.consommation_kwh,
+    kw: puissanceMoyenne(api),
     kwh: api.consommation_kwh,
     coutEur: api.cout_eur,
     minutesImputees: api.nb_imputees,
+    couverture: api.taux_couverture,
   }
+}
+
+// Une heure sert de départ à la prévision si au moins la moitié de ses minutes est mesurée
+const MINUTES_MESUREES_MIN = 30
+
+/**
+ * Heure assez mesurée pour représenter la consommation du site. Une heure de panne (capteur,
+ * réseau) n'a que quelques minutes, ou des minutes reconstituées : sa moyenne peut chuter
+ * sans que le site ait moins consommé. Sans couverture (données simulées), l'heure est fiable.
+ */
+export function isReliableHour(point: ConsumptionPoint): boolean {
+  if (point.kw === null) return false
+  if (point.couverture === undefined) return true
+  const minutesMesurees = Math.round(point.couverture * 60) - (point.minutesImputees ?? 0)
+  return minutesMesurees >= MINUTES_MESUREES_MIN
+}
+
+/**
+ * Point de départ de la courbe prévue : la dernière heure fiable, sinon la dernière heure
+ * qui a une valeur. -1 sans aucune valeur.
+ */
+export function junctionIndex(mesures: readonly ConsumptionPoint[]): number {
+  let lastWithValue = -1
+  for (let i = mesures.length - 1; i >= 0; i--) {
+    const point = mesures[i]
+    if (!point || point.kw === null) continue
+    if (lastWithValue === -1) lastWithValue = i
+    if (isReliableHour(point)) return i
+  }
+  return lastWithValue
 }
 
 export function costsFrom(rows: readonly ConsommationHoraireApi[]) {

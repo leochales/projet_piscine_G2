@@ -10,6 +10,9 @@ export interface Site {
   // Libellé connu (SiteType) ou le type renvoyé par l'API s'il n'est pas encore traduit
   type: SiteType | (string & {})
   capaciteKw: number
+  // Seuil d'alerte en % de la capacité, propre au site (100 pour un data center, 98 pour une
+  // usine, 90 sinon). Absent des données simulées : SEUIL_ALERTE_PCT (lib/indicators.ts).
+  seuilAlertePct?: number
 }
 
 export type DataQuality =
@@ -53,6 +56,8 @@ export interface ConsumptionPoint {
   coutEur?: number | null
   // Minutes de l'heure reconstituées après une panne (US4) : la valeur est en partie estimée
   minutesImputees?: number
+  // Part des 60 minutes qui ont une consommation, mesurée ou reconstituée (0 à 1)
+  couverture?: number
 }
 
 export type Sensor = 'consommation' | 'electrique' | 'temperature' | 'humidite' | 'reseau'
@@ -71,11 +76,19 @@ export interface SiteStatus {
   retablissementPrevu: string | null // ISO 8601
 }
 
+// Venue de GET /api/sites/{id}/predictions (types/api.ts), convertie par lib/predictions.ts
 export interface PredictionPoint {
-  horodatage: string
-  kw: number
-  basseKw: number // fourchette basse
-  hauteKw: number // fourchette haute
+  horodatage: string // début de l'heure prévue
+  kw: number // moyenne de l'heure
+  // Fourchette de la moyenne, null si le modèle n'en donne pas (prévision de référence)
+  basseKw: number | null
+  hauteKw: number | null
+  // Maximum de l'heure et sa fourchette, null si le modèle ne les calcule pas
+  picKw: number | null
+  picBasKw: number | null
+  picHautKw: number | null
+  // Vrai quand le modèle prévoit un pic au seuil d'alerte du site : il lève alors l'alerte
+  picPrevu: boolean
 }
 
 /** Évolution du parc, pour les mini-courbes des KPI */

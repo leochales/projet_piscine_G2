@@ -128,8 +128,9 @@ export function siteSeries(siteId: string, historyHours: number): SiteSeries {
     return { horodatage: date.toISOString(), kw: Math.round(daily(date) + noise) }
   })
 
-  const predictions: PredictionPoint[] = Array.from({ length: 49 }, (_, i) => {
-    const date = at(i)
+  // Comme l'API : de l'heure qui suit jusqu'à l'horizon, égal à la période affichée
+  const predictions: PredictionPoint[] = Array.from({ length: historyHours }, (_, i) => {
+    const date = at(i + 1)
     const kw = Math.round(daily(date))
     // La fourchette s'élargit avec l'horizon de prédiction
     const spread = kw * (0.02 + i * 0.0006)
@@ -138,6 +139,12 @@ export function siteSeries(siteId: string, historyHours: number): SiteSeries {
       kw,
       basseKw: Math.round(kw - spread * 1.8),
       hauteKw: Math.round(kw + spread),
+      // Le maximum de l'heure n'est pas simulé : la page prend alors la moyenne horaire
+      picKw: null,
+      picBasKw: null,
+      picHautKw: null,
+      // Comme le modèle, au seuil d'alerte par défaut (90 %)
+      picPrevu: kw >= capacity * 0.9,
     }
   })
 

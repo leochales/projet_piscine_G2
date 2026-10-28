@@ -32,6 +32,9 @@ class DerniereMesure(BaseModel):
     nom: str
     type: str
     capacite_kw: float
+    # Seuil d'alerte du site, en % de la capacité (app.site, SMARTOPS-26) : le même que
+    # celui de l'ETL et du modèle pour les pics détectés et prévus
+    seuil_alerte_pct: float
     horodatage: datetime
     consommation_kw: float | None
     data_quality: Literal["good", "partial", "degraded", "critical"]
@@ -44,7 +47,7 @@ def lister_dernieres_mesures(
 ) -> list[DerniereMesure]:
     requete = text(
         """
-        SELECT m.id_site, s.nom, s.type, s.capacite_kw,
+        SELECT m.id_site, s.nom, s.type, s.capacite_kw, s.seuil_alerte_pct,
                m.horodatage, m.consommation_kw, m.data_quality
         FROM gold.derniere_mesure AS m
         JOIN app.site AS s ON s.id_site = m.id_site

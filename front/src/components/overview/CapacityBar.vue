@@ -7,10 +7,13 @@ import { cn } from '@/lib/utils'
 import { formatPct } from '@/lib/format'
 import { capacityLevel } from '@/lib/indicators'
 
-// null : le site n'a pas de mesure, la barre n'a pas de sens
-const props = defineProps<{ pourcentage: number | null }>()
+// pourcentage null : le site n'a pas de mesure, la barre n'a pas de sens.
+// seuil : seuil d'alerte du site, en % (90 % par défaut, comme lib/indicators.ts)
+const props = defineProps<{ pourcentage: number | null; seuil?: number }>()
 
-const level = computed(() => (props.pourcentage === null ? null : capacityLevel(props.pourcentage)))
+const level = computed(() =>
+  props.pourcentage === null ? null : capacityLevel(props.pourcentage, props.seuil),
+)
 
 // La couleur n'est jamais seule : au seuil d'alerte, une icône et le texte en gras s'ajoutent
 const indicator = computed(() => {

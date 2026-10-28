@@ -6,6 +6,7 @@ export interface DerniereMesureApi {
   nom: string
   type: string
   capacite_kw: number
+  seuil_alerte_pct: number // seuil d'alerte du site, en % de la capacité
   horodatage: string
   consommation_kw: number | null
   data_quality: 'good' | 'partial' | 'degraded' | 'critical'
@@ -18,6 +19,25 @@ export interface ConsommationHoraireApi {
   cout_eur: number | null
   nb_imputees: number // minutes de l'heure reconstituées par imputation (valeurs estimées)
   taux_couverture: number // part des 60 minutes qui ont une consommation, mesurée ou imputée
+}
+
+/**
+ * GET /api/sites/{id_site}/predictions?horizon=24h|7j (api/routers/predictions.py, modèle
+ * Prediction). Les heures à venir, de l'heure pleine qui suit jusqu'à l'horizon.
+ */
+export interface PredictionApi {
+  heure: string // début de l'heure prévue
+  consommation_kwh: number
+  // Fourchette : null si le modèle n'en donne pas (prévision de référence)
+  consommation_basse_kwh: number | null
+  consommation_haute_kwh: number | null
+  pic_prevu: boolean
+  // Maximum de l'heure et sa fourchette : null si le modèle ne les calcule pas
+  pic_prevu_kw: number | null
+  pic_bas_kw: number | null
+  pic_haut_kw: number | null
+  calculee_le: string
+  version_modele: string
 }
 
 export type CapteurApi = 'consumption' | 'electrical' | 'temperature' | 'humidity' | 'network'
