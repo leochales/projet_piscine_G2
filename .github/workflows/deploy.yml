@@ -254,8 +254,10 @@ jobs:
           docker compose -p "enervision-${DEPLOY_ENV}" logs --tail=50 api
           exit 1
 
-      # Même principe que la santé de l'API.
+      # L'application tourne déjà : un Grafana absent ou pas prêt n'arrête pas
+      # le déploiement (Keycloak et le nettoyage suivent).
       - name: Vérifier Grafana
+        continue-on-error: true
         run: |
           for _ in $(seq 1 30); do
             if curl -fsSk --resolve "${PUBLIC_HOST}:${HTTPS_PORT}:127.0.0.1" \
@@ -265,7 +267,7 @@ jobs:
             fi
             sleep 2
           done
-          echo "::error::Grafana ($DEPLOY_ENV, port $HTTPS_PORT) ne répond pas après 60 s"
+          echo "::warning::Grafana ($DEPLOY_ENV, port $HTTPS_PORT) ne répond pas après 60 s"
           docker compose -p "enervision-${DEPLOY_ENV}" ps
           docker compose -p "enervision-${DEPLOY_ENV}" logs --tail=50 grafana
           exit 1
