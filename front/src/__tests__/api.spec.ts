@@ -6,7 +6,9 @@ import {
   checkAccount,
   CODE_COMPTE_NON_RATTACHE,
   ENTETE_ERREUR,
+  onAccountChecked,
   onUnlinkedAccount,
+  retryAccountCheck,
 } from '@/lib/api'
 import { getToken, login } from '@/lib/auth'
 
@@ -120,10 +122,16 @@ describe('checkAccount (GET /api/moi après la connexion)', () => {
   beforeEach(() => vi.stubGlobal('fetch', fetchMock))
   afterEach(() => vi.unstubAllGlobals())
 
-  it('appelle /api/moi avec le jeton : compte reconnu', async () => {
-    fetchMock.mockResolvedValue(json(200, { id: 'x', id_client: 1, roles: ['CONSULT-SITE'] }))
+  it('appelle /api/moi avec le jeton : compte reconnu, sites transmis', async () => {
+    const moi = { id: 'x', id_client: 1, roles: ['GESTION-SITE'], sites: ['SITE002'] }
+    fetchMock.mockResolvedValue(json(200, moi))
+    const listener = vi.fn<(moi: unknown) => void>()
+    const retirer = onAccountChecked(listener)
 
     expect(await checkAccount('/api')).toBe('ok')
+    retirer()
+
+    expect(listener).toHaveBeenCalledWith(moi)
 
     const [url, init] = fetchMock.mock.calls[0]!
     expect(url).toBe('/api/moi')
@@ -157,5 +165,39 @@ describe('checkAccount (GET /api/moi après la connexion)', () => {
 
     fetchMock.mockResolvedValueOnce(json(503, { detail: 'Keycloak injoignable' }))
     expect(await checkAccount('/api')).toBe('unavailable')
+  })
+})
+
+describe('retryAccountCheck (/api/moi relancé après un échec)', () => {
+  const fetchMock = vi.fn<typeof fetch>()
+
+  beforeEach(() => {
+    fetchMock.mockReset()
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('relance jusqu’à une réponse, puis transmet les sites', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const moi = { id: 'x', id_client: 1, roles: ['GESTION-SITE'], sites: ['SITE002'] }
+    fetchMock
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce(json(503, { detail: 'Base injoignable' }))
+      .mockResolvedValueOnce(json(200, moi))
+    const listener = vi.fn<(moi: unknown) => void>()
+    const retirer = onAccountChecked(listener)
+
+    expect(await retryAccountCheck([1], '/api')).toBe('ok')
+    retirer()
+
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(listener).toHaveBeenCalledWith(moi)
+  })
+
+  it('s’arrête sur un compte non rattaché', async () => {
+    fetchMock.mockResolvedValue(compteNonRattache())
+
+    expect(await retryAccountCheck([1], '/api')).toBe('unlinked')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })

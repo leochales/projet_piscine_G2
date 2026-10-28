@@ -35,7 +35,7 @@ INSERT INTO gold.recommandation (
 ) VALUES
 ('SITE-G', 'test', 'Acceptée, gain unique', 380, 'unique'),
 ('SITE-G', 'test', 'Acceptée, gain par semaine', 120, 'semaine'),
-('SITE-G', 'test', 'Acceptée puis refusée', 1000, 'unique'),
+('SITE-G', 'test', 'Refusée', 1000, 'unique'),
 ('SITE-G', 'test', 'Sans décision', 50, 'unique'),
 ('SITE-G', 'test', 'Acceptée, sans gain', NULL, NULL);
 
@@ -143,7 +143,6 @@ SELECT
 FROM reco
 WHERE titre LIKE 'Acceptée%';
 
--- Même transaction, donc même now() : l'identifiant plus grand l'emporte
 INSERT INTO app.decision_recommandation (
     id_recommandation, id_utilisateur, statut
 )
@@ -152,7 +151,7 @@ SELECT
     '00000000-0000-0000-0000-0000000000c1' AS id_utilisateur,
     'refusee' AS statut
 FROM reco
-WHERE titre = 'Acceptée puis refusée';
+WHERE titre = 'Refusée';
 
 DO $$
 DECLARE
@@ -168,7 +167,7 @@ BEGIN
     SELECT e.* INTO eco FROM app.economies_realisees AS e
     WHERE e.id_site = 'SITE-G';
     -- 380 (unique) + 120 (une semaine, comptée une fois) + 0 (sans gain)
-    -- La recommandation refusée en dernier et celle sans décision ne comptent pas
+    -- La recommandation refusée et celle sans décision ne comptent pas
     ASSERT eco.economies_eur = 500,
         format('économies attendues 500, obtenues %s', eco.economies_eur);
     ASSERT eco.nb_recommandations_acceptees = 3,

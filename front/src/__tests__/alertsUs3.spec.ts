@@ -9,7 +9,7 @@ import { alertTimeLabel, thresholdText, toAlert } from '@/lib/alerts'
 import AlertsView from '@/views/AlertsView.vue'
 import { useRequest } from '@/lib/request'
 import { alertes } from '@/mocks/alertes'
-import { acknowledgeAlert, canAcknowledgeAlerts, fetchAlerts, SOURCES } from '@/services/dashboard'
+import { acknowledgeAlert, fetchAlerts, SOURCES } from '@/services/dashboard'
 import { useOperationsStore } from '@/stores/operations'
 import { useUserStore } from '@/stores/user'
 import type { AlerteApi } from '@/types/api'
@@ -39,6 +39,7 @@ const depassement: AlerteApi = {
 
 afterEach(() => {
   SOURCES.alertes = 'mock'
+  SOURCES.recommandations = 'mock'
   vi.unstubAllGlobals()
 })
 
@@ -150,11 +151,29 @@ describe('source des alertes : données simulées ou API', () => {
     expect(liste).toEqual([expect.objectContaining({ id: '42', type: 'threshold' })])
   })
 
-  it('avec les vraies données, la prise en compte est bloquée tant qu’elle ne peut être enregistrée (US7)', async () => {
-    expect(canAcknowledgeAlerts()).toBe(true)
+  it('avec les vraies données, la prise en compte est enregistrée par POST (US7)', async () => {
     SOURCES.alertes = 'api'
-    expect(canAcknowledgeAlerts()).toBe(false)
-    await expect(acknowledgeAlert('42')).rejects.toThrow('US7')
+    const fetchMock = vi.fn<typeof fetch>(
+      async () =>
+        new Response(JSON.stringify({ ...depassement, prise_en_compte: true }), { status: 200 }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    expect(await acknowledgeAlert('42')).toBe('42')
+
+    const [url, init] = fetchMock.mock.calls[0]!
+    expect(url).toBe('/api/alertes/42/prise-en-compte')
+    expect(init?.method).toBe('POST')
+  })
+
+  it('une alerte déjà prise en compte ou terminée lève une erreur 409', async () => {
+    SOURCES.alertes = 'api'
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>(async () => new Response('{}', { status: 409 })),
+    )
+
+    await expect(acknowledgeAlert('42')).rejects.toMatchObject({ status: 409 })
   })
 })
 
@@ -235,9 +254,10 @@ describe('message quand les actions manquent', () => {
     expect(notice(['GESTION-CLIENT'])).toBeNull()
   })
 
-  it('gestionnaire avec les vraies données : actions pas encore possibles', () => {
+  it('gestionnaire avec les vraies données : rien à dire, les actions sont enregistrées', () => {
     SOURCES.alertes = 'api'
-    expect(notice(['GESTION-CLIENT'])).toMatch(/pas encore possibles/u)
+    SOURCES.recommandations = 'api'
+    expect(notice(['GESTION-CLIENT'])).toBeNull()
   })
 })
 

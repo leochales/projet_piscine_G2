@@ -16,7 +16,7 @@ import {
   toSiteOverview,
 } from '@/lib/mesures'
 import { toRecommendation } from '@/lib/recommendations'
-import { getJson } from '@/services/http'
+import { getJson, postJson } from '@/services/http'
 import type {
   AlerteApi,
   ConsommationHoraireApi,
@@ -260,36 +260,26 @@ export async function fetchRecommendations(): Promise<Recommendation[]> {
 
 export const fetchPreviousSavings = (): Promise<number> => respond(mocks.economiesAnterieuresEur)
 
-// Actions de l'écran 3. Simulées : l'API n'a pas encore de route pour les enregistrer (US7).
-// Elles échouent avec ?simulation=erreur, comme le feraient les vraies routes.
-
 /**
- * Prendre une alerte en compte n'est possible qu'avec les données simulées : avec les vraies
- * alertes, une prise en compte simulée serait annoncée comme faite sans être enregistrée.
- * À ouvrir avec la route d'enregistrement (US7, SMARTOPS-59).
+ * Prend une alerte en compte : POST /api/alertes/{id}/prise-en-compte (US7). Déjà prise en
+ * compte ou terminée, l'API répond 409 (ApiError). Simulée avec les alertes simulées : elle
+ * échoue alors avec ?simulation=erreur, comme le ferait la vraie route.
  */
-export const canAcknowledgeAlerts = () => SOURCES.alertes === 'mock'
-
-export function acknowledgeAlert(alertId: string): Promise<string> {
-  if (!canAcknowledgeAlerts()) {
-    return Promise.reject(new Error('Pas encore de route pour prendre une alerte en compte (US7)'))
-  }
-  return respond(alertId)
+export async function acknowledgeAlert(alertId: string): Promise<string> {
+  if (SOURCES.alertes !== 'api') return respond(alertId)
+  await postJson<AlerteApi>(`/alertes/${alertId}/prise-en-compte`)
+  return alertId
 }
 
 /**
- * Décider d'une recommandation n'est possible qu'avec les données simulées : avec les vraies
- * recommandations, une décision simulée serait annoncée comme faite sans être enregistrée.
- * À ouvrir avec la route d'enregistrement des décisions (US7, SMARTOPS-59).
+ * Accepte ou refuse une recommandation : POST /api/recommandations/{id}/decision (US7).
+ * Une décision est définitive : déjà décidée, l'API répond 409 (ApiError).
  */
-export const canDecideRecommendations = () => SOURCES.recommandations === 'mock'
-
-export function decideRecommendation(
+export async function decideRecommendation(
   id: string,
   statut: 'acceptee' | 'refusee',
 ): Promise<{ id: string; statut: 'acceptee' | 'refusee' }> {
-  if (!canDecideRecommendations()) {
-    return Promise.reject(new Error('Pas encore de route pour enregistrer la décision (US7)'))
-  }
-  return respond({ id, statut })
+  if (SOURCES.recommandations !== 'api') return respond({ id, statut })
+  const reponse = await postJson<RecommandationApi>(`/recommandations/${id}/decision`, { statut })
+  return { id, statut: reponse.statut === 'refusee' ? 'refusee' : 'acceptee' }
 }

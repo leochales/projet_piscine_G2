@@ -91,6 +91,10 @@ class Resultat:
     def all(self) -> list[dict[str, Any]]:
         return self.lignes
 
+    def scalars(self) -> "Resultat":
+        self.lignes = [next(iter(ligne.values())) for ligne in self.lignes]
+        return self
+
 
 class FausseBase:
     """Session simulée : table app.utilisateur en mémoire.
@@ -101,6 +105,8 @@ class FausseBase:
 
     def __init__(self) -> None:
         self.utilisateurs: dict[UUID, int | None] = {UUID(SUB): 1}
+        # Sites attribués (app.utilisateur_site), rôles *-SITE
+        self.sites: dict[UUID, list[str]] = {}
         self.requetes: list[str] = []
 
     def execute(
@@ -113,6 +119,9 @@ class FausseBase:
             if parametres["id"] in self.utilisateurs:
                 return Resultat([{"id_client": self.utilisateurs[parametres["id"]]}])
             return Resultat([])
+        if "SELECT id_site FROM app.utilisateur_site" in sql:
+            sites = self.sites.get(parametres["id"], [])
+            return Resultat([{"id_site": site} for site in sites])
         return Resultat([])  # requêtes des routes métier : aucune donnée
 
 
@@ -434,7 +443,22 @@ def test_moi_renvoie_l_utilisateur_quel_que_soit_son_role(
     response = client.get("/api/moi", headers=entete(creer_jeton(roles=roles)))
 
     assert response.status_code == 200
-    assert response.json() == {"id": SUB, "id_client": 1, "roles": sorted(roles)}
+    assert response.json() == {
+        "id": SUB,
+        "id_client": 1,
+        "roles": sorted(roles),
+        "sites": [],
+    }
+
+
+def test_moi_renvoie_les_sites_attribues(client: TestClient, base: FausseBase) -> None:
+    # Le front n'affiche les boutons d'action d'un GESTION-SITE que sur ces sites (US7)
+    base.sites = {UUID(SUB): ["SITE002", "SITE007"]}
+
+    jeton = creer_jeton(roles=["GESTION-SITE"])
+    response = client.get("/api/moi", headers=entete(jeton))
+
+    assert response.json()["sites"] == ["SITE002", "SITE007"]
 
 
 def test_moi_compte_non_rattache_403(client: TestClient, base: FausseBase) -> None:

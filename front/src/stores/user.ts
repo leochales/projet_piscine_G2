@@ -35,6 +35,9 @@ export const useUserStore = defineStore('user', () => {
   // Compte connu de Keycloak mais pas de l'API (absent de app.utilisateur) : aucune
   // entreprise, donc aucune donnée. Seule la page « compte non rattaché » s'affiche.
   const unlinked = ref(false)
+  // Sites attribués (GET /api/moi), pour un rôle *-SITE. null : l'API n'a pas encore
+  // répondu (main.ts relance l'appel) ; [] : aucun site attribué
+  const sites = ref<string[] | null>(null)
 
   /** Libellé du rôle le plus large de l'utilisateur */
   const roleLabel = computed(() => {
@@ -54,16 +57,13 @@ export const useUserStore = defineStore('user', () => {
   }
 
   /**
-   * Seuls les rôles de gestion agissent sur les alertes et les recommandations, les rôles de
-   * consultation sont en lecture seule.
-   *
-   * Limite connue, jusqu'à l'US6 (SMARTOPS-60) : le site n'est pas encore pris en compte.
-   * GESTION-SITE devrait agir seulement sur les sites qui lui sont attribués ; pour l'instant
-   * il agit sur tous les sites de son client, comme GESTION-CLIENT.
+   * Mêmes règles que l'API (US7) : GESTION-CLIENT agit sur tous les sites de son client,
+   * GESTION-SITE sur ses sites attribués. Les rôles de consultation sont en lecture seule.
    */
-  function canActOn(_siteId: string) {
-    return hasAnyRole(ACTION_ROLES)
+  function canActOn(siteId: string) {
+    if (roles.value.includes('GESTION-CLIENT')) return true
+    return roles.value.includes('GESTION-SITE') && (sites.value?.includes(siteId) ?? false)
   }
 
-  return { roles, nom, email, unlinked, roleLabel, setFromToken, hasAnyRole, canActOn }
+  return { roles, nom, email, unlinked, sites, roleLabel, setFromToken, hasAnyRole, canActOn }
 })

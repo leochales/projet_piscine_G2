@@ -16,6 +16,10 @@ IdSite = Annotated[str, Path(pattern=MOTIF_ID_SITE)]
 # Filtre facultatif sur un site : ?id_site=...
 FiltreSite = Annotated[str | None, Query(pattern=MOTIF_ID_SITE)]
 
+# Identifiant BIGINT dans le chemin : /alertes/{id_alerte}/... Borné pour qu'un nombre
+# trop grand donne 422, et non une erreur de PostgreSQL (500)
+IdNumerique = Annotated[int, Path(ge=1, le=2**63 - 1)]
+
 # Réponse ajoutée au Swagger des routes : un paramètre inconnu ou invalide donne 422,
 # y compris sur les routes sans paramètre (contrat vérifié par Schemathesis)
 REPONSE_PARAMETRES: dict[int | str, dict[str, Any]] = {

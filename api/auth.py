@@ -258,6 +258,28 @@ def perimetre_courant(
 PerimetreCourant = Annotated[Perimetre, Depends(perimetre_courant)]
 
 
+def verifier_action_sur_site(
+    session: Session, utilisateur: Utilisateur, id_site: str
+) -> None:
+    """Actions du dashboard (US7) : GESTION-CLIENT sur tous les sites de son client,
+    GESTION-SITE sur ses sites attribués. Lève 403 sinon.
+
+    Le site doit déjà être dans le périmètre de lecture de l'utilisateur (son client) :
+    la route l'a lu avec PerimetreCourant, et répond 404 s'il n'y est pas.
+    """
+    if "GESTION-CLIENT" in utilisateur.roles:
+        return
+    if "GESTION-SITE" in utilisateur.roles:
+        requete = text(
+            "SELECT 1 FROM app.utilisateur_site "
+            "WHERE id_utilisateur = :id AND id_site = :id_site"
+        )
+        parametres = {"id": utilisateur.id, "id_site": id_site}
+        if session.execute(requete, parametres).first() is not None:
+            return
+    raise HTTPException(status.HTTP_403_FORBIDDEN, "Action non autorisée sur ce site")
+
+
 def exiger_role(*roles_autorises: str) -> Callable[..., Utilisateur]:
     """Dépendance FastAPI : l'utilisateur doit avoir au moins un des rôles donnés (sinon 403)."""
     if not roles_autorises:

@@ -73,8 +73,10 @@ Le test `test_toutes_les_routes_api_exigent_un_jeton` échoue si une route `/api
 Utilisateur connecté, appelé par le front juste après la connexion. Ouvert à tout compte rattaché, quel que soit son rôle.
 
 ```json
-{ "id": "8f2c6c1e-4b7a-4d55-9a57-1f0e3b2f6a10", "id_client": 1, "roles": ["CONSULT-SITE"] }
+{ "id": "8f2c6c1e-4b7a-4d55-9a57-1f0e3b2f6a10", "id_client": 1, "roles": ["GESTION-SITE"], "sites": ["SITE002", "SITE007"] }
 ```
+
+`sites` : sites attribués à l'utilisateur (`app.utilisateur_site`), pour un rôle `*-SITE`. Vide pour un rôle `*-CLIENT`. Le front n'affiche les boutons d'action d'un `GESTION-SITE` que sur ces sites.
 
 | Code | Cas |
 |---|---|
@@ -258,6 +260,24 @@ Recommandations des sites actifs (lues dans `app.recommandation_etat`), de la pl
 ```
 
 Un gain par semaine n'est compté qu'une fois : `economies_eur` additionne des gains uniques et hebdomadaires.
+
+### Actions du dashboard (US7)
+
+Deux routes, mêmes règles :
+
+- `POST /api/alertes/{id_alerte}/prise-en-compte` : prend une alerte en cours en compte (`app.prise_en_compte_alerte`). Renvoie l'alerte à jour, au format de `GET /api/alertes`.
+- `POST /api/recommandations/{id_recommandation}/decision`, corps `{"statut": "acceptee"}` ou `{"statut": "refusee"}` : décide d'une recommandation (`app.decision_recommandation`). Renvoie la recommandation à jour, au format de `GET /api/recommandations`.
+
+Qui peut agir : `GESTION-CLIENT` sur tous les sites de son client, `GESTION-SITE` sur ses sites attribués. Une action est définitive : pas de deuxième prise en compte, pas de changement de décision. La base le garantit aussi (contraintes uniques, `db/10_actions.sql` et `db/16_decision_unique.sql`), même pour deux clics simultanés.
+
+| Code | Cas |
+|---|---|
+| 200 | Action enregistrée |
+| 401 | Jeton absent ou invalide |
+| 403 | Rôle de consultation ou `MONITORING`, ou `GESTION-SITE` sur un site visible mais non attribué (par exemple avec `CONSULT-CLIENT` en plus) |
+| 404 | Alerte ou recommandation inconnue, ou d'un site que l'utilisateur ne voit pas (autre client, site non attribué) : comme dans les listes |
+| 409 | Alerte déjà prise en compte ou terminée, recommandation déjà décidée |
+| 422 | Identifiant ou statut invalide |
 
 ## Lancer l'API
 
