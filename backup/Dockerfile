@@ -30,6 +30,7 @@ ADD --checksum=sha256:bb9b1a19040744d26d8a79be029d4e6b189c45ccc9d8831d7fe367d3c3
 WORKDIR /src
 RUN tar -xzf /tmp/restic.tar.gz --strip-components=1 \
     && go get \
+        github.com/go-jose/go-jose/v4@v4.1.6 \
         github.com/klauspost/compress@v1.18.7 \
         golang.org/x/crypto@v0.57.0 \
         golang.org/x/net@v0.60.0 \
