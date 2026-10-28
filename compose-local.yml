@@ -359,6 +359,10 @@ services:
       DATA_SOURCE_URI: db:5432/${POSTGRES_DB}?sslmode=disable
       DATA_SOURCE_USER: monitoring
       DATA_SOURCE_PASS: ${MONITORING_DB_PASSWORD:-}
+      # Totaux métier (db/19_supervision_metier.sql), en plus des stats PostgreSQL
+      PG_EXPORTER_EXTEND_QUERY_PATH: /etc/postgres_exporter/queries.yaml
+    volumes:
+      - ./infra/monitoring/postgres-exporter/queries.yaml:/etc/postgres_exporter/queries.yaml:ro
     depends_on:
       db:
         condition: service_healthy
