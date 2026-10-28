@@ -1,0 +1,46 @@
+# Totaux de gold.supervision_metier (db/19_supervision_metier.sql).
+# postgres-exporter préfixe chaque colonne par le nom de la requête :
+# enervision_mesures_collectees, etc.
+# Une colonne NULL part en NaN. Les panneaux Grafana l'écartent
+# (epoch > 0, ou x == x) pour afficher l'état vide.
+enervision:
+  query: |
+    SELECT
+        mesures_collectees,
+        derniere_collecte_epoch,
+        taux_imputation_pct,
+        puissance_kw,
+        previsions_ecrites,
+        dernier_calcul_epoch,
+        alertes_en_cours,
+        ecart_prevu_reel_pct
+    FROM gold.supervision_metier
+  master: true
+  # Comptages sur des tables qui grossissent : une fois par minute,
+  # pas à chaque scrape Prometheus (15 s).
+  cache_seconds: 60
+  metrics:
+    - mesures_collectees:
+        usage: "GAUGE"
+        description: "Mesures enregistrées dans bronze depuis 24 h, sites actifs"
+    - derniere_collecte_epoch:
+        usage: "GAUGE"
+        description: "Horodatage Unix du dernier enregistrement dans bronze"
+    - taux_imputation_pct:
+        usage: "GAUGE"
+        description: "Part des minutes imputées sur les heures complètes des dernières 24 h, en %"
+    - puissance_kw:
+        usage: "GAUGE"
+        description: "Puissance des sites actifs avec une mesure de moins de 5 minutes, en kW"
+    - previsions_ecrites:
+        usage: "GAUGE"
+        description: "Lignes écrites dans gold.prediction"
+    - dernier_calcul_epoch:
+        usage: "GAUGE"
+        description: "Horodatage Unix du dernier calcul de prévision"
+    - alertes_en_cours:
+        usage: "GAUGE"
+        description: "Alertes ouvertes des sites actifs"
+    - ecart_prevu_reel_pct:
+        usage: "GAUGE"
+        description: "Écart prévu/réel sur les heures complètes des dernières 24 h, en %"

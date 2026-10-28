@@ -26,6 +26,8 @@ jobs:
     env:
       DEPLOY_ENV: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
       DVC_STORE: ${{ vars.DVC_STORE }}
+      # Exigé à la lecture de compose-prod.yml (règle Host des routes Traefik)
+      PUBLIC_HOST: ${{ vars.VM_IP }}
     steps:
       # Image du modèle publiée avec la version déployée : même commit que l'API en service
       - name: Image déployée

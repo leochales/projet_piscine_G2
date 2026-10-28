@@ -26,6 +26,9 @@ configure_logging("api")
 # Toutes les routes sont sous /api : Traefik transmet /api tel quel à ce service
 API_PREFIX = "/api"
 
+# Sans documentation, FastAPI renvoie 404 sur /api/docs et /api/openapi.json
+_docs_enabled = get_settings().api_docs_enabled
+
 
 @asynccontextmanager
 async def demarrage(_: FastAPI) -> AsyncIterator[None]:
@@ -39,9 +42,12 @@ app = FastAPI(
     title="EnerVision API",
     description="API métier : sites, mesures, prédictions, alertes et recommandations.",
     version="0.1.0",
-    docs_url=f"{API_PREFIX}/docs",
+    docs_url=f"{API_PREFIX}/docs" if _docs_enabled else None,
     redoc_url=None,
-    openapi_url=f"{API_PREFIX}/openapi.json",
+    openapi_url=f"{API_PREFIX}/openapi.json" if _docs_enabled else None,
+    # Pas de redirection /api/x/ → /api/x : elle serait construite depuis l'en-tête Host, et
+    # en http:// derrière le TLS de Traefik. Une adresse avec slash final reçoit un 404.
+    redirect_slashes=False,
 )
 
 app.add_middleware(

@@ -53,7 +53,13 @@ jobs:
       SEED_PASSWORD: ci-comptes-demo-mot-de-passe
       # Sauvegarde : testée dans un dépôt local du conteneur, pas sur Azure
       RESTIC_PASSWORD: ci-restic
+      GRAFANA_ADMIN_PASSWORD: ci-grafana
+      MONITORING_DB_PASSWORD: ci-monitoring
       FRONT_URL: https://localhost:8443
+      # Nom d'hôte accepté par les routes Traefik (IP de la VM en déploiement)
+      PUBLIC_HOST: localhost
+      # Schemathesis lit le contrat sur /api/openapi.json (masqué par défaut dans compose-prod.yml)
+      API_DOCS_ENABLED: "true"
     steps:
       # Pas de jeton dans .git/config : le job a packages: write et exécute le code de la PR
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -145,6 +151,55 @@ jobs:
           # HTTP redirige vers HTTPS
           redirect=$(curl -s -o /dev/null -w '%{redirect_url}' http://localhost:8080/)
           [ "$redirect" = "$base/" ] || { echo "::error::Redirection HTTP inattendue : '$redirect'"; exit 1; }
+          # Slash final : 404 de l'API, sans redirection (redirect_slashes=False)
+          result=$(curl -sk -o /dev/null -w '%{http_code} %header{location}' "$base/api/health/")
+          [ "$result" = "404 " ] || { echo "::error::Réponse inattendue sur /api/health/ : '$result'"; exit 1; }
+          # Redirection de nginx (dossier) : relative, donc reste en HTTPS
+          location=$(curl -sk -o /dev/null -w '%header{location}' "$base/assets")
+          [ "$location" = "/assets/" ] || { echo "::error::Redirection de nginx inattendue : '$location'"; exit 1; }
+          # Autre nom d'hôte : 404 de Traefik, sans redirection vers cet hôte, en HTTPS
+          # comme en HTTP (infra/traefik/dynamic/redirections.yml)
+          for url in "$base/api/health/" "$base/assets" "$base/" http://localhost:8080/; do
+            result=$(curl -sk -o /dev/null -w '%{http_code} %header{location}' -H "Host: evil.example" "$url")
+            [ "$result" = "404 " ] || { echo "::error::Host: evil.example accepté sur $url : '$result'"; exit 1; }
+          done
+          # En-têtes de sécurité (infra/traefik/dynamic/middlewares.yml) et leur valeur, sans version
+          # dans Server. Chaque attendu est le début de la ligne d'en-tête.
+          check_headers() {
+            local path=$1
+            headers=$(curl -sk -o /dev/null -D - "$base$path" | tr -d '\r')
+            shift
+            for expected in "X-Content-Type-Options: nosniff" \
+                            "Referrer-Policy: strict-origin-when-cross-origin" "$@"; do
+              grep -qi "^$expected" <<< "$headers" \
+                || { echo "::error::$expected attendu sur $path"; echo "$headers"; exit 1; }
+            done
+            if grep -qiE '^Server:.*[0-9]' <<< "$headers"; then
+              echo "::error::Version du serveur exposée"; echo "$headers"; exit 1
+            fi
+          }
+          check_headers /api/health "X-Frame-Options: DENY"
+          check_headers / "X-Frame-Options: DENY" "Content-Security-Policy: default-src 'self';"
+          check_headers /page-inexistante "X-Frame-Options: DENY" "Content-Security-Policy: default-src 'self';"
+          check_headers /auth/realms/enervision
+          # Ce contrôle ne charge pas la page dans un navigateur : il vérifie la CSP du front
+          # telle qu'écrite. Styles en ligne autorisés (attributs style, feuille du toaster),
+          # scripts laissés sur default-src 'self'
+          csp=$(curl -sk -o /dev/null -D - "$base/" | tr -d '\r' | grep -i '^Content-Security-Policy:')
+          grep -qE "style-src[^;]*'unsafe-inline'" <<< "$csp" \
+            || { echo "::error::style-src sans 'unsafe-inline' : styles en ligne du front refusés"; echo "$csp"; exit 1; }
+          if grep -q "script-src" <<< "$csp"; then
+            echo "::error::script-src défini : les scripts doivent rester sur default-src 'self'"; echo "$csp"; exit 1
+          fi
+          # Aucun script en ligne dans la page, et chaque script qu'elle charge vient de la
+          # même origine
+          page=$(curl -fsSk "$base/")
+          inline=$(grep -oiE '<script[^>]*>' <<< "$page" | grep -viE '[[:space:]]src=' || true)
+          [ -z "$inline" ] || { echo "::error::Script en ligne refusé par la CSP : $inline"; exit 1; }
+          for src in $(grep -oiE '<script[^>]*[[:space:]]src="[^"]+"' <<< "$page" | sed -E 's/.*src="([^"]+)"/\1/'); do
+            [[ "$src" == /* && "$src" != //* ]] || { echo "::error::Script hors de l'origine : $src"; exit 1; }
+            curl -fsSk -o /dev/null "$base$src" || { echo "::error::Script introuvable : $src"; exit 1; }
+          done
           # Keycloak via Traefik : émetteur des jetons = adresse publique, identique pour
           # le navigateur et pour l'API (réseau interne)
           expected="$base/auth/realms/enervision"

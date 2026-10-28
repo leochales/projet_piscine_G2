@@ -78,6 +78,9 @@ jobs:
       # Mot de passe des comptes de démonstration, créés par l'API à son démarrage
       # (api/seed.py). Facultatif : sans lui, l'API n'en crée pas
       SEED_PASSWORD: ${{ secrets[format('{0}_SEED_PASSWORD', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
+      # Supervision : Grafana et le compte PostgreSQL monitoring, dev et prod
+      GRAFANA_ADMIN_PASSWORD: ${{ secrets[format('{0}_GRAFANA_ADMIN_PASSWORD', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
+      MONITORING_DB_PASSWORD: ${{ secrets[format('{0}_MONITORING_DB_PASSWORD', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
       # Sauvegarde : clé de chiffrement restic et SAS du conteneur restic-<env> ; le compte
       # de stockage (infra/terraform) est commun à dev et prod
       RESTIC_PASSWORD: ${{ secrets[format('{0}_RESTIC_PASSWORD', github.ref_name == 'main' && 'PROD' || 'DEV')] }}
@@ -86,6 +89,10 @@ jobs:
       # Adresse publique du front (redirectUris de Keycloak) : https://<VM_IP> en prod,
       # https://<VM_IP>:8443 en dev. Le port 443 est omis, comme dans l'adresse du navigateur.
       FRONT_URL: ${{ format('https://{0}{1}', vars.VM_IP, github.ref_name != 'main' && ':8443' || '') }}
+      # Seul nom d'hôte accepté par les routes Traefik (règle Host de compose-prod.yml)
+      PUBLIC_HOST: ${{ vars.VM_IP }}
+      # Swagger et openapi.json masqués en prod (routes pas encore protégées par Keycloak)
+      API_DOCS_ENABLED: ${{ github.ref_name == 'main' && 'false' || 'true' }}
     steps:
       # Pas de jeton dans .git/config : le runner de la VM conserve ses fichiers entre les jobs
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -153,7 +160,8 @@ jobs:
           for key in POSTGRES_USER POSTGRES_DB POSTGRES_PASSWORD ETL_DB_PASSWORD \
                      MODEL_DB_PASSWORD API_DB_PASSWORD BACKUP_DB_PASSWORD \
                      KEYCLOAK_ADMIN KEYCLOAK_ADMIN_PASSWORD KEYCLOAK_DB_PASSWORD \
-                     KEYCLOAK_ADMIN_CLIENT_SECRET RESTIC_PASSWORD AZURE_ACCOUNT_SAS; do
+                     KEYCLOAK_ADMIN_CLIENT_SECRET RESTIC_PASSWORD AZURE_ACCOUNT_SAS \
+                     GRAFANA_ADMIN_PASSWORD MONITORING_DB_PASSWORD; do
             if [ -z "${!key}" ]; then
               echo "::error::${ENV_PREFIX}_${key} manquant (Settings → Secrets and variables → Actions)"
               missing=1
@@ -176,6 +184,13 @@ jobs:
           echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           trap 'docker logout ghcr.io >/dev/null' EXIT
           docker compose -f compose-prod.yml --profile jobs pull --quiet
+
+      # Images publiques (Docker Hub), absentes du pull GHCR ci-dessus. Sans elles,
+      # le up --pull never ne pourrait pas démarrer Grafana.
+      - name: Récupérer les images de supervision
+        run: |
+          docker compose -f compose-prod.yml pull \
+            prometheus postgres-exporter loki alloy grafana
 
       # Données brutes du jeu d'entraînement (DVC, data/raw.dvc) : vérifie, sans rien
       # copier ni installer, que le stockage DVC de la VM contient la version du commit.
@@ -222,11 +237,13 @@ jobs:
       - name: Préparer le job du jeu d'entraînement
         run: docker compose -f compose-prod.yml create --no-build --pull never dataset
 
-      # Passe par Traefik comme un client (-k : certificat auto-signé)
+      # Passe par Traefik comme un client (-k : certificat auto-signé). --resolve : la
+      # requête vise l'IP publique (règle Host de Traefik) mais part vers 127.0.0.1.
       - name: Vérifier la santé de l'API
         run: |
           for _ in $(seq 1 30); do
-            if curl -fsSk "https://localhost:${HTTPS_PORT}/api/health"; then
+            if curl -fsSk --resolve "${PUBLIC_HOST}:${HTTPS_PORT}:127.0.0.1" \
+                 "https://${PUBLIC_HOST}:${HTTPS_PORT}/api/health"; then
               exit 0
             fi
             sleep 2
@@ -235,6 +252,24 @@ jobs:
           # -p : le projet suffit, sans réinterpoler compose-prod.yml (et donc sans les secrets)
           docker compose -p "enervision-${DEPLOY_ENV}" ps
           docker compose -p "enervision-${DEPLOY_ENV}" logs --tail=50 api
+          exit 1
+
+      # L'application tourne déjà : un Grafana absent ou pas prêt n'arrête pas
+      # le déploiement (Keycloak et le nettoyage suivent).
+      - name: Vérifier Grafana
+        continue-on-error: true
+        run: |
+          for _ in $(seq 1 30); do
+            if curl -fsSk --resolve "${PUBLIC_HOST}:${HTTPS_PORT}:127.0.0.1" \
+                 "https://${PUBLIC_HOST}:${HTTPS_PORT}/grafana/api/health"; then
+              echo
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::warning::Grafana ($DEPLOY_ENV, port $HTTPS_PORT) ne répond pas après 60 s"
+          docker compose -p "enervision-${DEPLOY_ENV}" ps
+          docker compose -p "enervision-${DEPLOY_ENV}" logs --tail=50 grafana
           exit 1
 
       # Console d'administration exposée : le realm master bloque un compte après 5 mots de

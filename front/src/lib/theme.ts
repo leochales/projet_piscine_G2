@@ -1,7 +1,7 @@
 import { computed, nextTick } from 'vue'
 import { createSharedComposable, useColorMode } from '@vueuse/core'
 
-// Clé du choix dans le localStorage. index.html la lit aussi, avant le démarrage de Vue,
+// Clé du choix dans le localStorage. public/theme-init.js la lit aussi, avant le démarrage de Vue,
 // pour appliquer le thème sans flash clair : les deux doivent rester identiques.
 export const THEME_STORAGE_KEY = 'enervision-theme'
 

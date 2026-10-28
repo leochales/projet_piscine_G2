@@ -62,7 +62,7 @@ from sqlalchemy import Connection, text
 
 from common.db import get_engine
 from common.logs import configure_logging
-from model import registre
+from model import alerte_pic, registre
 from model.features import (
     COUVERTURE_MIN_MOYENNE,
     HEURES,
@@ -348,23 +348,24 @@ def lire_pics(conn: Connection, debut: pd.Timestamp) -> pd.DataFrame:
     )
 
 
-def lire_seuils(conn: Connection) -> pd.Series:
-    """Seuil d'alerte de chaque site actif, en kW : ``seuil_alerte_pct`` % de sa
-    capacité, arrondi comme dans la détection des pics mesurés de l'ETL."""
+def lire_sites(conn: Connection) -> pd.DataFrame:
+    """Seuil d'alerte (``seuil_kw``) et capacité (``capacite_kw``) de chaque site actif,
+    en kW, indexés par ``id_site``. Le seuil vaut ``seuil_alerte_pct`` % de la capacité,
+    arrondi comme dans la détection des pics mesurés de l'ETL."""
     lignes = conn.execute(
         text(
             """
-            SELECT id_site, round(capacite_kw * seuil_alerte_pct / 100, 2)
+            SELECT
+                id_site,
+                round(capacite_kw * seuil_alerte_pct / 100, 2) AS seuil_kw,
+                capacite_kw
             FROM app.site
             WHERE statut = 'active'
             """
         )
     ).all()
-    return pd.Series(
-        {id_site: float(seuil) for id_site, seuil in lignes},
-        name="seuil_kw",
-        dtype=float,
-    )
+    sites = pd.DataFrame(lignes, columns=["id_site", "seuil_kw", "capacite_kw"])
+    return sites.set_index("id_site").astype(float)
 
 
 def ratios_pic(pics: pd.DataFrame) -> pd.Series:
@@ -463,19 +464,29 @@ def ecrire(conn: Connection, previsions: pd.DataFrame) -> None:
 
 
 def generer(maintenant: datetime | None = None) -> int:
-    """Calcule et écrit les prévisions. Renvoie le nombre de lignes écrites."""
+    """Calcule et écrit les prévisions, puis les alertes de pic prévu qui en découlent
+    (``model.alerte_pic``), dans la même transaction : si un calcul ou une écriture
+    échoue, aucune alerte n'est ouverte ni fermée. Sans prévision (aucun modèle en
+    production, aucun site prévu), seules les alertes dont le pic est passé sont
+    terminées. Renvoie le nombre de prévisions écrites."""
     debut = debut_des_previsions(maintenant or datetime.now(UTC))
     modeles = {horizon: charger_production(horizon) for horizon in HORIZONS}
     if not any(modeles.values()):
         logger.warning("aucun modèle en production : rien à prévoir")
+        with get_engine().begin() as conn:
+            alerte_pic.terminer(conn, [])
         return 0
     with get_engine().begin() as conn:
         previsions = assembler(lire_historique(conn, debut), modeles, debut)
-        if not previsions.empty:
+        if previsions.empty:
+            alerte_pic.terminer(conn, [])
+        else:
+            sites = lire_sites(conn)
             previsions = ajouter_pics(
-                previsions, ratios_pic(lire_pics(conn, debut)), lire_seuils(conn)
+                previsions, ratios_pic(lire_pics(conn, debut)), sites["seuil_kw"]
             )
             ecrire(conn, previsions)
+            alerte_pic.mettre_a_jour(conn, previsions, sites)
     logger.info(
         "%d prévisions écrites, %d sites, à partir de %s (%s)",
         len(previsions),

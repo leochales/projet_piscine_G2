@@ -283,12 +283,21 @@ def test_version_absente_dans_mlflow(client):
 
 
 class FakeConnection:
+    """Garde chaque requête ; ``sql`` et ``parametres`` sont ceux de la dernière."""
+
     def __init__(self):
         self.parametres = None
+        self.requetes = []
 
     def execute(self, sql, parametres=None):
         self.sql = str(sql)
         self.parametres = parametres
+        self.requetes.append((self.sql, parametres))
+        return FakeResultat([])
+
+    def parametres_de(self, debut_sql: str):
+        """Paramètres de la requête qui contient ``debut_sql``."""
+        return next(p for sql, p in self.requetes if debut_sql in sql)
 
 
 def test_ecrire_bornes_absentes_en_null(historique, debut, jeu):
@@ -309,14 +318,23 @@ def test_ecrire_bornes_absentes_en_null(historique, debut, jeu):
     assert ligne["pic_prevu"] is False
 
 
-def test_generer_sans_modele_ne_touche_pas_la_base(monkeypatch):
+def test_generer_sans_modele_termine_seulement_les_alertes_passees(monkeypatch):
+    """Sans modèle : aucune prévision, mais les alertes de pic prévu dont l'heure est
+    passée sont terminées (elles resteraient sinon en cours pour toujours)."""
     monkeypatch.setattr(prevision, "charger_production", lambda horizon: None)
+    conn = FakeConnection()
 
-    def pas_de_base():
-        raise AssertionError("la base ne doit pas être lue")
+    class FakeEngine:
+        @contextmanager
+        def begin(self):
+            yield conn
 
-    monkeypatch.setattr(prevision, "get_engine", pas_de_base)
+    monkeypatch.setattr(prevision, "get_engine", FakeEngine)
     assert generer() == 0
+    assert len(conn.requetes) == 1
+    sql, parametres = conn.requetes[0]
+    assert "UPDATE gold.alerte" in sql
+    assert parametres == {"sites": []}
 
 
 def test_generer_lit_et_ecrit_dans_une_transaction(
@@ -335,18 +353,28 @@ def test_generer_lit_et_ecrit_dans_une_transaction(
     monkeypatch.setattr(
         prevision, "lire_pics", lambda c, d: pics_constants("SITE001", 2.0)
     )
-    monkeypatch.setattr(
-        prevision, "lire_seuils", lambda c: pd.Series({"SITE001": 0.0, "SITE002": 0.0})
+    sites = pd.DataFrame(
+        {"seuil_kw": [0.0, 0.0], "capacite_kw": [1e9, 1e9]},
+        index=pd.Index(["SITE001", "SITE002"], name="id_site"),
     )
+    monkeypatch.setattr(prevision, "lire_sites", lambda c: sites)
     maintenant = (debut - pd.Timedelta(minutes=55)).to_pydatetime()
     assert generer(maintenant) == 2 * 168
-    assert len(conn.parametres) == 2 * 168
-    assert np.isfinite([l["consommation_prevue_kwh"] for l in conn.parametres]).all()
+    lignes = conn.parametres_de("INSERT INTO gold.prediction")
+    assert len(lignes) == 2 * 168
+    assert np.isfinite([l["consommation_prevue_kwh"] for l in lignes]).all()
     # Pic prévu pour le site qui a un historique de pics, pas pour l'autre
-    site001 = [l for l in conn.parametres if l["id_site"] == "SITE001"]
-    site002 = [l for l in conn.parametres if l["id_site"] == "SITE002"]
+    site001 = [l for l in lignes if l["id_site"] == "SITE001"]
+    site002 = [l for l in lignes if l["id_site"] == "SITE002"]
     assert all(l["pic_prevu_kw"] is not None and l["pic_prevu"] for l in site001)
     assert all(l["pic_prevu_kw"] is None and l["pic_prevu"] is False for l in site002)
+    # Puis, dans la même transaction, l'alerte de pic prévu de SITE001 (seuil nul)
+    sql = [s for s, _ in conn.requetes]
+    assert sql.index(
+        next(s for s in sql if "INSERT INTO gold.alerte" in s)
+    ) > sql.index(next(s for s in sql if "INSERT INTO gold.prediction" in s))
+    alertes = conn.parametres_de("INSERT INTO gold.alerte")
+    assert [a["id_site"] for a in alertes] == ["SITE001"]
 
 
 # --- Pic de l'heure (SMARTOPS-104) ---
@@ -483,7 +511,7 @@ def test_lire_pics_et_seuils_convertit_les_lignes_de_postgresql(debut):
                 return FakeResultat(
                     [("SITE001", heure, Decimal("150.00"), Decimal("100.00"))]
                 )
-            return FakeResultat([("SITE001", Decimal("180.000000"))])
+            return FakeResultat([("SITE001", Decimal("180.00"), Decimal("200.00"))])
 
     conn = Connexion()
     df = prevision.lire_pics(conn, debut)
@@ -501,9 +529,10 @@ def test_lire_pics_et_seuils_convertit_les_lignes_de_postgresql(debut):
     assert df.loc[0, "pic_kw"] == 150.0
     assert df.loc[0, "moyenne_kw"] == 100.0
 
-    seuils = prevision.lire_seuils(conn)
+    sites = prevision.lire_sites(conn)
     assert "seuil_alerte_pct" in conn.sql
-    assert seuils["SITE001"] == 180.0
+    assert sites.loc["SITE001", "seuil_kw"] == 180.0
+    assert sites.loc["SITE001", "capacite_kw"] == 200.0
 
 
 def test_ecart_du_pic_soutenu_identique_a_la_detection_de_l_etl():

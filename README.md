@@ -96,6 +96,8 @@ Chaque minute, l'ETL crée les alertes dans `gold.alerte` (`source = 'etl'`, `db
 
 Une minute sans mesure (ou dont la mesure a été refusée) ne compte ni pour le début ni pour la fin d'une alerte, mais plus de 5 minutes sans mesure coupent la série : trois mesures espacées d'une heure n'ouvrent pas d'alerte. Relancer la détection met à jour l'alerte en cours au lieu d'en créer une nouvelle, même si son début change (seuil modifié, minute réécrite) : elle garde son identifiant, donc sa prise en compte.
 
+Chaque heure, après ses prévisions, le modèle crée l'alerte **Pic de consommation prévu** (`predicted_peak`, `source = 'modele'`, `model/alerte_pic.py`) : un site dont le pic prévu atteint son seuil sur au moins une des 24 prochaines heures a une alerte en cours. Son début est la première heure prévue au-dessus du seuil, sa valeur le plus fort pic prévu (`valeur_le` : son heure), avec la même sévérité que les pics mesurés (`critical` dès 110 % de la capacité). Une seule alerte du modèle en cours par site (`db/19_alerte_modele.sql`) : les passages suivants la mettent à jour, et la terminent quand plus aucune heure n'est prévue au-dessus du seuil. Voir `model/README.md`.
+
 Les tests SQL de `db/tests/` (droits des comptes, actions du dashboard) sont lancés par la CI (`images.yml`, sur la base de la stack de test). En local, sur une base qui tourne :
 
 ```bash
@@ -104,11 +106,7 @@ docker compose -f compose-local.yml exec -T db psql -v ON_ERROR_STOP=1 -U enervi
 
 ## Supervision (Prometheus, Grafana, Loki)
 
-Non démarrée par défaut (environ 1 Go de mémoire) : elle est dans le profil Compose `monitoring`.
-
-```bash
-docker compose -f compose-local.yml --profile monitoring up -d
-```
+Démarrée avec le reste de la stack (`docker compose -f compose-local.yml up -d`), environ 1 Go de mémoire en plus.
 
 Grafana : http://localhost/grafana (compte `admin`, mot de passe `GRAFANA_ADMIN_PASSWORD` du `.env`). Le tableau de bord **EnerVision : socle** montre :
 
@@ -211,7 +209,7 @@ Chaque pull request vers `develop` ou `main` lance :
 | `pre-commit.yml` | lint et format (ruff, dont les règles de sécurité `S` de Bandit, eslint, prettier, sqlfluff, hadolint, gitleaks), tests et typage, **couverture sous 80 %** |
 | `security.yml` | vulnérabilité HIGH ou CRITICAL dans les fichiers du dépôt, ou dans la configuration Terraform |
 | `terraform.yml` | code Terraform mal formaté, invalide ou signalé par tflint (seulement si `infra/terraform/` change) |
-| `images.yml` | image qui ne se construit pas ; stack de prod (Traefik, base, api, etl, front, backup) qui ne démarre pas ou échoue aux tests (dont une sauvegarde complète dans un dépôt restic local) ; réponse de l'API qui ne respecte pas son contrat OpenAPI (Schemathesis, sur le conteneur) ; image qui contient une vulnérabilité corrigeable |
+| `images.yml` | image qui ne se construit pas ; stack de prod (Traefik, base, api, etl, front, backup) qui ne démarre pas ou échoue aux tests (dont une sauvegarde complète dans un dépôt restic local) ; redirection vers un autre hôte ou en HTTP, en-tête de sécurité ou CSP du front manquant, version exposée dans l'en-tête `Server`, script en ligne dans le front ; réponse de l'API qui ne respecte pas son contrat OpenAPI (Schemathesis, sur le conteneur) ; image qui contient une vulnérabilité corrigeable |
 
 La couverture porte sur la logique métier : `api/` et `common/` côté Python (`pyproject.toml`), `src/stores`, `src/lib` et `src/services` côté front (`front/vitest.config.ts`).
 

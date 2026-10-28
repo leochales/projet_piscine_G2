@@ -304,8 +304,6 @@ export async function fetchRecommendations(): Promise<Recommendation[]> {
   }, [])
 }
 
-export const fetchPreviousSavings = (): Promise<number> => respond(mocks.economiesAnterieuresEur)
-
 /**
  * Prend une alerte en compte : POST /api/alertes/{id}/prise-en-compte (US7). Déjà prise en
  * compte ou terminée, l'API répond 409 (ApiError). Simulée avec les alertes simulées : elle

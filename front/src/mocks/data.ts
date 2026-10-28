@@ -95,9 +95,6 @@ export function fleetTrend(): FleetTrend {
   return { consommationKw24h, coutEurJours7 }
 }
 
-/** Économies déjà réalisées ce mois-ci, avant les recommandations affichées */
-export const economiesAnterieuresEur = 1250
-
 /**
  * Courbe journalière : pic à 14 h (~82 % de la capacité), creux la nuit.
  * Un site avec un pic prévu (SITE002) a en plus une bosse demain 14 h,

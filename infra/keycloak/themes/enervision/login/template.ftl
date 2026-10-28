@@ -14,7 +14,7 @@
     <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>${msg("loginTitle",(realm.displayName!''))}</title>
-    <link rel="icon" href="${url.resourcesPath}/img/favicon.ico" />
+    <link rel="icon" type="image/svg+xml" href="${url.resourcesPath}/img/favicon.svg" />
     <#-- Même clé et même règle que front/index.html (le front est à la même adresse, donc
          même localStorage) : le thème choisi dans l'application, sinon celui du système -->
     <script>
@@ -52,7 +52,10 @@
 
 <body class="ev-page ${bodyClass}" data-page-id="login-${pageId}">
 <main class="ev-shell">
-    <div id="kc-header" class="ev-brand">${realm.displayName!'EnerVision'}</div>
+    <div id="kc-header" class="ev-brand">
+        <img class="ev-logo-light" src="${url.resourcesPath}/img/logo.svg" alt="${realm.displayName!'EnerVision'}" />
+        <img class="ev-logo-dark" src="${url.resourcesPath}/img/logo-dark.svg" alt="${realm.displayName!'EnerVision'}" />
+    </div>
 
     <div class="ev-card" data-slot="card">
         <header class="ev-card-header" data-slot="card-header">
