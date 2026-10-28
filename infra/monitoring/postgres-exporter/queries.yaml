@@ -22,16 +22,16 @@ enervision:
   metrics:
     - mesures_collectees:
         usage: "GAUGE"
-        description: "Mesures stockées dans bronze"
+        description: "Mesures enregistrées dans bronze depuis 24 h, sites actifs"
     - derniere_collecte_epoch:
         usage: "GAUGE"
-        description: "Horodatage Unix de la dernière ingestion"
+        description: "Horodatage Unix du dernier enregistrement dans bronze"
     - valeurs_imputees:
         usage: "GAUGE"
-        description: "Minutes imputées par interpolation linéaire"
+        description: "Part des minutes imputées sur les heures complètes des dernières 24 h, en %"
     - puissance_kw:
         usage: "GAUGE"
-        description: "Puissance instantanée du parc, en kW"
+        description: "Puissance des sites actifs avec une mesure de moins de 5 minutes, en kW"
     - previsions_ecrites:
         usage: "GAUGE"
         description: "Lignes écrites dans gold.prediction"
@@ -40,7 +40,7 @@ enervision:
         description: "Horodatage Unix du dernier calcul de prévision"
     - alertes_en_cours:
         usage: "GAUGE"
-        description: "Alertes ouvertes"
+        description: "Alertes ouvertes des sites actifs"
     - ecart_prevu_reel_pct:
         usage: "GAUGE"
-        description: "Écart prévu/réel sur les heures complètes déjà passées, en %"
+        description: "Écart prévu/réel sur les heures complètes des dernières 24 h, en %"

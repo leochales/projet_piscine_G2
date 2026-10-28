@@ -23,7 +23,7 @@
       "id": 2,
       "type": "stat",
       "title": "Mesures collectées",
-      "description": "Lignes dans bronze. Monte d'une mesure par site et par minute collectée.",
+      "description": "Mesures enregistrées dans bronze depuis 24 h, pour les sites actifs. Le volume reste borné : la vue ne compte pas tout l'historique.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 5, "w": 6, "x": 0, "y": 1 },
       "fieldConfig": {
@@ -57,7 +57,7 @@
       "id": 3,
       "type": "stat",
       "title": "Dernière collecte",
-      "description": "Heure de la dernière mesure arrivée dans bronze.",
+      "description": "Date d'enregistrement de la dernière ligne bronze d'un site actif. Un rattrapage de minutes anciennes compte : ce n'est pas la minute de mesure la plus récente.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 5, "w": 6, "x": 6, "y": 1 },
       "fieldConfig": {
@@ -89,15 +89,15 @@
     {
       "id": 4,
       "type": "stat",
-      "title": "Valeurs imputées",
-      "description": "Minutes reconstruites par interpolation linéaire (trous courts).",
+      "title": "Taux d'imputation",
+      "description": "Part des minutes imputées sur les heures complètes des dernières 24 h, sites actifs. Une heure incomplète ou trop ancienne ne compte pas.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 5, "w": 6, "x": 12, "y": 1 },
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
-          "decimals": 0,
-          "noValue": "0",
+          "unit": "percent",
+          "decimals": 1,
+          "noValue": "pas encore",
           "color": { "mode": "thresholds" },
           "thresholds": {
             "mode": "absolute",
@@ -124,7 +124,7 @@
       "id": 5,
       "type": "stat",
       "title": "Puissance du parc",
-      "description": "Somme des dernières mesures, en kW.",
+      "description": "Somme des puissances des sites actifs dont la dernière mesure a moins de 5 minutes. Un site désactivé ou silencieux ne compte plus.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 5, "w": 6, "x": 18, "y": 1 },
       "fieldConfig": {
@@ -233,7 +233,7 @@
       "id": 9,
       "type": "stat",
       "title": "Écart prévu / réel",
-      "description": "Sur les heures complètes déjà passées : 100 × |prévu − réel| / réel. Une heure incomplète a des kWh sous-estimés, elle ne compte pas. Vide tant qu'aucune de ces heures n'est écoulée. Ce n'est pas le WAPE d'entraînement.",
+      "description": "Sur les heures complètes des dernières 24 h : 100 × |prévu − réel| / réel. Une heure incomplète a des kWh sous-estimés, elle ne compte pas. L'historique plus ancien non plus : une dérive récente reste visible. Vide tant qu'aucune de ces heures n'est écoulée. Ce n'est pas le WAPE d'entraînement.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 5, "w": 6, "x": 12, "y": 7 },
       "fieldConfig": {
@@ -271,7 +271,7 @@
       "id": 10,
       "type": "stat",
       "title": "Alertes en cours",
-      "description": "Alertes ouvertes, tous sites.",
+      "description": "Alertes ouvertes des sites actifs. Un site désactivé ne compte plus, même si sa ligne n'est pas encore fermée.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 5, "w": 6, "x": 18, "y": 7 },
       "fieldConfig": {
@@ -308,7 +308,7 @@
       "id": 11,
       "type": "timeseries",
       "title": "Mesures collectées",
-      "description": "Le compteur monte à chaque collecte réussie.",
+      "description": "Mesures enregistrées dans bronze depuis 24 h, sites actifs.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
       "fieldConfig": {
@@ -336,7 +336,7 @@
       "id": 12,
       "type": "timeseries",
       "title": "Puissance du parc",
-      "description": "Somme des dernières puissances mesurées.",
+      "description": "Sites actifs avec une mesure de moins de 5 minutes.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
       "fieldConfig": {
