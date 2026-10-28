@@ -19,6 +19,7 @@ export function toPredictionPoint(api: PredictionApi): PredictionPoint {
     picKw: api.pic_prevu_kw ?? null,
     picBasKw: api.pic_bas_kw ?? null,
     picHautKw: api.pic_haut_kw ?? null,
+    picPrevu: api.pic_prevu ?? false,
   }
 }
 

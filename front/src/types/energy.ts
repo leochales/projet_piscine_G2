@@ -87,6 +87,8 @@ export interface PredictionPoint {
   picKw: number | null
   picBasKw: number | null
   picHautKw: number | null
+  // Vrai quand le modèle prévoit un pic au seuil d'alerte du site : il lève alors l'alerte
+  picPrevu: boolean
 }
 
 /** Évolution du parc, pour les mini-courbes des KPI */

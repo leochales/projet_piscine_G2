@@ -146,6 +146,8 @@ export function siteSeries(siteId: string, historyHours: number): SiteSeries {
       picKw: null,
       picBasKw: null,
       picHautKw: null,
+      // Comme le modèle, au seuil d'alerte par défaut (90 %)
+      picPrevu: kw >= capacity * 0.9,
     }
   })
 

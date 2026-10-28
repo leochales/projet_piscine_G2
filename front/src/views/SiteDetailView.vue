@@ -106,18 +106,20 @@ const predictions = computed(() => {
   return site && loaded?.siteId === site.id ? loaded.data.predictions : null
 })
 
-// Pic de la prédiction (maximum de l'heure, sinon moyenne horaire) et position par rapport
-// au seuil. depasseSeuil est null sans fourchette : on ne connaît pas la marge d'erreur.
-const peak = computed(() => {
+// Pic de la prédiction : maximum de l'heure, sinon moyenne horaire
+const peak = computed(() => (predictions.value ? predictedPeak(predictions.value) : null))
+
+// Première heure où le modèle prévoit un pic au-dessus du seuil du site (pic_prevu). C'est
+// sa décision, celle qui lève l'alerte de pic prévu : la page ne la recalcule pas, sinon les
+// deux pourraient se contredire.
+const firstAlert = computed(() => predictions.value?.find((p) => p.picPrevu) ?? null)
+
+// Sans alerte du modèle, la borne haute du pic dit s'il reste une marge d'erreur à surveiller.
+// Atteindre le seuil compte comme le dépasser (>=), comme dans le modèle et l'ETL.
+const borneHauteAuSeuil = computed(() => {
   const site = current.value?.site
-  const top = predictions.value ? predictedPeak(predictions.value) : null
-  if (!site || !top) return null
-  const seuilKw = (site.capaciteKw * seuilPct.value) / 100
-  return {
-    ...top,
-    depasseSeuil: top.hauteKw === null ? null : top.hauteKw > seuilKw,
-    valeurDepasseSeuil: top.kw > seuilKw,
-  }
+  if (!site || peak.value?.hauteKw == null) return null
+  return peak.value.hauteKw >= (site.capaciteKw * seuilPct.value) / 100
 })
 
 // Mesures reçues mais aucune prévision : modèle pas encore passé, ou route en erreur
@@ -305,18 +307,21 @@ const openSite = (siteId: string) => router.push({ name: 'sites', params: { site
       <Card class="gap-2">
         <CardHeader><CardTitle>Ce que dit la fourchette</CardTitle></CardHeader>
         <CardContent class="text-sm text-muted-foreground">
-          <template v-if="peak?.depasseSeuil">
-            La borne haute du pic dépasse {{ seuilPct }} % de la capacité : risque réel de
-            dépassement, une recommandation est proposée.
+          <template v-if="firstAlert">
+            Le modèle prévoit un pic au-dessus de {{ seuilPct }} % de la capacité,
+            {{ formatRelativeHour(firstAlert.horodatage) }} : risque de dépassement.
           </template>
-          <template v-else-if="peak?.depasseSeuil === false">
+          <template v-else-if="borneHauteAuSeuil">
+            Le modèle ne prévoit pas de pic au-dessus de {{ seuilPct }} % de la capacité, mais la
+            borne haute l'atteint : dépassement possible, à surveiller.
+          </template>
+          <template v-else-if="borneHauteAuSeuil === false">
             Même la borne haute du pic reste sous {{ seuilPct }} % de la capacité : pas de risque de
             dépassement.
           </template>
           <template v-else-if="peak">
-            Cette prévision n'a pas de fourchette. Le pic prévu est
-            {{ peak.valeurDepasseSeuil ? 'au-dessus' : 'en dessous' }} de {{ seuilPct }} % de la
-            capacité, sans marge d'erreur connue.
+            Le modèle ne prévoit pas de pic au-dessus de {{ seuilPct }} % de la capacité. Cette
+            prévision n'a pas de fourchette : sa marge d'erreur n'est pas connue.
           </template>
           <template v-else-if="noPrediction">Pas de prévision disponible pour le moment.</template>
         </CardContent>

@@ -11,6 +11,7 @@ const heure = (horodatage: string, valeurs: Partial<PredictionPoint> = {}): Pred
   picKw: null,
   picBasKw: null,
   picHautKw: null,
+  picPrevu: false,
   ...valeurs,
 })
 

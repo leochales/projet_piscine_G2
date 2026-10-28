@@ -113,7 +113,7 @@ function onMobileSort(event: Event) {
           :direction="directionOf('capacite')"
           @sort="sortBy('capacite')"
         />
-        <TableHead>Pic prévu (48 h)</TableHead>
+        <TableHead>Pic prévu (24h)</TableHead>
         <SortableHead
           label="Qualité des données"
           :direction="directionOf('qualite')"

@@ -17,7 +17,7 @@ import {
 } from '@/lib/mesures'
 import { toPredictionPoint } from '@/lib/predictions'
 import { ACCEPTEE_EN_COURS_JOURS, toRecommendation } from '@/lib/recommendations'
-import { getJson, postJson } from '@/services/http'
+import { ApiError, getJson, postJson } from '@/services/http'
 import type {
   AlerteApi,
   ConsommationHoraireApi,
@@ -128,8 +128,9 @@ async function fetchConsommation(siteId: string, debut: string): Promise<Consomm
 }
 
 /**
- * Prévisions des heures à venir. Sans prévision (modèle pas encore passé, route en erreur),
- * on renvoie une liste vide : la courbe réelle reste affichée, la page signale l'absence.
+ * Prévisions des heures à venir. Si la route est en panne (500, réseau…), on renvoie une liste
+ * vide : la courbe réelle reste affichée, la page signale l'absence. Une session expirée (401)
+ * ou un accès refusé (403) n'est pas une panne : l'erreur remonte, comme pour les mesures.
  */
 async function fetchPredictions(siteId: string, horizon: SeriesRange): Promise<PredictionApi[]> {
   try {
@@ -137,6 +138,7 @@ async function fetchPredictions(siteId: string, horizon: SeriesRange): Promise<P
       horizon,
     })
   } catch (error) {
+    if (error instanceof ApiError && (error.status === 401 || error.status === 403)) throw error
     console.warn(`Prévisions de ${siteId} indisponibles`, error)
     return []
   }

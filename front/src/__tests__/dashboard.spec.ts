@@ -300,6 +300,7 @@ describe('mesures : source API', () => {
         picKw: null,
         picBasKw: null,
         picHautKw: null,
+        picPrevu: false,
       },
     ])
   })
@@ -326,6 +327,15 @@ describe('mesures : source API', () => {
     const series = await fetchSiteSeries('SITE001', '24h')
 
     expect(series.predictions[0]).toMatchObject({ picKw: null, picBasKw: null, picHautKw: null })
+  })
+
+  it('remonte une session expirée ou un accès refusé sur les prévisions', async () => {
+    stubFetch((url) => {
+      if (url.includes('/predictions')) return { status: 403, body: { detail: 'refusé' } }
+      return { status: 200, body: [] }
+    })
+
+    await expect(fetchSiteSeries('SITE001', '24h')).rejects.toBeInstanceOf(ApiError)
   })
 
   it('garde la courbe réelle si les prévisions sont indisponibles', async () => {
