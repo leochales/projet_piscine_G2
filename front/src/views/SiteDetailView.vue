@@ -32,6 +32,7 @@ import { useAutoRefresh } from '@/lib/refresh'
 import { useRequest } from '@/lib/request'
 import {
   fetchOverview,
+  fetchPicsPrevus,
   fetchSiteCosts,
   fetchSiteOverview,
   fetchSiteSeries,
@@ -53,8 +54,13 @@ function setRange(value: unknown) {
 // Chaque appel est relancé quand le site (ou la période) change ; useRequest ignore la
 // réponse d'un site quitté entre-temps. Sans identifiant (onglet « Sites »), on ne charge que
 // la liste des sites, pour en choisir un.
-// Liste des sites : choix d'un site (onglet « Sites ») et menu pour changer de site
+// Liste des sites : choix d'un site (onglet « Sites ») et menu pour changer de site.
+// Les pics ne partent que pour le tableau de choix. La page d'un site ouvert ne les affiche pas.
 const siteList = useRequest(fetchOverview)
+const pics = useRequest(() => (props.siteId ? Promise.resolve(undefined) : fetchPicsPrevus()), {
+  watch: () => props.siteId,
+})
+const tableRows = computed(() => pics.data.value ?? siteList.data.value)
 const site = useRequest(async () => (props.siteId ? fetchSiteOverview(props.siteId) : undefined), {
   watch: () => props.siteId,
 })
@@ -90,7 +96,16 @@ const actionsNotice = useActionsNotice()
 
 // Rafraîchit tout chaque minute ; un changement de site ou de période recharge déjà de
 // lui-même (useRequest)
-const freshness = useAutoRefresh([siteList, site, costs, series, statuses, alerts, recommendations])
+const freshness = useAutoRefresh([
+  siteList,
+  pics,
+  site,
+  costs,
+  series,
+  statuses,
+  alerts,
+  recommendations,
+])
 
 const current = computed(() => site.data.value)
 // Seuil du site, celui de l'ETL et du modèle : comparer à 90 % partout ferait annoncer un
@@ -164,11 +179,7 @@ const openSite = (siteId: string) => router.push({ name: 'sites', params: { site
           title="Aucun site à afficher"
           description="Aucun site n'est rattaché à votre compte pour le moment."
         />
-        <SitesTable
-          v-else-if="siteList.data.value"
-          :rows="siteList.data.value"
-          @select="openSite"
-        />
+        <SitesTable v-else-if="tableRows" :rows="tableRows" @select="openSite" />
         <TableSkeleton v-else />
       </CardContent>
     </Card>

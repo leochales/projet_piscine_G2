@@ -8,6 +8,7 @@ import {
   fetchFleetTrend,
   fetchKpis,
   fetchOverview,
+  fetchPicsPrevus,
   fetchSiteCosts,
   fetchSiteOverview,
   fetchRecommendations,
@@ -198,8 +199,7 @@ describe('mesures : source API', () => {
 
     const sites = await fetchOverview()
 
-    expect(urls).toContain('/api/sites/derniere-mesure')
-    expect(urls).toContain('/api/sites/SITE001/predictions?horizon=24h')
+    expect(urls).toEqual(['/api/sites/derniere-mesure'])
     expect(sites).toHaveLength(1)
     expect(sites[0]).toMatchObject({
       site: { id: 'SITE001', nom: 'Bureau Paris La Défense', type: 'bureaux' },
@@ -231,7 +231,7 @@ describe('mesures : source API', () => {
       }
     })
 
-    const sites = await fetchOverview()
+    const sites = await fetchPicsPrevus()
 
     // 190 kW / 200 kW = 95 %, au-dessus du seuil 90 %
     expect(sites[0]?.picPrevu).toEqual({
@@ -247,12 +247,44 @@ describe('mesures : source API', () => {
       return { status: 503, body: { detail: 'indisponible' } }
     })
 
-    const sites = await fetchOverview()
+    const sites = await fetchPicsPrevus()
 
     expect(sites).toHaveLength(1)
     expect(sites[0]?.picPrevu).toBeNull()
     expect(warn).toHaveBeenCalled()
     warn.mockRestore()
+  })
+
+  it('rend les sites sans attendre les prévisions du tableau', async () => {
+    let releasePredictions!: () => void
+    const predictions = new Promise<void>((resolve) => {
+      releasePredictions = resolve
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.includes('predictions')) await predictions
+        const body = url.includes('derniere-mesure') ? [derniere] : []
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }),
+    )
+
+    const sitesPromise = fetchOverview()
+    const picsPromise = fetchPicsPrevus()
+
+    await expect(sitesPromise).resolves.toMatchObject([{ picPrevu: null }])
+    let picsSettled = false
+    void picsPromise.then(() => {
+      picsSettled = true
+    })
+    await Promise.resolve()
+    expect(picsSettled).toBe(false)
+
+    releasePredictions()
+    await expect(picsPromise).resolves.toMatchObject([{ picPrevu: null }])
   })
 
   it('lit la transmission et les capteurs de chaque site (US4)', async () => {
