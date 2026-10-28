@@ -12,7 +12,7 @@ async function start() {
   const claims = await initAuth()
   // Le routeur mémorise l'adresse à sa création : créé avant la connexion, il remettrait dans
   // l'adresse le #state=…&code=… que keycloak-js vient de retirer
-  const { default: router } = await import('./router')
+  const { default: router, routeApresConnexion } = await import('./router')
 
   const app = createApp(App)
   const pinia = createPinia()
@@ -35,6 +35,11 @@ async function start() {
   if ((await checkAccount()) === 'unavailable') void retryAccountCheck()
 
   app.use(router)
+  // US6 : une seule fois, avant le premier affichage. La garde du routeur ne
+  // le refait pas, pour qu'un clic sur « Vue d'ensemble » y reste.
+  await router.isReady()
+  const arrivee = routeApresConnexion(router.currentRoute.value.name, user.sites)
+  if (arrivee) await router.replace(arrivee)
   app.mount('#app')
 }
 

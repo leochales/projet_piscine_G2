@@ -57,6 +57,23 @@ router.beforeEach((to) => {
   return { name: 'access-denied', replace: true }
 })
 
+/**
+ * Page d'arrivée (US6), appliquée une seule fois au démarrage.
+ * Un seul site attribué et une adresse sur la vue d'ensemble : sa page.
+ * Plusieurs sites, aucun, une liste pas encore connue, ou une autre adresse :
+ * on ne change rien. Un rôle *-CLIENT a une liste vide, il reste sur la vue
+ * d'ensemble. Un clic ultérieur sur « Vue d'ensemble » n'est pas concerné.
+ */
+export function routeApresConnexion(
+  routeName: string | symbol | null | undefined,
+  sites: readonly string[] | null,
+): { name: 'sites'; params: { siteId: string } } | undefined {
+  const seulSite = sites?.length === 1 ? sites[0] : undefined
+  if (routeName === 'overview' && seulSite) {
+    return { name: 'sites', params: { siteId: seulSite } }
+  }
+}
+
 router.afterEach((to) => {
   document.title = to.meta.title ? `${to.meta.title} · EnerVision` : 'EnerVision'
 })
