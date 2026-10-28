@@ -44,15 +44,24 @@ describe('useOperationsStore', () => {
 
   it('ne compte que les recommandations acceptées ce mois-ci dans les économies', () => {
     const store = useOperationsStore()
+    expect(store.savings).toBe(0)
+
     const ceMois = new Date().toISOString()
     const ilYA40Jours = new Date(Date.now() - 40 * 24 * 3600 * 1000).toISOString()
     store.recommendations = [
       rec({ id: 'A', gainEstimeEur: 380, statut: 'acceptee', decideeLe: ceMois }),
+      rec({
+        id: 'D',
+        gainEstimeEur: 12,
+        periodeGain: 'semaine',
+        statut: 'acceptee',
+        decideeLe: ceMois,
+      }),
       rec({ id: 'B', gainEstimeEur: 45, periodeGain: 'semaine', statut: 'refusee' }),
       // Acceptée un mois précédent : déjà comptée ce mois-là, pas dans celui-ci
       rec({ id: 'C', gainEstimeEur: 999, statut: 'acceptee', decideeLe: ilYA40Jours }),
     ]
-    expect(store.savings).toBe(380)
+    expect(store.savings).toBeCloseTo(380 + (12 * 52) / 12)
   })
 
   it('une décision prise maintenant est datée et comptée dans les économies du mois', async () => {
