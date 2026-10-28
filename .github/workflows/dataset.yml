@@ -53,11 +53,13 @@ jobs:
           python3 infra/dataset/pull.py
           echo "DATASET_RAW_DIR=$GITHUB_WORKSPACE/data/raw" >> "$GITHUB_ENV"
 
-      # Image du modèle déjà sur la VM : récupérée et gardée par deploy.yml
+      # Image du modèle déjà sur la VM : récupérée et gardée par deploy.yml. Pas de
+      # --pull never : le docker compose de la VM ne le connaît pas pour run, et run ne
+      # télécharge de toute façon pas une image déjà présente.
       - name: Construire le jeu
-        run: docker compose -f compose-prod.yml run --rm --pull never dataset
+        run: docker compose -f compose-prod.yml run --rm dataset
 
       # Modèle entraîné sur ce jeu : enregistré, avec l'alias production, seulement s'il
       # bat la prévision de référence sur la validation
       - name: Entraîner le modèle
-        run: docker compose -f compose-prod.yml run --rm --pull never entrainement
+        run: docker compose -f compose-prod.yml run --rm entrainement
