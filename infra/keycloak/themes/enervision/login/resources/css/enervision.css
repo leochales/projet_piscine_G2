@@ -98,13 +98,25 @@ html {
   max-width: 400px;
 }
 
-/* Marque, comme dans l'en-tête du front (text-lg font-semibold) */
+/* Marque : le logo complet, même fichier que l'en-tête du front (front/src/assets/logo.svg) */
 .ev-brand {
-  text-align: center;
-  font-size: 1.25rem;
-  line-height: 1.75rem;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  display: flex;
+  justify-content: center;
+}
+
+.ev-brand img {
+  height: 7rem;
+  width: auto;
+}
+
+/* Mode sombre : bleus foncés éclaircis (front/src/assets/logo-dark.svg) */
+.ev-brand .ev-logo-dark,
+:root.dark .ev-brand .ev-logo-light {
+  display: none;
+}
+
+:root.dark .ev-brand .ev-logo-dark {
+  display: block;
 }
 
 /* Card : bg-card rounded-xl py-6 gap-6 shadow-xs ring-1 ring-foreground/10 */
