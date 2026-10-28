@@ -14,9 +14,12 @@ La génération des prévisions (SMARTOPS-33) charge la version ``production`` a
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tempfile
+import time
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -38,6 +41,10 @@ ALIAS = "production"
 # Moyennes par site, enregistrées dans le run avec le modèle : elles servent à
 # normaliser la consommation et de liste des sites du modèle
 MOYENNES = "moyennes_par_site.json"
+# Cache des modèles : un dossier (version ou téléchargement en cours) utilisé depuis
+# moins longtemps n'est jamais supprimé. Une prévision dure quelques secondes : une
+# heure laisse une large marge à un lancement en parallèle
+DELAI_NETTOYAGE = timedelta(hours=1)
 
 
 def nom_modele(horizon: int) -> str:
@@ -158,6 +165,8 @@ def charger(horizon: int, cache: Path | None = None) -> ModeleProduction:
         dossier = telecharger(nom, version, cache)
         modele = mlflow.sklearn.load_model(str(dossier / "modele"))
         moyennes = json.loads((dossier / MOYENNES).read_text(encoding="utf-8"))
+        # Après le chargement : la version utilisée ne risque plus rien
+        nettoyer(dossier)
     return ModeleProduction(
         modele, pd.Series(moyennes, dtype=float), f"{nom}/{version.version}"
     )
@@ -165,8 +174,8 @@ def charger(horizon: int, cache: Path | None = None) -> ModeleProduction:
 
 def telecharger(nom: str, version: ModelVersion, cache: Path) -> Path:
     """Dossier local d'une version (``cache/<nom>/<numéro>-<run>``) : le modèle et ses
-    moyennes, téléchargés s'ils n'y sont pas encore. Les autres versions du même
-    modèle sont supprimées : le cache ne garde que la version en service.
+    moyennes, téléchargés s'ils n'y sont pas encore. Sa date de modification est
+    mise à jour à chaque utilisation : ``nettoyer`` sait ainsi qu'elle sert encore.
 
     Le run fait partie du nom : un modèle supprimé puis enregistré à nouveau
     recommence à la version 1, et l'ancien fichier ne doit pas resservir.
@@ -196,8 +205,25 @@ def telecharger(nom: str, version: ModelVersion, cache: Path) -> Path:
         finally:
             # Échec, ou version déjà mise en cache entre-temps par un autre lancement
             shutil.rmtree(temporaire, ignore_errors=True)
-    # Anciennes versions, et dossiers temporaires d'un lancement tué en cours de route
-    for autre in dossier.parent.iterdir():
-        if autre != dossier:
-            shutil.rmtree(autre, ignore_errors=True)
+    os.utime(dossier)
     return dossier
+
+
+def nettoyer(dossier: Path) -> None:
+    """Supprime, à côté de la version utilisée, les dossiers inutilisés depuis
+    ``DELAI_NETTOYAGE`` : anciennes versions, et dossiers temporaires d'un lancement
+    tué en plein téléchargement.
+
+    Sans verrou, deux lancements peuvent se chevaucher (lancement à la main pendant
+    le cron, alias déplacé entre deux) : un dossier utilisé ou écrit récemment est
+    donc laissé, pour ne jamais effacer le téléchargement ou la version en cours de
+    chargement d'un autre lancement. Il sera supprimé à un lancement suivant."""
+    limite = time.time() - DELAI_NETTOYAGE.total_seconds()
+    for autre in dossier.parent.iterdir():
+        try:
+            inutilise = autre != dossier and autre.stat().st_mtime < limite
+        except FileNotFoundError:
+            # Supprimé entre-temps par un autre lancement
+            continue
+        if inutilise:
+            shutil.rmtree(autre, ignore_errors=True)

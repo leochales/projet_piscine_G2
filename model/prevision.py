@@ -93,14 +93,21 @@ def debut_des_previsions(maintenant: datetime) -> pd.Timestamp:
 
 def lire_historique(conn: Connection, debut: pd.Timestamp) -> pd.DataFrame:
     """Consommation horaire des sites actifs sur l'historique utile, heure en cours
-    comprise (l'ETL la met à jour chaque minute)."""
+    comprise (l'ETL la met à jour chaque minute).
+
+    Un site actif sans aucune ligne sur cette période (panne de plus de 28 jours,
+    site jamais collecté) revient quand même, sur une ligne vide : ``sites_prevus``
+    l'écarte alors avec un avertissement, comme un site en retard, au lieu qu'il
+    disparaisse sans rien dire."""
     lignes = conn.execute(
         text(
             """
-            SELECT c.id_site, c.heure, c.moyenne_kw, c.taux_couverture
-            FROM gold.consommation_horaire AS c
-            JOIN app.site AS s ON s.id_site = c.id_site
-            WHERE s.statut = 'active' AND c.heure >= :depuis AND c.heure < :debut
+            SELECT s.id_site, c.heure, c.moyenne_kw, c.taux_couverture
+            FROM app.site AS s
+            LEFT JOIN gold.consommation_horaire AS c
+                ON c.id_site = s.id_site
+                AND c.heure >= :depuis AND c.heure < :debut
+            WHERE s.statut = 'active'
             """
         ),
         {"depuis": debut - HISTORIQUE_UTILE, "debut": debut},

@@ -1,6 +1,7 @@
 import logging
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
+from decimal import Decimal
 
 import numpy as np
 import pandas as pd
@@ -117,6 +118,65 @@ def test_sites_inconnus_ou_en_retard_ecartes(historique, debut, modeles, caplog)
     messages = [r.getMessage() for r in caplog.records]
     assert any("prevision-conso-24h/1" in m and "SITE009" in m for m in messages)
     assert any("prevision-conso-24h/1" in m and "SITE002" in m for m in messages)
+
+
+def test_site_actif_sans_aucune_mesure_signale(historique, debut, modeles, caplog):
+    """Une panne de plus de 28 jours : lire_historique renvoie le site sur une ligne
+    vide (LEFT JOIN). Il n'est pas prévu, mais l'avertissement le nomme."""
+    sans_mesure = historique[historique["id_site"] != "SITE002"]
+    ligne_vide = pd.DataFrame(
+        {
+            "id_site": ["SITE002"],
+            "heure": pd.Series([pd.NaT], dtype=historique["heure"].dtype),
+            "moyenne_kw": [np.nan],
+            "taux_couverture": [np.nan],
+        }
+    )
+    df = pd.concat([sans_mesure, ligne_vide], ignore_index=True)
+    with caplog.at_level(logging.WARNING):
+        p = prevoir(df, modeles[24], debut, 24)
+    assert set(p["id_site"]) == {"SITE001"}
+    assert any(
+        "sans mesure" in r.getMessage() and "SITE002" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+class FakeResultat:
+    def __init__(self, lignes):
+        self.lignes = lignes
+
+    def all(self):
+        return self.lignes
+
+
+def test_lire_historique_convertit_les_lignes_de_postgresql(debut):
+    """Lignes telles que psycopg les renvoie : Decimal, heure dans un autre fuseau,
+    et la ligne vide du LEFT JOIN pour un site actif sans mesure."""
+    paris = timezone(timedelta(hours=1))
+    heure = (debut - pd.Timedelta(hours=1)).to_pydatetime().astimezone(paris)
+
+    class Connexion:
+        def execute(self, sql, parametres):
+            self.sql = str(sql)
+            self.parametres = parametres
+            return FakeResultat(
+                [
+                    ("SITE001", heure, Decimal("12.50"), Decimal("1.000")),
+                    ("SITE002", None, None, None),
+                ]
+            )
+
+    conn = Connexion()
+    df = prevision.lire_historique(conn, debut)
+    assert "LEFT JOIN gold.consommation_horaire" in conn.sql
+    assert conn.parametres["debut"] == debut
+    assert str(df["heure"].dt.tz) == "UTC"
+    assert df.loc[0, "heure"] == debut - pd.Timedelta(hours=1)
+    assert df["moyenne_kw"].tolist()[0] == 12.5
+    assert pd.isna(df.loc[1, "heure"])
+    assert pd.isna(df.loc[1, "moyenne_kw"])
+    assert pd.isna(df.loc[1, "taux_couverture"])
 
 
 def test_aucun_site_prevu(historique, debut, modeles):

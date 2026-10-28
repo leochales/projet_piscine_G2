@@ -1,3 +1,6 @@
+import os
+import time
+
 import mlflow
 import numpy as np
 import pandas as pd
@@ -91,18 +94,49 @@ def test_cache_telecharge_une_seule_fois(client, tmp_path, monkeypatch):
     np.testing.assert_allclose(seconde.modele.predict(X), final[0].predict(X))
 
 
-def test_cache_garde_seulement_la_version_en_production(client, tmp_path):
+def vieillir(dossier, heures=2):
+    """Date de modification reculée : dossier inutilisé depuis ``heures`` heures."""
+    passe = time.time() - heures * 3600
+    os.utime(dossier, (passe, passe))
+
+
+def test_cache_supprime_les_dossiers_inutilises(client, tmp_path):
+    """Ancienne version et téléchargement abandonné, inutilisés depuis plus de
+    DELAI_NETTOYAGE : supprimés au lancement suivant."""
     _, r, final = resultat_et_final()
     cache = tmp_path / "cache"
     registre.enregistrer(r, 24, REGLAGES[r.meilleur], "v1", final)
     registre.charger(24, cache)
+    (ancienne,) = (cache / "prevision-conso-24h").iterdir()
     # Dossier temporaire d'un lancement tué en plein téléchargement
-    (cache / "prevision-conso-24h" / ".en-cours-abc").mkdir()
+    abandonne = cache / "prevision-conso-24h" / ".en-cours-abc"
+    abandonne.mkdir()
+    vieillir(ancienne)
+    vieillir(abandonne)
     registre.enregistrer(r, 24, REGLAGES[r.meilleur], "v2", final)
     assert registre.charger(24, cache).version == "prevision-conso-24h/2"
     restants = [d.name for d in (cache / "prevision-conso-24h").iterdir()]
     assert len(restants) == 1
     assert restants[0].startswith("2-")
+
+
+def test_cache_laisse_les_dossiers_d_un_autre_lancement(client, tmp_path):
+    """Deux lancements qui se chevauchent : la version qu'un autre lancement vient
+    d'utiliser et son téléchargement en cours ne sont pas effacés."""
+    _, r, final = resultat_et_final()
+    cache = tmp_path / "cache"
+    registre.enregistrer(r, 24, REGLAGES[r.meilleur], "v1", final)
+    registre.charger(24, cache)
+    (ancienne,) = (cache / "prevision-conso-24h").iterdir()
+    en_cours = cache / "prevision-conso-24h" / ".en-cours-abc"
+    en_cours.mkdir()
+    registre.enregistrer(r, 24, REGLAGES[r.meilleur], "v2", final)
+    registre.charger(24, cache)
+    assert ancienne.exists()
+    assert en_cours.exists()
+    # La version 1, utilisée par l'autre lancement, reste lisible
+    vieille = registre.MlflowClient().get_model_version(registre.nom_modele(24), "1")
+    assert registre.telecharger(registre.nom_modele(24), vieille, cache) == ancienne
 
 
 def test_cache_modele_reenregistre_depuis_la_version_1(client, tmp_path):
