@@ -1,0 +1,70 @@
+name: Démo
+
+# Prépare la démo sur dev, à la demande (Actions → Démo → Run workflow, branche develop) :
+#  - pic : pendant quelques minutes, les mesures collectées d'un site arrivent au-dessus de
+#    son seuil (db/demo/pic.sql). L'ETL en tire l'alerte puis la recommandation, 4 à
+#    5 minutes après ;
+#  - reset : avant chaque prise, retire les prises en compte et décisions des alertes en
+#    cours, sans arrêter le pic (db/demo/reset.sql) ;
+#  - fin_pic : à la fin du tournage, arrête le pic et retire son trigger
+#    (db/demo/fin_pic.sql).
+# Jamais sur prod : le job ne tourne que depuis develop.
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "pic, reset ou fin_pic"
+        type: choice
+        options: [reset, pic, fin_pic]
+        default: reset
+      site:
+        description: "Site du pic"
+        type: choice
+        options: [SITE001, SITE002, SITE003, SITE004, SITE005, SITE006, SITE007]
+        default: SITE001
+      minutes:
+        description: "Durée du pic, en minutes (5 à 180)"
+        type: string
+        default: "90"
+      charge:
+        description: "Charge du pic, part de la capacité (1.15 = 115 %)"
+        type: string
+        default: "1.15"
+
+concurrency:
+  group: demo-dev
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  demo:
+    name: Démo dev (${{ inputs.action }})
+    if: github.ref == 'refs/heads/develop'
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 5
+    env:
+      DB_CONTAINER: enervision-dev-db-1
+      ACTION: ${{ inputs.action }}
+      SITE: ${{ inputs.site }}
+      MINUTES: ${{ inputs.minutes }}
+      CHARGE: ${{ inputs.charge }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Lancer db/demo/${{ inputs.action }}.sql
+        run: |
+          case "$MINUTES" in ''|*[!0-9]*) echo "::error::minutes : un entier"; exit 1 ;; esac
+          if ! printf '%s' "$CHARGE" | grep -Eq '^[0-9]+(\.[0-9]+)?$'; then
+            echo "::error::charge : un nombre, ex. 1.15"
+            exit 1
+          fi
+          docker exec -i \
+            -e PGOPTIONS="-c demo.site=$SITE -c demo.minutes=$MINUTES -c demo.charge=$CHARGE" \
+            "$DB_CONTAINER" \
+            sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+            < "db/demo/$ACTION.sql"
