@@ -1,8 +1,10 @@
+import os
+import time
+
 import mlflow
 import numpy as np
 import pandas as pd
 import pytest
-from mlflow import MlflowClient
 
 from model import registre
 from model.entrainement import (
@@ -18,20 +20,6 @@ from model.tests.test_entrainement import faux_jeu, moyennes_entrainement
 
 # Stockage en fichiers de MLflow (test seulement) : codecs.open, déprécié en Python 3.14
 pytestmark = pytest.mark.filterwarnings("ignore:codecs.open:DeprecationWarning")
-
-
-@pytest.fixture
-def client(tmp_path, monkeypatch):
-    """MLflow local dans un dossier temporaire, à la place du serveur, comme le test
-    de model.dataset."""
-    monkeypatch.setenv("MLFLOW_DISABLE_AGENT_HINT", "1")
-    # Stockage en fichiers : suffisant pour un test, sans les dépendances du serveur
-    monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
-    uri = (tmp_path / "mlruns").as_uri()
-    monkeypatch.setenv("MLFLOW_TRACKING_URI", uri)
-    mlflow.set_tracking_uri(uri)
-    mlflow.set_registry_uri(uri)
-    return MlflowClient()
 
 
 def resultat_et_final(bruit: float = 0.1):
@@ -60,11 +48,13 @@ def test_modele_enregistre_puis_recharge(client):
     version = registre.enregistrer(r, 24, REGLAGES[r.meilleur], "abc123", final)
     assert version == "1"
 
-    modele, moyennes = registre.charger(24)
+    production = registre.charger(24)
+    assert production.version == "prevision-conso-24h/1"
+    moyennes = production.moyennes
     pd.testing.assert_series_equal(moyennes, final[1], check_names=False)
     lignes = preparer(df, moyennes, 24)
     X = lignes[noms_variables(24, moyennes)]
-    np.testing.assert_allclose(modele.predict(X), final[0].predict(X))
+    np.testing.assert_allclose(production.modele.predict(X), final[0].predict(X))
 
     # Le run garde les paramètres, les scores et l'empreinte du jeu
     run = client.get_run(
@@ -79,6 +69,112 @@ def test_modele_enregistre_puis_recharge(client):
     assert "réentraîné sur toutes les données" in run.data.tags["mlflow.note.content"]
     assert f"validation_{REFERENCE}_WAPE" in run.data.metrics
     assert f"test_{r.meilleur}_WAPE" in run.data.metrics
+
+
+def test_cache_telecharge_une_seule_fois(client, tmp_path, monkeypatch):
+    """Avec un cache, la version est téléchargée au premier appel, puis lue sur le
+    disque : MLflow ne sert plus qu'à lire le numéro de la version production."""
+    df, r, final = resultat_et_final()
+    registre.enregistrer(r, 24, REGLAGES[r.meilleur], "abc123", final)
+    cache = tmp_path / "cache"
+    premiere = registre.charger(24, cache)
+    (dossier,) = (cache / "prevision-conso-24h").iterdir()
+    assert dossier.name.startswith("1-")
+    assert (dossier / registre.MOYENNES).exists()
+
+    def pas_de_telechargement(*args, **kwargs):
+        raise AssertionError("version déjà en cache : rien à télécharger")
+
+    monkeypatch.setattr(mlflow.artifacts, "download_artifacts", pas_de_telechargement)
+    seconde = registre.charger(24, cache)
+    assert seconde.version == premiere.version == "prevision-conso-24h/1"
+    pd.testing.assert_series_equal(seconde.moyennes, final[1], check_names=False)
+    lignes = preparer(df, seconde.moyennes, 24)
+    X = lignes[noms_variables(24, seconde.moyennes)]
+    np.testing.assert_allclose(seconde.modele.predict(X), final[0].predict(X))
+
+
+def vieillir(dossier, heures=2):
+    """Date de modification reculée : dossier inutilisé depuis ``heures`` heures."""
+    passe = time.time() - heures * 3600
+    os.utime(dossier, (passe, passe))
+
+
+def test_cache_supprime_les_dossiers_inutilises(client, tmp_path):
+    """Ancienne version et téléchargement abandonné, inutilisés depuis plus de
+    DELAI_NETTOYAGE : supprimés au lancement suivant."""
+    _, r, final = resultat_et_final()
+    cache = tmp_path / "cache"
+    registre.enregistrer(r, 24, REGLAGES[r.meilleur], "v1", final)
+    registre.charger(24, cache)
+    (ancienne,) = (cache / "prevision-conso-24h").iterdir()
+    # Dossier temporaire d'un lancement tué en plein téléchargement
+    abandonne = cache / "prevision-conso-24h" / ".en-cours-abc"
+    abandonne.mkdir()
+    vieillir(ancienne)
+    vieillir(abandonne)
+    registre.enregistrer(r, 24, REGLAGES[r.meilleur], "v2", final)
+    assert registre.charger(24, cache).version == "prevision-conso-24h/2"
+    restants = [d.name for d in (cache / "prevision-conso-24h").iterdir()]
+    assert len(restants) == 1
+    assert restants[0].startswith("2-")
+
+
+def test_cache_laisse_les_dossiers_d_un_autre_lancement(client, tmp_path):
+    """Deux lancements qui se chevauchent : la version qu'un autre lancement vient
+    d'utiliser et son téléchargement en cours ne sont pas effacés."""
+    _, r, final = resultat_et_final()
+    cache = tmp_path / "cache"
+    registre.enregistrer(r, 24, REGLAGES[r.meilleur], "v1", final)
+    registre.charger(24, cache)
+    (ancienne,) = (cache / "prevision-conso-24h").iterdir()
+    en_cours = cache / "prevision-conso-24h" / ".en-cours-abc"
+    en_cours.mkdir()
+    registre.enregistrer(r, 24, REGLAGES[r.meilleur], "v2", final)
+    registre.charger(24, cache)
+    assert ancienne.exists()
+    assert en_cours.exists()
+    # La version 1, utilisée par l'autre lancement, reste lisible
+    vieille = registre.MlflowClient().get_model_version(registre.nom_modele(24), "1")
+    assert registre.telecharger(registre.nom_modele(24), vieille, cache) == ancienne
+
+
+def test_cache_modele_reenregistre_depuis_la_version_1(client, tmp_path):
+    """Un modèle supprimé puis réenregistré repart à la version 1 : le cache ne doit
+    pas resservir l'ancienne version 1."""
+    df, r, final = resultat_et_final()
+    cache = tmp_path / "cache"
+    registre.enregistrer(r, 24, REGLAGES[r.meilleur], "ancien", final)
+    registre.charger(24, cache)
+    client.delete_registered_model(registre.nom_modele(24))
+    autre_modele, moyennes = entrainer_modele_final(df, 24, "ridge")
+    registre.enregistrer(
+        r, 24, REGLAGES[r.meilleur], "nouveau", (autre_modele, moyennes)
+    )
+    production = registre.charger(24, cache)
+    assert production.version == "prevision-conso-24h/1"
+    assert type(production.modele) is type(autre_modele)
+
+
+def test_cache_sans_version_incomplete(client, tmp_path, monkeypatch):
+    """Un téléchargement qui échoue ne laisse rien dans le cache : le lancement
+    suivant retélécharge la version entière."""
+    _, r, final = resultat_et_final()
+    registre.enregistrer(r, 24, REGLAGES[r.meilleur], "abc123", final)
+    vrai = mlflow.artifacts.download_artifacts
+
+    def echec_sur_les_moyennes(*args, **kwargs):
+        if kwargs.get("artifact_path") == registre.MOYENNES:
+            raise OSError("connexion coupée")
+        return vrai(*args, **kwargs)
+
+    monkeypatch.setattr(mlflow.artifacts, "download_artifacts", echec_sur_les_moyennes)
+    cache = tmp_path / "cache"
+    with pytest.raises(OSError):
+        registre.charger(24, cache)
+    assert list((cache / "prevision-conso-24h").iterdir()) == []
+    monkeypatch.setattr(mlflow.artifacts, "download_artifacts", vrai)
+    assert registre.charger(24, cache).version == "prevision-conso-24h/1"
 
 
 def test_nouvelle_version_prend_l_alias(client):
@@ -113,9 +209,9 @@ def test_main_enregistre_les_deux_horizons(client, tmp_path):
     (tmp_path / "rapport_qualite.json").write_text('{"empreinte": "abc123"}')
     main(["--chemin", str(chemin)])
     for horizon in (24, 168):
-        modele, moyennes = registre.charger(horizon)
-        assert list(moyennes.index) == ["SITE001", "SITE002"]
-        assert hasattr(modele, "predict")
+        production = registre.charger(horizon)
+        assert list(production.moyennes.index) == ["SITE001", "SITE002"]
+        assert hasattr(production.modele, "predict")
 
 
 def test_modele_final_garde_les_sites_recents(client, tmp_path):
@@ -129,5 +225,4 @@ def test_modele_final_garde_les_sites_recents(client, tmp_path):
     resultats = main(["--chemin", str(chemin)])
     # Évaluation sur SITE001 seulement
     assert list(resultats[0].par_site.index) == ["SITE001"]
-    _, moyennes = registre.charger(24)
-    assert list(moyennes.index) == ["SITE001", "SITE002"]
+    assert list(registre.charger(24).moyennes.index) == ["SITE001", "SITE002"]

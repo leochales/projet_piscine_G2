@@ -286,6 +286,35 @@ services:
     networks:
       - proxy_network
 
+  # Prévisions de chaque heure dans gold.prediction (SMARTOPS-33, model/crontab), avec
+  # les versions production de MLflow. Sans modèle entraîné, le job prévient et attend.
+  # À la main : docker compose -f compose-local.yml exec prevision python -m model.prevision
+  prevision:
+    build:
+      context: .
+      dockerfile: model/Dockerfile
+    container_name: prevision
+    command: ["supercronic", "-passthrough-logs", "model/crontab"]
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000/mlflow
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: model
+      POSTGRES_PASSWORD: ${MODEL_DB_PASSWORD}
+      # Versions des modèles téléchargées une seule fois, gardées entre deux lancements
+      MODELE_CACHE_DIR: /cache
+    volumes:
+      - modele_cache:/cache
+    depends_on:
+      db:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    networks:
+      - postgres_network
+      - proxy_network
+
   front:
     build:
       context: ./front
@@ -398,6 +427,7 @@ volumes:
   loki_data:
   grafana_data:
   mlflow_data:
+  modele_cache:
   backup_home:
 
 networks:

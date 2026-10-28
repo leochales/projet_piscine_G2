@@ -1,7 +1,7 @@
 # Sauvegarde : pg_dump des bases, chiffré et envoyé par restic, lancé par cron (supercronic)
 # Contexte de build = racine du dépôt, comme les autres images
 
-# --- supercronic : début du bloc commun à etl/Dockerfile et backup/Dockerfile ---
+# --- supercronic : début du bloc commun aux Dockerfiles qui lancent un cron (etl, backup, model) ---
 # supercronic : cron sans démon, lit les variables d'environnement et logue sur stdout.
 # ADD --checksum vérifie l'empreinte du binaire (release v0.2.50) sans apt ni curl.
 # Une étape par architecture : --checksum ne peut pas être conditionnel.

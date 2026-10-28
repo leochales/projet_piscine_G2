@@ -253,6 +253,36 @@ services:
     networks:
       - mlflow_network
 
+  # Prévisions de chaque heure dans gold.prediction (SMARTOPS-33, model/crontab), avec
+  # les versions production du MLflow de l'environnement. Démarré avec la stack : il
+  # garde aussi l'image du modèle pour les jobs dataset et entrainement.
+  prevision:
+    image: ${IMAGE_REPO:?IMAGE_REPO manquant}/enervision-model:${IMAGE_TAG:?IMAGE_TAG manquant}
+    build:
+      context: .
+      dockerfile: model/Dockerfile
+    restart: unless-stopped
+    command: ["supercronic", "-passthrough-logs", "model/crontab"]
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000/mlflow
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: model
+      POSTGRES_PASSWORD: ${MODEL_DB_PASSWORD}
+      # Versions des modèles téléchargées une seule fois, gardées entre deux lancements
+      MODELE_CACHE_DIR: /cache
+    volumes:
+      - modele_cache:/cache
+    depends_on:
+      db:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    networks:
+      - postgres_network
+      - mlflow_network
+
   front:
     image: ${IMAGE_REPO:?IMAGE_REPO manquant}/enervision-front:${IMAGE_TAG:?IMAGE_TAG manquant}
     build:
@@ -273,6 +303,7 @@ services:
 volumes:
   postgresql_data:
   mlflow_data:
+  modele_cache:
   dataset_data:
   backup_cache:
 

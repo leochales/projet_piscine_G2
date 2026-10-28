@@ -235,7 +235,29 @@ La génération des prévisions (SMARTOPS-33) charge la version `production` :
 ```python
 from model.registre import charger
 
-modele, moyennes = charger(24)  # ou 168
+production = charger(24)  # ou 168 : modele, moyennes et version
 ```
 
-Les moyennes servent à `construire_variables` (normalisation et liste des sites), puis `modele.predict` donne `conso_norm`, à remultiplier par la moyenne du site.
+Les moyennes servent à `construire_variables` (normalisation et liste des sites), puis `production.modele.predict` donne `conso_norm`, à remultiplier par la moyenne du site. `production.version` (par exemple `prevision-conso-24h/3`) est écrit avec chaque prévision.
+
+## Prévisions horaires (SMARTOPS-33)
+
+Le service `prevision` lance `python -m model.prevision` chaque heure à hh:05 (`model/crontab`, supercronic, comme l'ETL). Il écrit dans `gold.prediction` les prévisions de chaque site actif, de l'heure pleine suivante jusqu'à 7 jours, avec la fourchette. L'API (`GET /sites/{id}/predictions`) lit la plus récente de chaque heure.
+
+Avec Docker, la stack locale démarrée et un modèle enregistré (voir ci-dessus), pour lancer une prévision sans attendre hh:05 :
+
+```bash
+docker compose -f compose-local.yml exec prevision python -m model.prevision
+```
+
+### Règles
+
+- Les versions `production` des deux modèles se partagent les heures : le modèle 24 h prévoit les 24 premières heures, le modèle 7 jours les heures 25 à 168. Chaque heure a une seule prévision par exécution, celle du modèle le plus précis disponible ; `version_modele` dit lequel. Le partage se fait site par site : sans version `production` du modèle 24 h, ou pour un site que cette version ne connaît pas (versions de dates différentes), le modèle 7 jours prévoit aussi les 24 premières heures.
+- Historique : `gold.consommation_horaire` des sites actifs, sur les 28 derniers jours et un peu plus (`HISTORIQUE_UTILE`), heure en cours comprise. Les variables sont celles de l'entraînement (`model/features.py`).
+- Un site actif sans mesure dans l'heure en cours (capteur en panne, ETL en retard, y compris une panne plus longue que l'historique lu) n'est pas prévu, avec un avertissement dans les logs : ses dernières variables porteraient sur des heures inconnues. Un site inconnu du modèle (ajouté après l'entraînement) non plus : il faut réentraîner. Les autres sites sont prévus quand même.
+- Fourchette : centiles 10 et 90 des prévisions des 100 arbres du random forest, remultipliés par la moyenne du site. Elle traduit le désaccord entre les arbres, pas une garantie que 80 % des heures réelles y tombent. Si la prévision (moyenne des arbres) sort de ces centiles, la borne est ramenée à la prévision : la base exige `basse <= prévue <= haute`. Un modèle Ridge ne donne pas de fourchette (bornes NULL).
+- Prévision et bornes jamais négatives.
+- `pic_prevu` reste faux : le pic de l'heure n'est pas prévu (voir SMARTOPS-95 ; le jeu d'entraînement n'a pas de `pic_kw`).
+- Sans aucune version `production` (avant le premier entraînement), le job écrit un avertissement et rien d'autre. Si MLflow ou la base ne répondent pas, il s'arrête en erreur, visible dans les logs.
+- Chaque exécution ajoute ses lignes (`calculee_le`) : l'historique des prévisions est gardé pour comparer prévu et réel.
+- Cache des modèles (`MODELE_CACHE_DIR`, volume `modele_cache` du service) : une version est téléchargée une seule fois, à sa première utilisation. Ensuite, chaque heure, MLflow ne sert qu'à lire le numéro de la version `production` (deux petites requêtes) et le modèle est lu sur le disque. Les anciennes versions et les téléchargements abandonnés sont supprimés une fois inutilisés depuis une heure (`DELAI_NETTOYAGE`), après le chargement : deux lancements qui se chevauchent (à la main pendant le cron, alias déplacé entre les deux) n'effacent jamais les fichiers l'un de l'autre. Le nom d'une version contient son run, pour qu'un modèle supprimé puis réenregistré (qui repart à la version 1) ne resserve pas l'ancien fichier. Sans `MODELE_CACHE_DIR`, le modèle est lu dans MLflow à chaque lancement.

@@ -181,6 +181,12 @@ jobs:
           docker compose -f compose-prod.yml exec -T etl supercronic -test etl/crontab
           [ -n "$(docker compose -f compose-prod.yml ps etl --status running -q)" ] \
             || { echo "::error::Le conteneur etl n'est pas démarré"; exit 1; }
+          # Prévisions : planning valide et conteneur toujours démarré. Sans modèle en
+          # production (MLflow vide en CI), un lancement prévient et n'écrit rien
+          docker compose -f compose-prod.yml exec -T prevision supercronic -test model/crontab
+          [ -n "$(docker compose -f compose-prod.yml ps prevision --status running -q)" ] \
+            || { echo "::error::Le conteneur prevision n'est pas démarré"; exit 1; }
+          docker compose -f compose-prod.yml exec -T prevision python -m model.prevision
           # Sauvegarde : planning valide, puis une sauvegarde complète dans un dépôt local
           # du conteneur (le compte backup doit pouvoir lire les bases enervision et keycloak)
           docker compose -f compose-prod.yml exec -T backup supercronic -test /app/crontab
