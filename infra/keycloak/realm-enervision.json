@@ -1,6 +1,7 @@
 {
   "realm": "enervision",
   "displayName": "EnerVision",
+  "loginTheme": "enervision",
   "enabled": true,
   "sslRequired": "external",
   "registrationAllowed": false,
@@ -19,7 +20,7 @@
   "ssoSessionMaxLifespan": 36000,
   "passwordPolicy": "length(12) and notUsername and notEmail",
   "internationalizationEnabled": true,
-  "supportedLocales": ["fr", "en"],
+  "supportedLocales": ["fr"],
   "defaultLocale": "fr",
   "eventsEnabled": true,
   "eventsExpiration": 7776000,

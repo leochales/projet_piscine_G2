@@ -47,6 +47,27 @@ Ils sont créés par l'API à chaque démarrage ([`api/seed.py`](api/seed.py)), 
 
 Pour ajouter un compte : une ligne dans `COMPTES_DEMO` (`api/seed.py`), puis redémarrer l'API.
 
+### Keycloak : page de connexion
+
+Le realm `enervision` (`infra/keycloak/realm-enervision.json`) utilise le thème de connexion `enervision` ([`infra/keycloak/themes/enervision/login/`](infra/keycloak/themes/enervision/login/)), monté dans `/opt/keycloak/themes`. Il reprend le style du front (shadcn-vue) sans Tailwind : un thème FreeMarker qui hérite du thème `keycloak` de base, dont il remplace seulement :
+
+- `template.ftl` : mise en page de toutes les pages (marque, carte, alerte) ;
+- `login.ftl` : la page de connexion (courriel, mot de passe avec bouton œil). « Se souvenir de moi » et « Mot de passe oublié ? », désactivés dans le realm, n'y sont pas : à ajouter dans ce fichier s'ils sont activés ;
+- `resources/css/enervision.css` : les composants Card, Label, Input, Button et Alert, avec les couleurs de `front/src/assets/main.css` (**à modifier aux deux endroits**) et la police Inter du front ;
+- `messages/messages_fr.properties` : les textes propres à EnerVision ; les autres viennent de Keycloak (`msg(...)`). La page est en français seulement (`supportedLocales` du realm), sans choix de langue.
+
+Le mode sombre suit le choix fait dans l'application (même clé `enervision-theme` du localStorage, Keycloak étant à la même adresse), sinon le réglage du système.
+
+**Modifier le thème en local** : `compose-local.yml` lance Keycloak en `start-dev`, qui ne met pas les thèmes en cache : une modification est visible en rechargeant la page. Avec `start`, le cache se désactive par `--spi-theme-cache-themes=false` dans la commande du service ; sinon, redémarrer Keycloak (`docker compose -f compose-local.yml restart keycloak`). Un nouveau fichier ou un nouveau dossier de thème demande toujours un redémarrage.
+
+**Base existante** : le realm n'est importé qu'au premier démarrage, quand il n'existe pas encore. Sur une base créée avant le thème, appliquer le thème et la langue une fois avec kcadm, avec le compte administrateur du `.env` (`KEYCLOAK_ADMIN`, `KEYCLOAK_ADMIN_PASSWORD`, transmis au conteneur) :
+
+```bash
+docker compose -f compose-local.yml exec -T keycloak sh -c 'KC_CLI_PASSWORD="$KC_BOOTSTRAP_ADMIN_PASSWORD" /opt/keycloak/bin/kcadm.sh config credentials --server http://localhost:8080/auth --realm master --user "$KC_BOOTSTRAP_ADMIN_USERNAME" --config /tmp/kcadm.config && /opt/keycloak/bin/kcadm.sh update realms/enervision -s loginTheme=enervision -s "supportedLocales=[\"fr\"]" --config /tmp/kcadm.config; rm -f /tmp/kcadm.config'
+```
+
+Sur la VM, `deploy.yml` le fait à chaque déploiement (étape « Configurer les realms Keycloak »). Keycloak y tourne en `start`, avec le cache des thèmes : le déploiement calcule une version du dossier du thème (label du conteneur), et un thème modifié recrée le conteneur `keycloak`. Le realm `master` (console d'administration) garde le thème par défaut.
+
 ### Base de données
 
 Les scripts de `db/` (schémas, comptes des services, droits) sont exécutés par PostgreSQL au premier démarrage, quand le volume est vide. Sur une base existante, `db/tools/migrate.sh` les **rejoue tous**, dans l'ordre, sans toucher aux données. Le déploiement le lance à chaque fois. En local, le lancer après un `git pull` qui modifie `db/` ou `.env`, ou si un service échoue avec `password authentication failed`, si `keycloak` ne trouve pas sa base, ou si PostgreSQL apparaît « injoignable » dans Grafana :

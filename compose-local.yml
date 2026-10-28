@@ -112,6 +112,9 @@ services:
       KC_HEALTH_ENABLED: "true"
     volumes:
       - ./infra/keycloak/realm-enervision.json:/opt/keycloak/data/import/realm-enervision.json:ro
+      # Thème de connexion (loginTheme du realm). start-dev ne met pas les thèmes en cache :
+      # une modification est visible au rechargement de la page.
+      - ./infra/keycloak/themes/enervision:/opt/keycloak/themes/enervision:ro
     labels:
       - traefik.enable=true
       - traefik.http.routers.keycloak.rule=PathPrefix(`/auth`)
