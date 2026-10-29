@@ -460,9 +460,11 @@ jobs:
 
       # Contrat OpenAPI vérifié sur le conteneur de l'API, derrière Traefik, avec le jeton
       # du compte de test : les routes protégées sont testées au-delà du 401
+      # 4.30.1 au moins : faux positif negative_data_rejection corrigé (paramètre inconnu
+      # vidé à l'envoi, à côté d'une valeur comme id_site=0 : la requête reçue était valide)
       - name: Contrat d'API (Schemathesis)
         run: |
-          pip install schemathesis==4.29.4
+          pip install schemathesis==4.31.1
           schemathesis run https://localhost:8443/api/openapi.json --checks all --tls-verify false \
             --header "Authorization: Bearer $API_TOKEN"
 
