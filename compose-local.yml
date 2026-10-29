@@ -321,6 +321,35 @@ services:
       - postgres_network
       - proxy_network
 
+  # Réentraînement chaque semaine (SMARTOPS-34, model/crontab-reentrainement) : jeu CSV de
+  # data/processed plus mesures de gold. La nouvelle version prend l'alias production
+  # seulement si elle fait mieux que la référence et que la version en production.
+  # À la main : docker compose -f compose-local.yml exec reentrainement python -m model.reentrainement
+  reentrainement:
+    build:
+      context: .
+      dockerfile: model/Dockerfile
+    container_name: reentrainement
+    command: ["supercronic", "-passthrough-logs", "model/crontab-reentrainement"]
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000/mlflow
+      DATASET_OUTPUT_DIR: /data/processed
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: model
+      POSTGRES_PASSWORD: ${MODEL_DB_PASSWORD}
+    volumes:
+      - ./data/processed:/data/processed:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    networks:
+      - postgres_network
+      - proxy_network
+
   front:
     build:
       context: ./front

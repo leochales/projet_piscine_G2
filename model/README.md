@@ -175,7 +175,7 @@ Pour chaque horizon (24 h et 7 jours), le script :
 4. les compare sur la `validation`, avec les prévisions de référence, et retient celui qui a le plus petit WAPE ;
 5. mesure le modèle retenu une seule fois sur le `test`, au total et site par site.
 
-Il affiche les scores, le modèle retenu et le nombre d'heures concernées. Si le modèle retenu ne fait pas mieux que la référence sur la validation, il le signale et ne l'enregistre pas (voir « Enregistrement dans MLflow »).
+Il écrit dans les logs (`common.logs`, JSON comme `model.dataset`, visibles dans Grafana) un résumé par horizon : le modèle retenu, ses WAPE de validation et de test, le nombre d'heures concernées. Avec `LOG_LEVEL=DEBUG`, les tableaux complets sont aussi écrits. Si le modèle retenu ne fait pas mieux que la référence sur la validation, il le signale, ne l'enregistre pas (voir « Enregistrement dans MLflow ») et la commande se termine en erreur (code de sortie 1), pour que le job échoue quand il tourne seul dans Docker.
 
 ### Règles
 
@@ -271,3 +271,42 @@ docker compose -f compose-local.yml exec prevision python -m model.prevision
 - Sans aucune version `production` (avant le premier entraînement), le job écrit un avertissement et ne prévoit rien : il termine seulement les alertes de pic prévu dont l'heure est passée. Si MLflow ou la base ne répondent pas, il s'arrête en erreur, visible dans les logs.
 - Chaque exécution ajoute ses lignes (`calculee_le`) : l'historique des prévisions est gardé pour comparer prévu et réel.
 - Cache des modèles (`MODELE_CACHE_DIR`, volume `modele_cache` du service) : une version est téléchargée une seule fois, à sa première utilisation. Ensuite, chaque heure, MLflow ne sert qu'à lire le numéro de la version `production` (deux petites requêtes) et le modèle est lu sur le disque. Les anciennes versions et les téléchargements abandonnés sont supprimés une fois inutilisés depuis une heure (`DELAI_NETTOYAGE`), après le chargement : deux lancements qui se chevauchent (à la main pendant le cron, alias déplacé entre les deux) n'effacent jamais les fichiers l'un de l'autre. Le nom d'une version contient son run, pour qu'un modèle supprimé puis réenregistré (qui repart à la version 1) ne resserve pas l'ancien fichier. Sans `MODELE_CACHE_DIR`, le modèle est lu dans MLflow à chaque lancement.
+
+
+## Réentraînement hebdomadaire (SMARTOPS-34)
+
+Le service `reentrainement` lance `python -m model.reentrainement` chaque dimanche à 02:30 (`model/crontab-reentrainement`, supercronic, comme `prevision`). Il existe dans `compose-local.yml` et `compose-prod.yml`.
+
+Relancer l'entraînement sur le seul jeu CSV redonnerait le même modèle. Ce sont les mesures de `gold.consommation_horaire`, que l'ETL écrit chaque minute, qui apportent du neuf. Le réentraînement les ajoute au jeu CSV.
+
+À la main, avec la stack locale démarrée (jeu construit dans `data/processed`) :
+
+```bash
+docker compose -f compose-local.yml exec reentrainement python -m model.reentrainement
+```
+
+### Étapes
+
+Pour chaque horizon (24 h et 7 jours) :
+
+1. Le jeu réunit le CSV et les heures complètes de gold plus récentes que sa dernière heure. Les 7 derniers jours sont l'examen (le jeu `test` de `model.entrainement`). Ce qui précède est coupé dans le temps entre entraînement et validation, dans la même proportion que le jeu CSV.
+2. La méthode (Ridge ou random forest) est choisie sur la validation, comme à l'entraînement.
+3. Un candidat est entraîné avec cette méthode sur tout ce qui précède l'examen.
+4. Le candidat, la version `production` et la prévision de référence sont notés sur les mêmes heures de l'examen. Chacun prévoit avec ses propres moyennes par site, et seuls comptent les sites que le candidat et la production connaissent tous les deux.
+5. La nouvelle version est enregistrée, et l'alias `production` bouge, seulement si le candidat bat la référence sur la validation (règle de SMARTOPS-30) et a un WAPE plus bas que la version en production sur l'examen. Elle est alors réentraînée sur toutes les données, examen compris, comme à l'entraînement.
+6. Sinon, le run MLflow est gardé pour la trace, sans nouvelle version. Il porte le tag `bat_production` (`true`, `false` ou `sans_production`) et les scores de la production (`test_production_WAPE`).
+
+### Règles
+
+- Code de sortie 1 si, pour un horizon, le modèle ne fait pas mieux que la référence. Rester moins bon que la version en production n'est pas une erreur : elle est gardée.
+- Sans version en production, il n'y a rien à comparer : le modèle qui bat la référence est enregistré.
+- Gold doit couvrir au moins 8 jours d'heures complètes (les 7 jours de l'examen, plus un jour pour que la semaine précédente existe). Sinon, le job prévient dans les logs et ne réentraîne rien. De même, la comparaison avec la production demande au moins 100 heures notées sur l'examen (`MIN_HEURES_EXAMEN`) : en dessous, la production est gardée.
+- La production ne connaît pas l'examen quand elle a été entraînée avant lui. Si elle a été entraînée après son début (relance à la main le même jour), elle l'a déjà vu et la comparaison lui est favorable, ce qui est prudent.
+- Les scores du test (`test_*` dans MLflow) sont ceux de l'examen, pas ceux du jeu CSV.
+- Les messages passent par les logs (`common.logs`), jamais par la console.
+- L'empreinte du run (`empreinte_jeu`) est celle du jeu CSV, suivie de la dernière heure de gold utilisée (par exemple `f2ee5c19efdb+gold:2026-11-01T23`).
+
+### Limites
+
+- Gold ne contient que les mesures collectées depuis le démarrage de l'ETL, et il y a un trou entre la fin du CSV (fin 2024) et ces mesures. Les premières semaines d'examen sont donc presque entièrement dans gold, et les variables de 14 et 28 jours manquent encore. Le réentraînement ne prendra tout son sens qu'avec le temps.
+- Le jeu CSV vient de `data/processed` (volume `dataset_data` sur la VM). Sans lui, le job s'arrête en erreur : lancer d'abord le workflow Dataset.
