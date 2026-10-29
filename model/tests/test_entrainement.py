@@ -1,3 +1,6 @@
+import logging
+from dataclasses import replace
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -7,6 +10,7 @@ from model.baseline import ajouter_baselines
 from model.entrainement import (
     REFERENCE,
     ajouter_previsions,
+    code_sortie,
     entrainer,
     entrainer_horizon,
     entrainer_modele_final,
@@ -241,3 +245,55 @@ def test_main_refuse_d_enregistrer_sans_empreinte(monkeypatch, tmp_path):
     monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow-inutile")
     with pytest.raises(SystemExit):
         main(["--chemin", str(tmp_path / "dataset.parquet")])
+
+
+def test_remplace_production():
+    """Le modèle prend l'alias production s'il bat la référence, et la version en
+    production quand il y en a une."""
+    df = faux_jeu()
+    r = entrainer_horizon(df, moyennes_entrainement(df), 24)
+    assert r.bat_production is None
+    assert r.remplace_production
+    assert replace(r, bat_production=True).remplace_production
+    assert not replace(r, bat_production=False).remplace_production
+    # La référence passe d'abord : aucune comparaison ne rattrape un modèle refusé
+    assert not replace(r, bat_reference=False, bat_production=True).remplace_production
+
+
+def test_code_sortie_en_erreur_si_le_modele_ne_bat_pas_la_reference(caplog):
+    df = faux_jeu()
+    bon = entrainer_horizon(df, moyennes_entrainement(df), 24)
+    mauvais = replace(bon, bat_reference=False)
+    assert code_sortie([bon, bon]) == 0
+    with caplog.at_level(logging.ERROR):
+        assert code_sortie([bon, mauvais]) == 1
+    # L'horizon en échec est dans les logs : 24 h est le premier, 7 jours le second
+    assert "168 h" in caplog.text
+    # Rien à entraîner (pas assez de mesures) n'est pas une erreur
+    assert code_sortie([]) == 0
+
+
+def test_moins_bon_que_la_production_n_est_pas_une_erreur():
+    df = faux_jeu()
+    bon = entrainer_horizon(df, moyennes_entrainement(df), 24)
+    garde = replace(bon, bat_production=False)
+    assert code_sortie([garde, garde]) == 0
+
+
+def test_sites_ecartes_signales_dans_les_logs(caplog):
+    df = faux_jeu()
+    df = df[~((df["id_site"] == "SITE002") & (df["jeu"] == "entrainement"))]
+    with caplog.at_level(logging.WARNING):
+        garder_sites_connus(df, moyennes_entrainement(df))
+    assert "SITE002" in caplog.text
+
+
+def test_main_ecrit_dans_les_logs_pas_dans_la_console(tmp_path, caplog, capsys):
+    chemin = tmp_path / "dataset.parquet"
+    faux_jeu().drop(columns=["baseline_veille", REFERENCE]).to_parquet(chemin)
+    with caplog.at_level(logging.INFO):
+        main(["--chemin", str(chemin), "--sans-mlflow"])
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("horizon 24 h : modèle retenu" in m for m in messages)
+    assert any("horizon 168 h : modèle retenu" in m for m in messages)
+    assert capsys.readouterr().out == ""

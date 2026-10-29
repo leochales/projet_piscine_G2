@@ -7,6 +7,10 @@ version du modèle ``prevision-conso-24h`` ou ``prevision-conso-168h``, avec les
 moyennes par site, et cette version reçoit l'alias ``production``. Sinon, le run reste
 pour la trace, sans nouvelle version.
 
+Au réentraînement hebdomadaire (SMARTOPS-34, ``model.reentrainement``), l'alias ne
+bouge que si la nouvelle version fait aussi mieux que celle qui est en production
+(``Resultat.remplace_production``).
+
 La génération des prévisions (SMARTOPS-33) charge la version ``production`` avec
 ``charger``.
 """
@@ -69,7 +73,7 @@ def description(resultat: Resultat) -> str:
         f"Scores : {resultat.meilleur} entraîné sur le jeu d'entraînement, choisi sur "
         "la validation et mesuré une seule fois sur le test. "
     )
-    if resultat.bat_reference:
+    if resultat.remplace_production:
         texte += (
             "Modèle enregistré : le même, réentraîné sur toutes les données "
             "(entraînement, validation et test)."
@@ -77,6 +81,11 @@ def description(resultat: Resultat) -> str:
         if not resultat.bat_reference_test:
             texte += " ATTENTION : il ne bat pas la référence sur le test."
         return texte
+    if resultat.bat_reference:
+        return texte + (
+            "Aucun modèle enregistré : il ne fait pas mieux que la version en "
+            "production sur l'examen."
+        )
     return texte + (
         "Aucun modèle enregistré : il ne bat pas la référence sur la validation."
     )
@@ -90,8 +99,9 @@ def enregistrer(
     final: tuple[Any, pd.Series] | None,
 ) -> str | None:
     """Crée le run MLflow d'un horizon. Si le modèle bat la référence sur la
-    validation, enregistre le modèle final (réentraîné sur toutes les données) et ses
-    moyennes par site, et place l'alias ``production`` sur la nouvelle version.
+    validation (et la version en production sur l'examen, quand il y en a une),
+    enregistre le modèle final (réentraîné sur toutes les données) et ses moyennes
+    par site, et place l'alias ``production`` sur la nouvelle version.
     Renvoie le numéro de cette version, ou None si aucune version n'est créée."""
     mlflow.set_experiment(EXPERIENCE)
     with mlflow.start_run(run_name=f"prevision-{horizon}h"):
@@ -109,9 +119,16 @@ def enregistrer(
         )
         mlflow.set_tag("bat_reference", str(resultat.bat_reference).lower())
         mlflow.set_tag("bat_reference_test", str(resultat.bat_reference_test).lower())
+        # « sans_production » : aucune version à comparer (premier entraînement)
+        mlflow.set_tag(
+            "bat_production",
+            "sans_production"
+            if resultat.bat_production is None
+            else str(resultat.bat_production).lower(),
+        )
         # Description du run, affichée par l'interface de MLflow
         mlflow.set_tag("mlflow.note.content", description(resultat))
-        if not resultat.bat_reference or final is None:
+        if not resultat.remplace_production or final is None:
             return None
         modele, moyennes = final
         mlflow.log_dict({site: float(m) for site, m in moyennes.items()}, MOYENNES)
