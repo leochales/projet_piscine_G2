@@ -279,6 +279,9 @@ jobs:
       # dans Keycloak depuis le premier démarrage) n'arrête pas le déploiement.
       - name: Configurer les realms Keycloak
         continue-on-error: true
+        env:
+          # Client du scan ZAP : dev seulement (job zap)
+          ZAP_CLIENT_SECRET: ${{ github.ref_name != 'main' && secrets.DEV_ZAP_CLIENT_SECRET || '' }}
         run: |
           # Keycloak recréé (thème modifié) : son healthcheck (compose-prod.yml) reste à
           # « starting » tant qu'il démarre, jusqu'à 5 min (start_period) puis 30 sondes de
@@ -308,6 +311,53 @@ jobs:
           kcadm update realms/master -s bruteForceProtected=true -s failureFactor=5 \
             -s waitIncrementSeconds=900 -s maxFailureWaitSeconds=3600 -s permanentLockout=false
           kcadm update realms/enervision -s loginTheme=enervision -s 'supportedLocales=["fr"]'
+          # Client du scan ZAP authentifié (job zap), jamais en prod : seul client du realm à
+          # accepter identifiant et mot de passe (directAccessGrants), protégé par son secret.
+          # Jetons valables 30 min (5 min pour le realm) : la durée maximale du scan.
+          # Description JSON envoyée sur l'entrée standard : le secret n'apparaît pas dans ps.
+          if [ "$DEPLOY_ENV" = dev ]; then
+            if [ -z "$ZAP_CLIENT_SECRET" ]; then
+              echo "::warning::DEV_ZAP_CLIENT_SECRET manquant : client enervision-zap non configuré, scan ZAP authentifié impossible"
+              exit 1
+            fi
+            client_zap=$(python3 -c '
+          import json, os
+          print(json.dumps({
+              "clientId": "enervision-zap",
+              "name": "Scan ZAP (dev)",
+              "enabled": True,
+              "protocol": "openid-connect",
+              "publicClient": False,
+              "clientAuthenticatorType": "client-secret",
+              "secret": os.environ["ZAP_CLIENT_SECRET"],
+              "standardFlowEnabled": False,
+              "implicitFlowEnabled": False,
+              "directAccessGrantsEnabled": True,
+              "serviceAccountsEnabled": False,
+              "attributes": {"access.token.lifespan": "1800"},
+              # Même audience que le front : l API refuse sinon le jeton
+              "protocolMappers": [{
+                  "name": "audience-enervision-api",
+                  "protocol": "openid-connect",
+                  "protocolMapper": "oidc-audience-mapper",
+                  "consentRequired": False,
+                  "config": {
+                      "included.client.audience": "enervision-api",
+                      "id.token.claim": "false",
+                      "access.token.claim": "true",
+                      "introspection.token.claim": "true",
+                  },
+              }],
+          }))')
+            id_zap=$(kcadm get clients -r enervision -q clientId=enervision-zap \
+                       --fields id --format csv --noquotes)
+            if [ -z "$id_zap" ]; then
+              printf '%s' "$client_zap" | kcadm create clients -r enervision -f -
+            else
+              # Les mappers ne sont pas modifiés par une mise à jour : créés une seule fois
+              printf '%s' "$client_zap" | kcadm update "clients/${id_zap}" -r enervision -f -
+            fi
+          fi
 
       # Images orphelines, et anciennes versions de nos images qu'aucun conteneur
       # (dev ou prod) n'utilise plus. Elles restent récupérables sur GHCR.
@@ -318,6 +368,99 @@ jobs:
         run: |
           docker image prune -f
           docker image prune -af --filter "label=org.opencontainers.image.source=${REPO_URL}"
+
+  # Scans DAST (ZAP) de l'environnement dev qui vient d'être déployé, jamais de la prod :
+  # baseline passif du front, puis scan actif de l'API (contrat OpenAPI, servi en dev
+  # seulement) avec le jeton d'un compte de démo en lecture seule (CONSULT-CLIENT) : les
+  # requêtes d'écriture du scan sont refusées (403) au lieu de modifier la base dev.
+  zap:
+    name: ZAP (dev)
+    needs: deploy
+    if: github.ref == 'refs/heads/develop'
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    env:
+      PUBLIC_HOST: ${{ vars.VM_IP }}
+      ZAP_IMAGE: zaproxy/zap-stable:2.17.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Le conteneur tourne sous l'utilisateur zap (uid 1000) : le dossier des rapports
+      # doit lui être accessible en écriture
+      - name: Préparer le dossier des rapports
+        run: |
+          report_dir="$RUNNER_TEMP/zap"
+          rm -rf "$report_dir" && mkdir -p "$report_dir" && chmod 777 "$report_dir"
+          cp .zap/rules.tsv "$report_dir/"
+          echo "ZAP_DIR=$report_dir" >> "$GITHUB_ENV"
+
+      # host-gateway : le nom public pointe vers la VM elle-même, comme le --resolve des
+      # vérifications de santé (règle Host de Traefik).
+      # -I : les alertes WARN n'échouent pas le job, seules les règles FAIL de .zap/rules.tsv.
+      - name: Scanner le front (baseline)
+        run: |
+          docker run --rm \
+            --add-host "${PUBLIC_HOST}:host-gateway" \
+            -v "$ZAP_DIR:/zap/wrk:rw" \
+            "$ZAP_IMAGE" \
+            zap-baseline.py -t "https://${PUBLIC_HOST}:8443" \
+              -c rules.tsv -I -m 5 \
+              -r baseline.html -J baseline.json
+
+      # Jeton demandé par le client enervision-zap (étape Keycloak du job deploy). Mot de
+      # passe et secret passent par l'entrée standard de curl, jamais par ses arguments (ps).
+      # Le jeton est masqué dans les logs et donné à ZAP par variable d'environnement.
+      - name: Scanner l'API (authentifié)
+        env:
+          ZAP_CLIENT_SECRET: ${{ secrets.DEV_ZAP_CLIENT_SECRET }}
+          SEED_PASSWORD: ${{ secrets.DEV_SEED_PASSWORD }}
+          ZAP_USER: consult.client@demo.test
+        run: |
+          if [ -z "$ZAP_CLIENT_SECRET" ] || [ -z "$SEED_PASSWORD" ]; then
+            echo "::error::DEV_ZAP_CLIENT_SECRET ou DEV_SEED_PASSWORD manquant (Settings → Secrets and variables → Actions)"
+            exit 1
+          fi
+          reponse=$(python3 -c '
+          import os, urllib.parse
+          print(urllib.parse.urlencode({
+              "grant_type": "password",
+              "client_id": "enervision-zap",
+              "client_secret": os.environ["ZAP_CLIENT_SECRET"],
+              "username": os.environ["ZAP_USER"],
+              "password": os.environ["SEED_PASSWORD"],
+          }))' | curl -fsSk --resolve "${PUBLIC_HOST}:8443:127.0.0.1" -d @- \
+                 "https://${PUBLIC_HOST}:8443/auth/realms/enervision/protocol/openid-connect/token") || {
+            echo "::error::Jeton refusé par Keycloak (client enervision-zap absent, secret ou mot de passe faux)"
+            exit 1
+          }
+          jeton=$(printf '%s' "$reponse" | python3 -c 'import json, sys; print(json.load(sys.stdin)["access_token"])')
+          echo "::add-mask::$jeton"
+          export ZAP_AUTH_HEADER_VALUE="Bearer $jeton"
+          export ZAP_AUTH_HEADER_SITE="$PUBLIC_HOST"
+          # Scan actif borné à 20 min : le jeton expire au bout de 30
+          docker run --rm \
+            --add-host "${PUBLIC_HOST}:host-gateway" \
+            -e ZAP_AUTH_HEADER_VALUE -e ZAP_AUTH_HEADER_SITE \
+            -v "$ZAP_DIR:/zap/wrk:rw" \
+            "$ZAP_IMAGE" \
+            zap-api-scan.py -t "https://${PUBLIC_HOST}:8443/api/openapi.json" -f openapi \
+              -c rules.tsv -I \
+              -z "-config scanner.maxScanDurationInMins=20" \
+              -r api.html -J api.json
+
+      - name: Publier les rapports ZAP
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: zap-report
+          path: |
+            ${{ runner.temp }}/zap/*.html
+            ${{ runner.temp }}/zap/*.json
+          if-no-files-found: ignore
 
   # GHCR est gratuit « pour l'instant » : on ne garde que les 20 dernières versions de
   # chaque image. Les versions sont communes à dev et prod : la purge ne tourne donc

@@ -61,6 +61,7 @@ Le dépôt est **public**, et le déploiement n'utilise pas (encore) les *GitHub
 | `DEV_AZURE_ACCOUNT_SAS` / `PROD_AZURE_ACCOUNT_SAS` | SAS du conteneur `restic-dev` / `restic-prod` du stockage des sauvegardes ([`infra/terraform`](terraform/README.md), politique d'accès `restic`). À prolonger avant son expiration |
 | `DEV_GRAFANA_ADMIN_PASSWORD` / `PROD_GRAFANA_ADMIN_PASSWORD` | Mot de passe du compte `admin` de Grafana |
 | `DEV_MONITORING_DB_PASSWORD` / `PROD_MONITORING_DB_PASSWORD` | Mot de passe du compte PostgreSQL `monitoring` (postgres-exporter), réappliqué à chaque déploiement |
+| `DEV_ZAP_CLIENT_SECRET` (dev seulement) | Secret du client Keycloak `enervision-zap`, créé au déploiement de dev : jeton du scan ZAP authentifié de l'API (job `zap`, avec le compte `consult.client@demo.test` et `DEV_SEED_PASSWORD`). Sans lui, le job `zap` échoue, le déploiement non |
 
 | Variables                                    | Obligatoire | Rôle                                          |
 |----------------------------------------------|-------------|-----------------------------------------------|
