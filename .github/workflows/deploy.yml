@@ -414,7 +414,9 @@ jobs:
       # Jeton demandé par le client enervision-zap (étape Keycloak du job deploy). Mot de
       # passe et secret passent par l'entrée standard de curl, jamais par ses arguments (ps).
       # Le jeton est masqué dans les logs et donné à ZAP par variable d'environnement.
+      # Indépendant du baseline : lancé même si celui-ci a échoué
       - name: Scanner l'API (authentifié)
+        if: ${{ !cancelled() }}
         env:
           ZAP_CLIENT_SECRET: ${{ secrets.DEV_ZAP_CLIENT_SECRET }}
           SEED_PASSWORD: ${{ secrets.DEV_SEED_PASSWORD }}
