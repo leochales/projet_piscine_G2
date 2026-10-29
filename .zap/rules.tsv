@@ -1,0 +1,4 @@
+# Règles du scan ZAP baseline (job zap de deploy.yml), une par ligne, séparées par
+# des tabulations : <id de la règle>	<IGNORE|WARN|FAIL>	<nom, libre>
+# Les ids figurent dans le rapport (artefact zap-report). Sans ligne, une règle est en WARN.
+# Chaque IGNORE doit être justifié par un commentaire, comme dans .trivyignore.
