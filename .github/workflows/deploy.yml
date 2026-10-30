@@ -401,15 +401,19 @@ jobs:
       # host-gateway : le nom public pointe vers la VM elle-même, comme le --resolve des
       # vérifications de santé (règle Host de Traefik).
       # -I : les alertes WARN n'échouent pas le job, seules les règles FAIL de .zap/rules.tsv.
+      # -j : le front est une SPA, le spider classique ne verrait que index.html. Le spider
+      # Ajax explore aussi les pages construites par le JavaScript.
+      # tee garde le journal de ZAP pour le résumé, pipefail garde le code de sortie de ZAP.
       - name: Scanner le front (baseline)
         run: |
+          set -o pipefail
           docker run --rm \
             --add-host "${PUBLIC_HOST}:host-gateway" \
             -v "$ZAP_DIR:/zap/wrk:rw" \
             "$ZAP_IMAGE" \
             zap-baseline.py -t "https://${PUBLIC_HOST}:8443" \
-              -c rules.tsv -I -m 5 \
-              -r baseline.html -J baseline.json
+              -c rules.tsv -I -j -m 5 \
+              -r baseline.html -J baseline.json | tee "$ZAP_DIR/baseline.log"
 
       # Jeton demandé par le client enervision-zap (étape Keycloak du job deploy). Mot de
       # passe et secret passent par l'entrée standard de curl, jamais par ses arguments (ps).
@@ -441,9 +445,19 @@ jobs:
           }
           jeton=$(printf '%s' "$reponse" | python3 -c 'import json, sys; print(json.load(sys.stdin)["access_token"])')
           echo "::add-mask::$jeton"
+          # L'API doit accepter le jeton, sinon le scan ne verrait que des 401 et le job
+          # resterait vert. Le jeton passe par l'entrée standard de curl, jamais par ses arguments.
+          code=$(printf 'Authorization: Bearer %s\n' "$jeton" | curl -sk -o /dev/null \
+                 -w '%{http_code}' --resolve "${PUBLIC_HOST}:8443:127.0.0.1" -H @- \
+                 "https://${PUBLIC_HOST}:8443/api/moi") || code=000
+          if [ "$code" != 200 ]; then
+            echo "::error::L'API refuse le jeton du scan (GET /api/moi : $code au lieu de 200). Compte consult.client@demo.test absent de l'API, ou audience enervision-api manquante au client enervision-zap ?"
+            exit 1
+          fi
           export ZAP_AUTH_HEADER_VALUE="Bearer $jeton"
           export ZAP_AUTH_HEADER_SITE="$PUBLIC_HOST"
           # Scan actif borné à 20 min : le jeton expire au bout de 30
+          set -o pipefail
           docker run --rm \
             --add-host "${PUBLIC_HOST}:host-gateway" \
             -e ZAP_AUTH_HEADER_VALUE -e ZAP_AUTH_HEADER_SITE \
@@ -452,7 +466,60 @@ jobs:
             zap-api-scan.py -t "https://${PUBLIC_HOST}:8443/api/openapi.json" -f openapi \
               -c rules.tsv -I \
               -z "-config scanner.maxScanDurationInMins=20" \
-              -r api.html -J api.json
+              -r api.html -J api.json | tee "$ZAP_DIR/api.log"
+
+      # Résumé des alertes dans la page du job, sans ouvrir l'artefact. Les ids sont ceux à
+      # écrire dans .zap/rules.tsv. Un rapport absent veut dire que ZAP n'a rien écrit.
+      - name: Résumer les résultats ZAP
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+
+          dossier = os.environ.get("ZAP_DIR") or os.path.join(os.environ["RUNNER_TEMP"], "zap")
+          risques = {"3": "High", "2": "Medium", "1": "Low", "0": "Info"}
+          resume = open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8")
+
+
+          def ecrire(texte=""):
+              print(texte, file=resume)
+
+
+          ecrire("## Résultats ZAP (dev)")
+          for nom, titre in (("baseline", "Front (baseline)"), ("api", "API (authentifiée)")):
+              ecrire()
+              ecrire(f"### {titre}")
+              rapport = os.path.join(dossier, nom + ".json")
+              if not os.path.exists(rapport):
+                  print(f"::warning::{nom}.json absent : ZAP n'a écrit aucun rapport")
+                  ecrire("Aucun rapport : ZAP n'a rien écrit, voir les logs du job.")
+                  continue
+              journal = os.path.join(dossier, nom + ".log")
+              if os.path.exists(journal):
+                  with open(journal, encoding="utf-8", errors="replace") as f:
+                      lignes = [ligne.strip() for ligne in f]
+                  for debut in ("Total of", "FAIL-NEW"):
+                      trouvees = [ligne for ligne in lignes if ligne.startswith(debut)]
+                      if trouvees:
+                          ecrire(f"`{trouvees[-1]}`")
+              with open(rapport, encoding="utf-8") as f:
+                  sites = json.load(f).get("site", [])
+              alertes = sorted(
+                  (a for site in sites for a in site.get("alerts", [])),
+                  key=lambda a: -int(a.get("riskcode", 0)),
+              )
+              if not alertes:
+                  ecrire("Aucune alerte.")
+                  continue
+              ecrire()
+              ecrire("| Id | Alerte | Risque | Instances |")
+              ecrire("|---|---|---|---|")
+              for a in alertes:
+                  nom_alerte = (a.get("name") or a.get("alert", "")).replace("|", "/")
+                  risque = risques.get(str(a.get("riskcode")), "?")
+                  ecrire(f"| {a.get('pluginid')} | {nom_alerte} | {risque} | {a.get('count', '')} |")
+          PY
 
       - name: Publier les rapports ZAP
         if: always()
@@ -462,7 +529,8 @@ jobs:
           path: |
             ${{ runner.temp }}/zap/*.html
             ${{ runner.temp }}/zap/*.json
-          if-no-files-found: ignore
+            ${{ runner.temp }}/zap/*.log
+          if-no-files-found: warn
 
   # GHCR est gratuit « pour l'instant » : on ne garde que les 20 dernières versions de
   # chaque image. Les versions sont communes à dev et prod : la purge ne tourne donc

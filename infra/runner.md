@@ -91,12 +91,13 @@ Utiliser des mots de passe différents entre dev et prod. Les mots de passe des 
 7. **Déployer** : `up -d --no-build --remove-orphans`. Prometheus, Grafana, Loki, Alloy et postgres-exporter démarrent avec la stack. Leurs images (Docker Hub) sont téléchargées juste avant.
 8. **Santé** : `https://<VM_IP>:<port>/api/health` pendant 60 s, envoyé à 127.0.0.1 par `curl --resolve` (les routes Traefik n'acceptent que `PUBLIC_HOST` : `https://localhost` reçoit un 404 sur la VM). En cas d'échec, le job affiche l'état des conteneurs et les logs de l'API. Le même contrôle interroge ensuite `/grafana/api/health` : s'il échoue, un avertissement est écrit et le déploiement continue.
 9. **Nettoyage** : images orphelines et anciennes versions de nos images qu'aucun conteneur n'utilise. Sur GHCR, seules les 20 dernières versions de chaque image sont conservées (job `purge`, lancé après le déploiement : il ne le retarde pas). Les versions étant communes à dev et prod, la purge ne tourne qu'aux déploiements de **prod** : un déploiement de dev ne peut pas supprimer la version qui tourne en prod.
+10. **Scan ZAP** (dev seulement, job `zap`) : OWASP ZAP scanne le front et l'API de l'environnement dev qui vient d'être déployé, sans retarder le déploiement. La prod n'est jamais scannée. Voir [Scan ZAP (dev)](#scan-zap-dev).
 
 Un seul déploiement à la fois par environnement. Pour **revenir en arrière** : rouvrir le run **Deploy** d'un commit précédent et relancer **uniquement le job Deploy** (icône ↻ du job). Les images de ce commit sont reprises sur GHCR telles quelles. Relancer tout le run reconstruirait les images. Au-delà des 20 dernières versions, faire un `git revert` sur la branche et redéployer.
 
 **Avertissement du navigateur** : le certificat est auto-signé. Pour le supprimer, importer `/home/github-runner/traefik-certs/cert.pem` comme autorité racine de confiance sur le poste (à refaire après chaque régénération).
 
-**Grafana** : `https://<VM_IP>:8443/grafana` en dev, `https://<VM_IP>/grafana` en prod. Compte `admin`, mot de passe `<ENV>_GRAFANA_ADMIN_PASSWORD`. Les tableaux de bord viennent du dépôt (`infra/monitoring/grafana/dashboards/`) et se rechargent au démarrage du conteneur. Aucun port de supervision n'est publié : l'accès passe par Traefik.
+**Grafana** : `https://<VM_IP>:8443/grafana` en dev, `https://<VM_IP>/grafana` en prod. Compte `admin`, mot de passe `<ENV>_GRAFANA_ADMIN_PASSWORD`. Les tableaux de bord viennent du dépôt (`infra/monitoring/grafana/dashboards/`) et se rechargent au démarrage du conteneur : **EnerVision : socle** (Traefik, API, PostgreSQL, logs) et **EnerVision : métier** (collecte, prévisions, écart prévu / réel, alertes), décrits dans la section « Supervision » du README. Aucun port de supervision n'est publié : l'accès passe par Traefik.
 
 ---
 
@@ -146,6 +147,26 @@ L'IP du conteneur s'obtient sur la VM avec `docker inspect -f '{{range .NetworkS
 
 ---
 
+## Scan ZAP (dev)
+
+Après chaque déploiement de `develop`, le job `zap` scanne l'environnement dev avec OWASP ZAP (SMARTOPS-111 et SMARTOPS-112). Le déploiement ne l'attend pas : un échec du scan ne l'annule pas.
+
+* Baseline du front : analyse passive, avec le spider classique et le spider Ajax (le front est une SPA).
+* Scan actif de l'API : il lit `/api/openapi.json` et envoie le jeton du compte `consult.client@demo.test`. Ce compte est en lecture seule, donc les écritures du scan reçoivent des 403.
+* Avant le scan de l'API, le job appelle `/api/moi` avec le jeton. S'il ne reçoit pas un 200, il s'arrête avec un message d'erreur.
+
+Les résultats se lisent dans le résumé de l'exécution (onglet Summary). Le rapport complet (HTML, JSON et logs) est dans l'artefact `zap-report`.
+
+Chaque alerte se règle dans `.zap/rules.tsv`, avec l'id de la règle donné par le résumé :
+
+| Action | Effet |
+|---|---|
+| `IGNORE` | L'alerte est écartée. Un commentaire doit justifier pourquoi. |
+| `WARN` | L'alerte est signalée, le job reste vert. C'est la valeur par défaut. |
+| `FAIL` | Le job `zap` échoue. Réservé aux failles qui ne doivent jamais apparaître. |
+
+---
+
 ## Exploitation
 
 Commandes à lancer depuis un compte administrateur, dans `/home/github-runner/actions-runner` :
@@ -159,6 +180,8 @@ Commandes à lancer depuis un compte administrateur, dans `/home/github-runner/a
 | Logs de la sauvegarde     | `docker compose -p enervision-<env> logs backup` |
 | Sauvegarder tout de suite | `docker compose -p enervision-<env> exec backup /app/backup.sh` |
 | Lister les sauvegardes    | `docker compose -p enervision-<env> exec backup restic snapshots` |
+| Simuler un pic (démo, dev seulement) | Actions → **Démo** → Run workflow (voir la section « Démo » du README) |
+| Lancer une prévision tout de suite | `docker compose -p enervision-<env> exec prevision python -m model.prevision` |
 
 Le runner **se met à jour tout seul**. Pour le réenregistrer (runner supprimé côté GitHub, changement de nom) : `./svc.sh stop`, `./svc.sh uninstall`, `./config.sh remove --token <TOKEN>`, puis reprendre l'étape 2 de l'installation. Après un redémarrage de la VM, le service et les conteneurs repartent seuls.
 
@@ -195,7 +218,7 @@ kcadm update clients/<id> -r enervision -s 'redirectUris=["https://<VM_IP>/*"]'
 
 ### Créer un compte (premier administrateur, comptes de test)
 
-Les comptes se créent dans Keycloak. En temps normal, ce sont les gestionnaires qui les créent depuis le dashboard (`POST /api/utilisateurs`, SMARTOPS-84). À la main, on passe par l'administration de Keycloak : la console (`http://localhost/auth/admin` en local, `https://<VM_IP>[:8443]/auth/admin` sur la VM) ou `kcadm.sh`.
+Les comptes se créent dans Keycloak. La création par les gestionnaires depuis le dashboard (SMARTOPS-84 et 86) n'est pas dans le MVP : en dehors des comptes de démonstration, on passe par l'administration de Keycloak, la console (`http://localhost/auth/admin` en local, `https://<VM_IP>[:8443]/auth/admin` sur la VM) ou `kcadm.sh`.
 
 **Comptes de démonstration** : un compte par rôle (liste dans le README, section « Comptes de démonstration »), créés par l'API à chaque démarrage (`api/seed.py`), en dev comme en prod, avec le mot de passe du secret `<ENV>_SEED_PASSWORD`. En prod, `admin@enervision.test`, qui voit tous les clients, n'est pas créé. Sans ce secret, l'API n'en crée pas. Un compte déjà enregistré n'est jamais modifié. Résultat dans les logs de l'API : `docker compose -p enervision-<env> logs api | grep -i seed`.
 
