@@ -2,3 +2,28 @@
 # des tabulations : <id de la règle>	<IGNORE|WARN|FAIL>	<nom, libre>
 # Les ids figurent dans le rapport (artefact zap-report). Sans ligne, une règle est en WARN.
 # Chaque IGNORE doit être justifié par un commentaire, comme dans .trivyignore.
+
+# --- FAIL : failles qui ne doivent jamais apparaître. Ces règles ne se déclenchent que
+# dans le scan actif de l'API. Le baseline du front est passif, il ne peut pas les
+# produire : ses alertes restent en WARN ou IGNORE.
+# Un FAIL fait échouer le job zap, jamais le déploiement.
+40018	FAIL	SQL Injection
+90018	FAIL	SQL Injection - Advanced
+40012	FAIL	Cross Site Scripting (Reflected)
+40014	FAIL	Cross Site Scripting (Persistent)
+6	FAIL	Path Traversal
+7	FAIL	Remote File Inclusion
+90020	FAIL	Remote OS Command Injection
+90023	FAIL	XML External Entity Attack
+40003	FAIL	CRLF Injection
+
+# --- IGNORE : chaque ligne est justifiée par le commentaire au-dessus.
+# Pas de HSTS : sans effet sur une adresse IP avec un certificat auto-signé (voir
+# infra/traefik/dynamic/middlewares.yml).
+10035	IGNORE	Strict-Transport-Security Header
+# Information seulement : le front est une SPA, on le sait.
+10109	IGNORE	Modern Web Application
+
+# --- À trier après le prochain déploiement dev : les autres alertes sont en WARN par
+# défaut. Les ids sont dans le résumé du job zap. Corriger l'alerte, ou ajouter ici une
+# ligne IGNORE avec son commentaire.
