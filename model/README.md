@@ -156,7 +156,7 @@ Règles :
 - Lags (24 h, 7, 14 et 28 jours) et moyennes glissantes (24 h, 7 jours) : seulement ceux qui sont connus au moment de prévoir, donc pris au moins `horizon` heures avant. À 7 jours, pas de lag de 24 h. Une moyenne glissante demande au moins 80 % d'heures connues, sinon elle reste vide.
 - Calendrier et site : heure du jour, jour de la semaine et site en colonnes 0/1, toujours les mêmes colonnes, même si une valeur est absente des données.
 - Heure du jour et jour de la semaine lus sur `heure` sans conversion en heure de Paris. Les horodatages du CSV et de l'API Mock sont l'heure du simulateur, sans changement d'heure, enregistrée comme de l'UTC (voir les règles du jeu d'entraînement). Le CSV n'a ni heure manquante en mars ni heure en double en octobre, et les bureaux y commencent à 8 h été comme hiver. Convertir en heure de Paris décalerait ce profil d'une heure l'été. Avec de vraies données en UTC, il faudra convertir en heure locale du site.
-- Décalages dans le temps : les heures absentes de gold sont ajoutées vides avant de décaler, puis retirées. Un lag de 24 h prend donc toujours l'heure d'il y a 24 h, ou reste vide. La prévision de référence utilise le même calcul (`valeurs_passees`).
+- Décalages dans le temps : les heures absentes de gold sont ajoutées vides avant de décaler, puis retirées. Un lag de 24 h prend donc toujours l'heure d'il y a 24 h, ou reste vide. La prévision de référence utilise le même calcul (`valeurs_passees`). Un trou de plus de 28 jours (`HISTORIQUE_UTILE`) entre deux heures d'un site n'est pas rempli : aucune variable ne remonte aussi loin. Le site est calculé en plusieurs morceaux, comme le jeu du réentraînement (CSV, puis mesures récentes), qui n'a ainsi pas à traîner des milliers d'heures vides.
 - Entrée refusée avec un message clair : colonne manquante, aucune ligne, même heure en double pour un site, site sans moyenne d'entraînement.
 
 ## Entraînement (SMARTOPS-31)
@@ -289,10 +289,10 @@ docker compose -f compose-local.yml exec reentrainement python -m model.reentrai
 
 Pour chaque horizon (24 h et 7 jours) :
 
-1. Le jeu réunit le CSV et les heures complètes de gold plus récentes que sa dernière heure. Les 7 derniers jours sont l'examen (le jeu `test` de `model.entrainement`). Ce qui précède est coupé dans le temps entre entraînement et validation, dans la même proportion que le jeu CSV.
+1. Le jeu réunit le CSV et les heures de gold plus récentes que sa dernière heure, mesurées sur au moins 80 % de leurs minutes (`COUVERTURE_MIN_HEURE`). Une heure terminée n'est pas forcément mesurée : `heure_complete` est vrai même pour une heure où un capteur était en panne, ou avec une seule minute mesurée. Ces heures sont écartées, comme des heures absentes de gold. Les 7 derniers jours sont l'examen (le jeu `test` de `model.entrainement`). Ce qui précède est coupé dans le temps entre entraînement et validation, dans la même proportion que le jeu CSV.
 2. La méthode (Ridge ou random forest) est choisie sur la validation, comme à l'entraînement.
 3. Un candidat est entraîné avec cette méthode sur tout ce qui précède l'examen.
-4. Le candidat, la version `production` et la prévision de référence sont notés sur les mêmes heures de l'examen. Chacun prévoit avec ses propres moyennes par site, et seuls comptent les sites que le candidat et la production connaissent tous les deux.
+4. Le candidat, la version `production` et la prévision de référence sont notés sur les mêmes heures de l'examen. Chacun prévoit avec ses propres moyennes par site, et seuls comptent les sites que le candidat et la production connaissent tous les deux. Les heures que la production a déjà vues à son entraînement ne sont pas notées (voir « Règles »).
 5. La nouvelle version est enregistrée, et l'alias `production` bouge, seulement si le candidat bat la référence sur la validation (règle de SMARTOPS-30) et a un WAPE plus bas que la version en production sur l'examen. Elle est alors réentraînée sur toutes les données, examen compris, comme à l'entraînement.
 6. Sinon, le run MLflow est gardé pour la trace, sans nouvelle version. Il porte le tag `bat_production` (`true`, `false` ou `sans_production`) et les scores de la production (`test_production_WAPE`).
 
@@ -300,9 +300,10 @@ Pour chaque horizon (24 h et 7 jours) :
 
 - Code de sortie 1 si, pour un horizon, le modèle ne fait pas mieux que la référence. Rester moins bon que la version en production n'est pas une erreur : elle est gardée.
 - Sans version en production, il n'y a rien à comparer : le modèle qui bat la référence est enregistré.
-- Gold doit couvrir au moins 8 jours d'heures complètes (les 7 jours de l'examen, plus un jour pour que la semaine précédente existe). Sinon, le job prévient dans les logs et ne réentraîne rien. De même, la comparaison avec la production demande au moins 100 heures notées sur l'examen (`MIN_HEURES_EXAMEN`) : en dessous, la production est gardée.
-- La production ne connaît pas l'examen quand elle a été entraînée avant lui. Si elle a été entraînée après son début (relance à la main le même jour), elle l'a déjà vu et la comparaison lui est favorable, ce qui est prudent.
-- Les scores du test (`test_*` dans MLflow) sont ceux de l'examen, pas ceux du jeu CSV.
+- Gold doit couvrir au moins 14 jours d'heures mesurées (`GOLD_MIN`) : les 7 jours de l'examen, plus les 7 jours d'avant. La référence d'une heure est la même heure la semaine précédente. Avec moins de 14 jours, la semaine précédente de l'examen tomberait dans le trou entre la fin du CSV et gold, et l'examen ne porterait en pratique que sur quelques jours. Sinon, le job prévient dans les logs et ne réentraîne rien. De même, la comparaison avec la production demande au moins 100 heures notées sur l'examen (`MIN_HEURES_EXAMEN`) : en dessous, la production est gardée. Sans version en production, il n'y a rien à comparer : un examen trop court n'empêche pas d'enregistrer le modèle qui bat la référence.
+- Le run de chaque version enregistre la dernière heure de ses données (paramètre `fin_donnees`). Le réentraînement ne note la version en production que sur les heures de l'examen après cette date, qu'elle n'a jamais vues. Un réentraînement relancé dans la semaine ne la favorise donc pas. Pour une version enregistrée avant ce paramètre, la date de son run sert de limite. S'il reste moins de `MIN_HEURES_EXAMEN` heures à noter (par exemple une relance le jour même), la production est gardée.
+- Les scores du test (`test_*` dans MLflow) sont ceux de l'examen, pas ceux du jeu CSV. Un modèle refusé sur la validation n'est pas noté sur l'examen : il n'a pas de score de test.
+- Les heures « sans référence » du log ne comptent que les sites notés.
 - Les messages passent par les logs (`common.logs`), jamais par la console.
 - L'empreinte du run (`empreinte_jeu`) est celle du jeu CSV, suivie de la dernière heure de gold utilisée (par exemple `f2ee5c19efdb+gold:2026-11-01T23`).
 

@@ -4,8 +4,9 @@
 
 Le service ``reentrainement`` le lance chaque semaine (``model/crontab-reentrainement``).
 
-Le jeu réunit l'historique CSV (``model.dataset``) et les heures complètes de
-``gold.consommation_horaire`` plus récentes que le CSV. Ce sont ces mesures récentes qui
+Le jeu réunit l'historique CSV (``model.dataset``) et les heures de
+``gold.consommation_horaire`` plus récentes que le CSV, mesurées sur au moins 80 % de
+leurs minutes. Ce sont ces mesures récentes qui
 apportent du neuf. Relancer l'entraînement sur le seul CSV redonnerait le même modèle.
 
 Les 7 derniers jours du jeu servent d'examen (le jeu ``test`` de ``model.entrainement``).
@@ -55,8 +56,10 @@ from model.entrainement import (
     wape_par_site,
 )
 from model.features import (
+    COUVERTURE_MIN_MOYENNE,
     HISTORIQUE_UTILE,
     HORIZONS,
+    conso_mesuree,
     construire_variables,
     moyennes_par_site,
     noms_variables,
@@ -74,9 +77,17 @@ EXAMEN = pd.Timedelta(days=7)
 # (70 % et 15 % du jeu entier)
 PART_ENTRAINEMENT = SPLIT_RATIOS[0] / sum(SPLIT_RATIOS)
 
-# Mesures de gold nécessaires : les 7 jours de l'examen, plus un jour. Les 7 premiers
-# jours de gold n'ont pas de « semaine précédente », donc pas de référence à battre.
-GOLD_MIN = EXAMEN + pd.Timedelta(days=1)
+# Mesures de gold nécessaires : les 7 jours de l'examen, plus les 7 jours d'avant. La
+# référence d'une heure est la même heure la semaine précédente. Sans cette semaine
+# d'avant, elle tomberait dans le trou entre la fin du CSV et gold, et l'examen ne
+# porterait en pratique que sur quelques jours.
+GOLD_MIN = 2 * EXAMEN
+
+# Part minimale des minutes mesurées pour qu'une heure de gold compte, comme pour les pics
+# de model.prevision. Une heure avec une seule minute mesurée n'est pas une valeur
+# d'entraînement ni d'examen fiable. heure_complete ne suffit pas : il dit seulement que
+# l'heure est terminée.
+COUVERTURE_MIN_HEURE = COUVERTURE_MIN_MOYENNE
 
 # Heures notées en dessous desquelles la comparaison avec la production ne veut rien
 # dire (une semaine complète de 7 sites en compte plus de 1 000)
@@ -84,8 +95,13 @@ MIN_HEURES_EXAMEN = 100
 
 
 def lire_gold(conn: Connection) -> pd.DataFrame:
-    """Heures complètes de ``gold.consommation_horaire``, au format du jeu CSV : une
-    heure sans aucune mesure (``taux_couverture`` à 0) garde une consommation vide."""
+    """Heures de ``gold.consommation_horaire`` mesurées sur au moins
+    ``COUVERTURE_MIN_HEURE`` de leurs minutes, au format du jeu CSV.
+
+    Les autres sont écartées, comme des heures absentes de gold : le jeu les remplit de
+    cases vides, que le modèle sait prévoir et que la référence exclut. Une heure
+    terminée n'est pas forcément mesurée : une panne de capteur laisse une heure sans
+    mesure, ou avec une seule minute."""
     lignes = conn.execute(
         text(
             """
@@ -101,8 +117,9 @@ def lire_gold(conn: Connection) -> pd.DataFrame:
     for colonne in ("consommation_kwh", "pic_kw", "moyenne_kw", "taux_couverture"):
         df[colonne] = df[colonne].astype(float)
     df["heure"] = pd.to_datetime(df["heure"], utc=True)
+    df = df[df["taux_couverture"] >= COUVERTURE_MIN_HEURE].copy()
     # Comme dans le jeu CSV, sur une heure les kW moyens valent des kWh
-    df["consommation_kwh_brute"] = df["moyenne_kw"].where(df["taux_couverture"] > 0)
+    df["consommation_kwh_brute"] = conso_mesuree(df)
     df["methode_imputation"] = "none"
     return df
 
@@ -180,22 +197,47 @@ def charger_production(horizon: int) -> registre.ModeleProduction | None:
 
 
 def evaluer_sur_l_examen(df: pd.DataFrame, r: Resultat, horizon: int) -> Resultat:
-    """Remplace les scores du test de ``r`` par ceux de l'examen : le candidat (la méthode
-    retenue, entraînée sur tout ce qui précède l'examen), la version en production et les
-    références. Tous sont notés sur les mêmes heures, et seulement sur les sites que le
-    candidat et la production connaissent.
+    """Mesure le candidat sur l'examen : ``r`` reçoit les scores de l'examen. Le candidat
+    (la méthode retenue, entraînée sur tout ce qui précède l'examen), la version en
+    production et les références sont notés sur les mêmes heures, et seulement sur les
+    sites que le candidat et la production connaissent.
 
-    Renvoie ``r`` avec ``bat_production`` : None sans version en production, faux si le
-    candidat ne fait pas mieux, ou si l'examen est trop court pour les comparer."""
+    Les heures que la version en production a vues à son entraînement
+    (``registre.fin_des_donnees``) ne sont pas notées : sans cela, un réentraînement
+    relancé dans la semaine la favoriserait.
+
+    Renvoie ``r`` avec ``bat_production`` :
+
+    - None sans version en production. Il n'y a rien à comparer : le modèle est
+      enregistré s'il bat la référence, même si l'examen est trop court pour être noté.
+    - faux si le candidat ne fait pas mieux que la production, ou si l'examen est trop
+      court pour les comparer. La production est alors gardée."""
     candidat, moyennes = entrainer_modele_final(
         df[df["jeu"] != "test"], horizon, r.meilleur
     )
     production = charger_production(horizon)
     sites = set(moyennes.index)
+    fin = None
     if production is not None:
         sites &= set(production.moyennes.index)
-    examen = heures_examen(df, horizon)
-    examen = examen[examen["id_site"].isin(sites)]
+        # Sans run connu (version fabriquée à la main), aucune heure n'est écartée
+        if production.run_id:
+            fin = registre.fin_des_donnees(production.run_id)
+    examen = df[(df["jeu"] == "test") & df["id_site"].isin(sites)]
+    if fin is not None:
+        deja_vues = examen.loc[examen["heure"] <= fin, "heure"].nunique()
+        if deja_vues:
+            logger.info(
+                "horizon %d h : %d heures de l'examen sont avant la fin des données "
+                "de la version en production (%s), elles ne sont pas notées",
+                horizon,
+                deja_vues,
+                fin,
+            )
+        examen = examen[examen["heure"] > fin]
+    # Heures mesurées des sites notés, avant d'écarter celles sans référence
+    mesurees = int(conso_mesuree(examen).notna().sum())
+    examen = heures_examen(examen, horizon)
     if len(examen) < MIN_HEURES_EXAMEN:
         logger.warning(
             "horizon %d h : %d heures notées sur l'examen, il en faut au moins %d "
@@ -216,7 +258,6 @@ def evaluer_sur_l_examen(df: pd.DataFrame, r: Resultat, horizon: int) -> Resulta
         previsions.append("production")
     test = comparer(d, previsions)
     wape = test["WAPE_%"]
-    mesurees = int(((df["jeu"] == "test") & (df["taux_couverture"] > 0)).sum())
     return replace(
         r,
         test=test,
@@ -233,8 +274,9 @@ def evaluer_sur_l_examen(df: pd.DataFrame, r: Resultat, horizon: int) -> Resulta
 def reentrainer_horizon(df: pd.DataFrame, horizon: int, empreinte: str) -> Resultat:
     """Réentraîne un horizon, et enregistre le modèle s'il remplace la production."""
     moyennes = moyennes_par_site(df[df["jeu"] == "entrainement"])
-    r = entrainer_horizon(df, moyennes, horizon)
-    # Sans modèle meilleur que la référence, inutile de le comparer à la production
+    # Sans test : les scores viennent de l'examen, mesuré seulement pour un modèle qui
+    # bat la référence sur la validation (inutile de le comparer à la production sinon)
+    r = entrainer_horizon(df, moyennes, horizon, avec_test=False)
     if r.bat_reference:
         r = evaluer_sur_l_examen(df, r, horizon)
     journaliser(horizon, r)
@@ -243,7 +285,14 @@ def reentrainer_horizon(df: pd.DataFrame, horizon: int, empreinte: str) -> Resul
         if r.remplace_production
         else None
     )
-    version = registre.enregistrer(r, horizon, REGLAGES[r.meilleur], empreinte, final)
+    version = registre.enregistrer(
+        r,
+        horizon,
+        REGLAGES[r.meilleur],
+        empreinte,
+        final,
+        fin_donnees=df["heure"].max(),
+    )
     if version:
         logger.info(
             "horizon %d h : %s, version %s en production (alias %s)",

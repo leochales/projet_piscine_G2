@@ -297,3 +297,27 @@ def test_main_ecrit_dans_les_logs_pas_dans_la_console(tmp_path, caplog, capsys):
     assert any("horizon 24 h : modèle retenu" in m for m in messages)
     assert any("horizon 168 h : modèle retenu" in m for m in messages)
     assert capsys.readouterr().out == ""
+
+
+def test_sans_test_le_choix_reste_le_meme():
+    """Le réentraînement note le modèle sur son examen : il saute le test, mais choisit
+    et juge le modèle de la même façon sur la validation."""
+    df = faux_jeu()
+    moyennes = moyennes_entrainement(df)
+    avec = entrainer_horizon(df, moyennes, 24)
+    sans = entrainer_horizon(df, moyennes, 24, avec_test=False)
+    assert sans.meilleur == avec.meilleur
+    assert sans.bat_reference == avec.bat_reference
+    pd.testing.assert_frame_equal(sans.validation, avec.validation)
+    assert sans.test.empty
+    assert sans.par_site.empty
+    assert sans.heures_test == 0
+
+
+def test_journaliser_sans_test(caplog):
+    df = faux_jeu()
+    sans = entrainer_horizon(df, moyennes_entrainement(df), 24, avec_test=False)
+    with caplog.at_level(logging.INFO):
+        entrainement.journaliser(24, sans)
+    assert "sur la validation" in caplog.text
+    assert "sur le test" not in caplog.text

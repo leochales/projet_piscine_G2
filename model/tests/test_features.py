@@ -2,7 +2,9 @@ import pandas as pd
 import pytest
 
 from model.features import (
+    HISTORIQUE_UTILE,
     ajouter_heures_a_prevoir,
+    completer_heures,
     construire_variables,
     moyennes_par_site,
     noms_variables,
@@ -255,3 +257,60 @@ def test_site_sans_moyenne_valable_ecarte_des_le_depart():
     moyennes = moyennes_par_site(deux_sites)
     assert list(moyennes.index) == ["SITE001"]
     assert "site_SITE002" not in noms_variables(24, moyennes)
+
+
+def site_en_deux_morceaux(trou_jours: int):
+    """Un site avec un historique ancien, puis des mesures récentes après un trou."""
+    ancien = faux_site(nb_heures=200)
+    debut = ancien["heure"].max() + pd.Timedelta(days=trou_jours)
+    recent = faux_site(nb_heures=200).assign(
+        heure=pd.date_range(debut, periods=200, freq="h", tz="UTC"),
+        moyenne_kw=[1000.0 + i for i in range(200)],
+    )
+    return ancien, recent, pd.concat([ancien, recent], ignore_index=True)
+
+
+def test_long_trou_non_rempli():
+    """Entre l'historique et les mesures récentes (le trou 2025-2026 du projet), aucune
+    ligne vide n'est ajoutée : les variables n'y voient jamais, et la grille resterait
+    pleine de lignes vides à chaque entraînement."""
+    ancien, recent, ensemble = site_en_deux_morceaux(trou_jours=30)
+    assert (recent["heure"].min() - ancien["heure"].max()) > HISTORIQUE_UTILE
+    grille = completer_heures(ensemble[["id_site", "heure", "moyenne_kw"]])
+    assert len(grille) == len(ensemble)
+    assert grille["morceau"].nunique() == 2
+
+
+def test_variables_d_un_site_en_deux_morceaux_comme_chaque_morceau_seul():
+    """Un décalage ne passe pas d'un morceau à l'autre : les variables des mesures
+    récentes ne voient pas l'historique ancien, comme si on les calculait seules."""
+    ancien, recent, ensemble = site_en_deux_morceaux(trou_jours=30)
+    ensemble_vars = construire_variables(ensemble, SANS_NORMALISATION, 24)
+    seuls = pd.concat(
+        [
+            construire_variables(ancien, SANS_NORMALISATION, 24),
+            construire_variables(recent, SANS_NORMALISATION, 24),
+        ],
+        ignore_index=True,
+    )
+    pd.testing.assert_frame_equal(ensemble_vars, seuls)
+    # Les 24 premières heures récentes n'ont pas de lag de 24 h
+    debut_recent = ensemble_vars.iloc[200:224]
+    assert debut_recent["lag_24h"].isna().all()
+
+
+def test_trou_plus_court_que_l_historique_utile_toujours_rempli():
+    """Sous 28 jours, une variable peut encore remonter jusqu'à l'historique : le trou est
+    rempli, et le lag de 14 jours retrouve la valeur d'avant."""
+    ancien, recent, ensemble = site_en_deux_morceaux(trou_jours=10)
+    assert (recent["heure"].min() - ancien["heure"].max()) < HISTORIQUE_UTILE
+    grille = completer_heures(ensemble[["id_site", "heure", "moyenne_kw"]])
+    assert len(grille) > len(ensemble)
+    assert grille["morceau"].nunique() == 1
+    df = construire_variables(ensemble, SANS_NORMALISATION, 24)
+    # 50 heures après le début des mesures récentes, l'heure d'il y a 14 jours est dans
+    # l'historique ancien (le trou fait 10 jours)
+    heure = recent["heure"].iloc[50]
+    passee = ancien.loc[ancien["heure"] == heure - pd.Timedelta(hours=336)]
+    assert passee["moyenne_kw"].iloc[0] == 153.0
+    assert df.loc[df["heure"] == heure, "lag_14j"].iloc[0] == 153.0

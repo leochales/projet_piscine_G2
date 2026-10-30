@@ -251,3 +251,36 @@ def test_modele_moins_bon_que_la_production_garde_l_alias(client):
     assert any(
         "version en production" in run.data.tags["mlflow.note.content"] for run in runs
     )
+
+
+def test_fin_des_donnees_enregistree_dans_le_run(client):
+    """Le réentraînement ne note la version en production que sur des heures après la fin
+    de ses données : le run la garde."""
+    _, r, final = resultat_et_final()
+    fin = pd.Timestamp("2025-01-14 23:00", tz="UTC")
+    registre.enregistrer(r, 24, REGLAGES[r.meilleur], "v1", final, fin_donnees=fin)
+    production = registre.charger(24)
+    assert production.run_id
+    assert registre.fin_des_donnees(production.run_id) == fin
+
+
+def test_fin_des_donnees_inconnue_prend_la_date_du_run(client):
+    """Version enregistrée avant ce paramètre : ses données ne sont pas plus récentes
+    que son run."""
+    _, r, final = resultat_et_final()
+    registre.enregistrer(r, 24, REGLAGES[r.meilleur], "v1", final)
+    production = registre.charger(24)
+    run = client.get_run(production.run_id)
+    assert "fin_donnees" not in run.data.params
+    assert registre.fin_des_donnees(production.run_id) == pd.Timestamp(
+        run.info.start_time, unit="ms", tz="UTC"
+    )
+
+
+def test_description_sans_score_de_test(client):
+    """Réentraînement : un modèle refusé sur la validation n'a pas de score de test."""
+    _, r, _ = resultat_et_final(bruit=0.0)
+    sans_test = replace(r, test=pd.DataFrame(columns=r.validation.columns))
+    texte = registre.description(sans_test)
+    assert "sans score de test" in texte
+    assert "mesuré une seule fois sur le test" not in texte

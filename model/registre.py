@@ -69,10 +69,17 @@ def metriques(tableau: pd.DataFrame, jeu: str) -> dict[str, float]:
 def description(resultat: Resultat) -> str:
     """Explique d'où viennent les scores du run, et quel modèle est enregistré : les
     deux ne sont pas entraînés sur les mêmes données."""
-    texte = (
-        f"Scores : {resultat.meilleur} entraîné sur le jeu d'entraînement, choisi sur "
-        "la validation et mesuré une seule fois sur le test. "
-    )
+    if resultat.test.empty:
+        # Réentraînement : modèle refusé sur la validation, jamais noté sur l'examen
+        texte = (
+            f"Scores : {resultat.meilleur} entraîné sur le jeu d'entraînement et "
+            "choisi sur la validation, sans score de test. "
+        )
+    else:
+        texte = (
+            f"Scores : {resultat.meilleur} entraîné sur le jeu d'entraînement, choisi "
+            "sur la validation et mesuré une seule fois sur le test. "
+        )
     if resultat.remplace_production:
         texte += (
             "Modèle enregistré : le même, réentraîné sur toutes les données "
@@ -97,6 +104,7 @@ def enregistrer(
     reglages: dict[str, Any],
     empreinte: str,
     final: tuple[Any, pd.Series] | None,
+    fin_donnees: pd.Timestamp | None = None,
 ) -> str | None:
     """Crée le run MLflow d'un horizon. Si le modèle bat la référence sur la
     validation (et la version en production sur l'examen, quand il y en a une),
@@ -110,6 +118,13 @@ def enregistrer(
                 "horizon": horizon,
                 "modele": resultat.meilleur,
                 "empreinte_jeu": empreinte,
+                # Dernière heure des données du modèle : le réentraînement ne note la
+                # version en production que sur des heures qu'elle n'a pas vues
+                **(
+                    {}
+                    if fin_donnees is None
+                    else {"fin_donnees": fin_donnees.isoformat()}
+                ),
                 **{f"reglage_{cle}": valeur for cle, valeur in reglages.items()},
             }
         )
@@ -163,6 +178,9 @@ class ModeleProduction:
     # Nom et numéro de la version, par exemple « prevision-conso-24h/3 » : écrit dans
     # gold.prediction (version_modele) pour savoir quelle version a prévu chaque heure
     version: str
+    # Run MLflow de cette version : il garde la fin de ses données d'entraînement
+    # (``fin_des_donnees``). Vide pour une version fabriquée à la main, dans les tests.
+    run_id: str = ""
 
 
 def charger(horizon: int, cache: Path | None = None) -> ModeleProduction:
@@ -185,8 +203,23 @@ def charger(horizon: int, cache: Path | None = None) -> ModeleProduction:
         # Après le chargement : la version utilisée ne risque plus rien
         nettoyer(dossier)
     return ModeleProduction(
-        modele, pd.Series(moyennes, dtype=float), f"{nom}/{version.version}"
+        modele,
+        pd.Series(moyennes, dtype=float),
+        f"{nom}/{version.version}",
+        version.run_id,
     )
+
+
+def fin_des_donnees(run_id: str) -> pd.Timestamp:
+    """Dernière heure des données qui ont servi à entraîner la version d'un run
+    (paramètre ``fin_donnees``). Pour une version enregistrée avant ce paramètre, la date
+    du run : ses données ne peuvent pas être plus récentes. Le réentraînement n'évalue
+    une version en production que sur des heures après cette date, qu'elle n'a jamais vues."""
+    run = MlflowClient().get_run(run_id)
+    fin = run.data.params.get("fin_donnees")
+    if fin:
+        return pd.Timestamp(fin)
+    return pd.Timestamp(run.info.start_time, unit="ms", tz="UTC")
 
 
 def telecharger(nom: str, version: ModelVersion, cache: Path) -> Path:

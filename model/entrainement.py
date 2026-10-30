@@ -193,9 +193,15 @@ class Resultat:
         return self.bat_reference and self.bat_production is not False
 
 
-def entrainer_horizon(df: pd.DataFrame, moyennes: pd.Series, horizon: int) -> Resultat:
+def entrainer_horizon(
+    df: pd.DataFrame, moyennes: pd.Series, horizon: int, avec_test: bool = True
+) -> Resultat:
     """Entraîne les deux modèles pour un horizon, choisit le meilleur sur la
-    validation, puis le mesure une seule fois sur le test."""
+    validation, puis le mesure une seule fois sur le test.
+
+    Sans ``avec_test``, le test n'est ni calculé ni noté. Le réentraînement
+    (``model.reentrainement``) mesure le modèle sur son propre examen : ces scores
+    seraient calculés pour rien."""
     df = garder_sites_connus(df, moyennes)
     lignes = preparer(df, moyennes, horizon)
     noms = noms_variables(horizon, moyennes)
@@ -205,6 +211,21 @@ def entrainer_horizon(df: pd.DataFrame, moyennes: pd.Series, horizon: int) -> Re
     validation = comparer(d, [*refs, *modeles])
     # Choix sur la validation seulement, d'après le WAPE (comme le seuil de la 30)
     meilleur = str(validation.loc[list(modeles), "WAPE_%"].idxmin())
+    bat_reference = bool(
+        validation.loc[meilleur, "WAPE_%"] < validation.loc[REFERENCE, "WAPE_%"]
+    )
+    if not avec_test:
+        return Resultat(
+            meilleur=meilleur,
+            validation=validation,
+            test=pd.DataFrame(columns=validation.columns),
+            par_site=pd.DataFrame(),
+            bat_reference=bat_reference,
+            bat_reference_test=False,
+            heures_test=0,
+            variables_incompletes=0,
+            sans_reference=0,
+        )
     retenu = {meilleur: modeles[meilleur]}
     # Prévisions du test calculées une fois, pour les scores globaux et par site
     d = ajouter_previsions(lignes, retenu, noms, moyennes, "test", horizon)
@@ -215,9 +236,7 @@ def entrainer_horizon(df: pd.DataFrame, moyennes: pd.Series, horizon: int) -> Re
         validation=validation,
         test=test,
         par_site=wape_par_site(d, [REFERENCE, meilleur]),
-        bat_reference=bool(
-            validation.loc[meilleur, "WAPE_%"] < validation.loc[REFERENCE, "WAPE_%"]
-        ),
+        bat_reference=bat_reference,
         bat_reference_test=bool(
             test.loc[meilleur, "WAPE_%"] < test.loc[REFERENCE, "WAPE_%"]
         ),
@@ -257,44 +276,54 @@ def lire_empreinte(chemin: Path) -> str | None:
 def journaliser(horizon: int, r: Resultat) -> None:
     """Écrit le résultat d'un horizon dans les logs (``common.logs``), visibles dans
     Grafana. Le résumé est au niveau info, avec les scores en champs JSON. Les tableaux
-    complets sont au niveau debug (``LOG_LEVEL=DEBUG``)."""
+    complets sont au niveau debug (``LOG_LEVEL=DEBUG``). Sans score de test (modèle
+    refusé sur la validation au réentraînement), le résumé s'arrête à la validation."""
     wape_validation = float(r.validation.loc[r.meilleur, "WAPE_%"])
-    wape_test = float(r.test.loc[r.meilleur, "WAPE_%"])
     champs = {
         "horizon": horizon,
         "modele_retenu": r.meilleur,
         "wape_validation": wape_validation,
         "wape_validation_reference": float(r.validation.loc[REFERENCE, "WAPE_%"]),
-        "wape_test": wape_test,
-        "wape_test_reference": float(r.test.loc[REFERENCE, "WAPE_%"]),
     }
-    if "production" in r.test.index:
-        champs["wape_test_production"] = float(r.test.loc["production", "WAPE_%"])
-    logger.info(
-        "horizon %d h : modèle retenu %s, WAPE de %.2f %% sur la validation "
-        "et de %.2f %% sur le test",
-        horizon,
-        r.meilleur,
-        wape_validation,
-        wape_test,
-        extra=champs,
-    )
-    logger.info(
-        "horizon %d h, test : %d heures mesurées, dont %d avec une variable manquante "
-        "(prévues), %d sans référence (exclues de la comparaison)",
-        horizon,
-        r.heures_test,
-        r.variables_incompletes,
-        r.sans_reference,
-    )
+    if r.test.empty:
+        logger.info(
+            "horizon %d h : modèle retenu %s, WAPE de %.2f %% sur la validation",
+            horizon,
+            r.meilleur,
+            wape_validation,
+            extra=champs,
+        )
+    else:
+        wape_test = float(r.test.loc[r.meilleur, "WAPE_%"])
+        champs["wape_test"] = wape_test
+        champs["wape_test_reference"] = float(r.test.loc[REFERENCE, "WAPE_%"])
+        if "production" in r.test.index:
+            champs["wape_test_production"] = float(r.test.loc["production", "WAPE_%"])
+        logger.info(
+            "horizon %d h : modèle retenu %s, WAPE de %.2f %% sur la validation "
+            "et de %.2f %% sur le test",
+            horizon,
+            r.meilleur,
+            wape_validation,
+            wape_test,
+            extra=champs,
+        )
+        logger.info(
+            "horizon %d h, test : %d heures mesurées, dont %d avec une variable "
+            "manquante (prévues), %d sans référence (exclues de la comparaison)",
+            horizon,
+            r.heures_test,
+            r.variables_incompletes,
+            r.sans_reference,
+        )
+        logger.debug("horizon %d h, test :\n%s", horizon, r.test.round(2).to_string())
+        logger.debug(
+            "horizon %d h, WAPE %% par site sur le test :\n%s",
+            horizon,
+            r.par_site.round(2).to_string(),
+        )
     logger.debug(
         "horizon %d h, validation :\n%s", horizon, r.validation.round(2).to_string()
-    )
-    logger.debug("horizon %d h, test :\n%s", horizon, r.test.round(2).to_string())
-    logger.debug(
-        "horizon %d h, WAPE %% par site sur le test :\n%s",
-        horizon,
-        r.par_site.round(2).to_string(),
     )
     if not r.bat_reference:
         logger.warning(
@@ -304,7 +333,7 @@ def journaliser(horizon: int, r: Resultat) -> None:
             r.meilleur,
             REFERENCE,
         )
-    elif not r.bat_reference_test:
+    elif not r.bat_reference_test and not r.test.empty:
         logger.warning(
             "horizon %d h : %s bat %s sur la validation mais pas sur le test. "
             "À vérifier avant de l'utiliser.",
@@ -382,7 +411,12 @@ def main(argv: list[str] | None = None) -> list[Resultat]:
             else None
         )
         version = registre.enregistrer(
-            r, horizon, REGLAGES[r.meilleur], empreinte, final
+            r,
+            horizon,
+            REGLAGES[r.meilleur],
+            empreinte,
+            final,
+            fin_donnees=df["heure"].max(),
         )
         if version:
             logger.info(

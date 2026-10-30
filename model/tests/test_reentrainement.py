@@ -27,6 +27,9 @@ from model.tests.test_entrainement import faux_jeu
 # Stockage en fichiers de MLflow (test seulement) : codecs.open, déprécié en Python 3.14
 pytestmark = pytest.mark.filterwarnings("ignore:codecs.open:DeprecationWarning")
 
+# Dernière heure du faux gold par défaut : 14 jours à partir du 2025-01-01
+FIN_FAUX_GOLD = pd.Timestamp("2025-01-14 23:00", tz="UTC")
+
 
 def faux_csv(bruit: float = 0.1) -> pd.DataFrame:
     """Le jeu CSV tel que model.dataset l'écrit : sans les prévisions de référence."""
@@ -34,11 +37,12 @@ def faux_csv(bruit: float = 0.1) -> pd.DataFrame:
 
 
 def faux_gold(
-    debut: str = "2025-01-01", jours: int = 12, bruit: float = 0.1
+    debut: str = "2025-01-01", jours: int = 14, bruit: float = 0.1
 ) -> pd.DataFrame:
     """Heures de gold après le CSV (63 jours en 2024), avec le même rythme : bureaux
     ouverts de 8 h à 18 h en semaine. Le trou entre les deux est voulu : il existe
-    aussi dans le projet."""
+    aussi dans le projet, et il est plus long que l'historique utile (28 jours).
+    Par défaut 14 jours, le minimum du réentraînement."""
     rng = np.random.default_rng(1)
     heures = pd.date_range(debut, periods=jours * 24, freq="h", tz="UTC")
     ouvert = (heures.dayofweek < 5) & (heures.hour >= 8) & (heures.hour < 18)
@@ -93,40 +97,40 @@ def test_lire_gold_au_format_du_jeu():
             return self.lignes
 
     paris = timezone(timedelta(hours=2))
+
+    def ligne(heure, moyenne, couverture):
+        # PostgreSQL rend du NUMERIC en Decimal, et l'heure dans le fuseau de la session
+        return (
+            "SITE001",
+            datetime(2026, 10, 28, heure, tzinfo=paris),
+            moyenne,
+            moyenne,
+            moyenne,
+            60,
+            0,
+            couverture,
+            True,
+        )
+
     conn = FausseConnexion(
         [
-            # PostgreSQL rend du NUMERIC en Decimal, et l'heure dans le fuseau de la session
-            (
-                "SITE001",
-                datetime(2026, 10, 28, 12, tzinfo=paris),
-                Decimal("10.5"),
-                Decimal("12.0"),
-                Decimal("10.5"),
-                60,
-                0,
-                Decimal("1.0"),
-                True,
-            ),
-            # Heure sans aucune mesure
-            (
-                "SITE001",
-                datetime(2026, 10, 28, 13, tzinfo=paris),
-                None,
-                None,
-                None,
-                0,
-                0,
-                Decimal(0),
-                True,
-            ),
+            ligne(12, Decimal("10.5"), Decimal("1.0")),
+            # 80 % des minutes mesurées : le minimum, gardée
+            ligne(13, Decimal("8.0"), Decimal("0.8")),
+            # Une seule minute mesurée : écartée, comme une heure absente
+            ligne(14, Decimal("3.0"), Decimal("0.0167")),
+            # Aucune mesure
+            ligne(15, None, Decimal(0)),
         ]
     )
     gold = lire_gold(conn)
-    assert gold["heure"].iloc[0] == pd.Timestamp("2026-10-28 10:00", tz="UTC")
+    assert list(gold["heure"]) == [
+        pd.Timestamp("2026-10-28 10:00", tz="UTC"),
+        pd.Timestamp("2026-10-28 11:00", tz="UTC"),
+    ]
     assert gold["moyenne_kw"].dtype == float
-    assert gold["consommation_kwh_brute"].iloc[0] == 10.5
-    # Une heure sans mesure garde une consommation vide, comme dans le jeu CSV
-    assert pd.isna(gold["consommation_kwh_brute"].iloc[1])
+    # Comme dans le jeu CSV, la consommation brute est celle de l'heure
+    assert list(gold["consommation_kwh_brute"]) == [10.5, 8.0]
 
 
 def test_fusionner_ne_garde_que_gold_apres_le_csv():
@@ -156,12 +160,78 @@ def test_decouper_les_7_derniers_jours_sont_l_examen():
     assert (df["jeu"] == "entrainement").sum() > (df["jeu"] == "validation").sum()
 
 
-def test_pas_assez_de_gold_ne_reentraine_rien(client):
-    # 5 jours de mesures : moins que l'examen (7 jours) plus un jour
-    assert len(reentrainer(faux_csv(), faux_gold(jours=5), "abc")) == 0
-    assert len(reentrainer(faux_csv(), faux_gold().iloc[0:0], "abc")) == 0
-    assert len(client.search_registered_models()) == 0
-    assert GOLD_MIN == pd.Timedelta(days=8)
+def test_toutes_les_heures_de_l_examen_ont_leur_reference():
+    """Avec 14 jours de gold, la semaine précédente de chaque heure de l'examen existe
+    dans gold : l'examen porte sur 7 jours, pas sur un seul."""
+    df = jeu_pret()
+    examen = df[df["jeu"] == "test"]
+    assert examen[REFERENCE].notna().all()
+    assert examen["baseline_veille"].notna().all()
+    # Avec 8 jours, seul le dernier jour aurait sa référence
+    court = ajouter_baselines(decouper(fusionner(faux_csv(), faux_gold(jours=8))))
+    assert court.loc[court["jeu"] == "test", REFERENCE].notna().sum() < len(examen) / 4
+
+
+def test_pas_assez_de_gold_ne_reentraine_rien(monkeypatch):
+    def interdit(*args, **kwargs):
+        raise AssertionError("rien ne doit être enregistré")
+
+    monkeypatch.setattr(registre, "enregistrer", interdit)
+    assert GOLD_MIN == pd.Timedelta(days=14)
+    # 13 jours : la semaine d'avant l'examen serait incomplète
+    assert reentrainer(faux_csv(), faux_gold(jours=13), "abc") == []
+    assert reentrainer(faux_csv(), faux_gold().iloc[0:0], "abc") == []
+
+
+def test_reentrainement_complet_sans_mlflow(monkeypatch):
+    """Le réentraînement de bout en bout, avec un faux enregistrement : sans version en
+    production, les deux horizons sont enregistrés, avec la fin de leurs données."""
+    appels = []
+
+    def faux_enregistrer(
+        resultat, horizon, reglages, empreinte, final, fin_donnees=None
+    ):
+        appels.append((horizon, resultat, empreinte, final, fin_donnees))
+        return "1"
+
+    monkeypatch.setattr(registre, "enregistrer", faux_enregistrer)
+    monkeypatch.setattr(reentrainement, "charger_production", lambda horizon: None)
+    resultats = reentrainer(faux_csv(), faux_gold(), "abc")
+    assert [a[0] for a in appels] == [24, 168]
+    assert len(resultats) == 2
+    for _, r, empreinte, final, fin_donnees in appels:
+        assert r.bat_production is None
+        assert r.remplace_production
+        # Le modèle enregistré est réentraîné sur toutes les données
+        assert final is not None
+        assert fin_donnees == FIN_FAUX_GOLD
+        assert empreinte == "abc+gold:2025-01-14T23"
+        # Les scores du test sont ceux de l'examen : 7 jours, 2 sites, tous avec référence
+        assert r.meilleur in r.test.index
+        assert REFERENCE in r.test.index
+        assert r.heures_test == 2 * 7 * 24
+        assert r.sans_reference == 0
+
+
+def test_modele_refuse_n_est_pas_note_sur_l_examen(monkeypatch):
+    """Consommation qui se répète à l'identique chaque semaine : la référence est
+    parfaite. Le modèle est refusé sur la validation, sans calcul de test ni comparaison
+    avec la production."""
+    appels = []
+
+    def faux_enregistrer(*args, **kwargs):
+        appels.append(kwargs.get("fin_donnees"))
+
+    def comparaison_interdite(horizon):
+        raise AssertionError("inutile de comparer un modèle refusé")
+
+    monkeypatch.setattr(registre, "enregistrer", faux_enregistrer)
+    monkeypatch.setattr(reentrainement, "charger_production", comparaison_interdite)
+    resultats = reentrainer(faux_csv(bruit=0.0), faux_gold(bruit=0.0), "abc")
+    assert all(not r.bat_reference for r in resultats)
+    assert all(r.test.empty for r in resultats)
+    assert all(not r.remplace_production for r in resultats)
+    assert len(appels) == 2
 
 
 def test_premier_reentrainement_enregistre_sans_comparaison(client):
@@ -182,8 +252,9 @@ def test_premier_reentrainement_enregistre_sans_comparaison(client):
             registre.nom_modele(24), registre.ALIAS
         ).run_id
     )
-    # Le run garde de quels jeux vient le modèle
-    assert run.data.params["empreinte_jeu"] == "abc+gold:2025-01-12T23"
+    # Le run garde de quels jeux vient le modèle, et jusqu'à quelle heure
+    assert run.data.params["empreinte_jeu"] == "abc+gold:2025-01-14T23"
+    assert pd.Timestamp(run.data.params["fin_donnees"]) == FIN_FAUX_GOLD
     assert run.data.tags["bat_production"] == "sans_production"
 
 
@@ -208,10 +279,10 @@ def test_une_meilleure_version_prend_l_alias(client, monkeypatch):
         assert "test_production_WAPE" in run.data.metrics
 
 
-def test_garde_la_production_si_le_candidat_est_moins_bon(client, monkeypatch):
+def test_garde_la_production_si_le_candidat_est_moins_bon(monkeypatch):
     df = jeu_pret()
     moyennes = moyennes_par_site(df[df["jeu"] == "entrainement"])
-    r = entrainer_horizon(df, moyennes, 24)
+    r = entrainer_horizon(df, moyennes, 24, avec_test=False)
     bonne, moyennes_bonne = entrainer_modele_final(df, 24, r.meilleur)
     production = registre.ModeleProduction(bonne, moyennes_bonne, "bon/1")
     monkeypatch.setattr(
@@ -231,12 +302,51 @@ def test_garde_la_production_si_le_candidat_est_moins_bon(client, monkeypatch):
     )
 
 
-def test_candidat_et_production_notes_sur_les_memes_sites(monkeypatch):
-    """Un site que la production ne connaît pas (mis en service après elle) ne compte pas
-    dans la comparaison, pour ne pas fausser le score de l'un des deux."""
+def test_heures_deja_vues_par_la_production_ne_sont_pas_notees(monkeypatch):
+    """Réentraînement relancé dans la semaine : la production a déjà appris une partie
+    de l'examen. Seules les heures après la fin de ses données sont notées."""
     df = jeu_pret()
     moyennes = moyennes_par_site(df[df["jeu"] == "entrainement"])
-    r = entrainer_horizon(df, moyennes, 24)
+    r = entrainer_horizon(df, moyennes, 24, avec_test=False)
+    production = registre.ModeleProduction(
+        ModeleConstant(1.0), moyennes, "x/1", run_id="run-x"
+    )
+    monkeypatch.setattr(
+        reentrainement, "charger_production", lambda horizon: production
+    )
+    examen = df[df["jeu"] == "test"]
+
+    # Production entraînée avant l'examen : toutes ses heures comptent
+    avant = examen["heure"].min() - pd.Timedelta(days=1)
+    monkeypatch.setattr(registre, "fin_des_donnees", lambda run_id: avant)
+    tout = evaluer_sur_l_examen(df, r, 24)
+    assert tout.heures_test == len(examen)
+
+    # Relance en milieu de semaine : les 3 premiers jours, déjà vus, ne comptent pas
+    fin = examen["heure"].min() + pd.Timedelta(days=3)
+    monkeypatch.setattr(registre, "fin_des_donnees", lambda run_id: fin)
+    apres = evaluer_sur_l_examen(df, r, 24)
+    assert apres.heures_test == int((examen["heure"] > fin).sum())
+    assert 0 < apres.heures_test < tout.heures_test
+    # Ces heures écartées ne sont pas des heures « sans référence »
+    assert apres.sans_reference == 0
+
+    # Production qui a tout vu : rien à noter, elle est gardée
+    monkeypatch.setattr(
+        registre, "fin_des_donnees", lambda run_id: examen["heure"].max()
+    )
+    rien = evaluer_sur_l_examen(df, r, 24)
+    assert rien.bat_production is False
+    assert not rien.remplace_production
+
+
+def test_candidat_et_production_notes_sur_les_memes_sites(monkeypatch):
+    """Un site que la production ne connaît pas (mis en service après elle) ne compte pas
+    dans la comparaison, pour ne pas fausser le score de l'un des deux. Ses heures ne
+    sont pas non plus comptées comme « sans référence »."""
+    df = jeu_pret()
+    moyennes = moyennes_par_site(df[df["jeu"] == "entrainement"])
+    r = entrainer_horizon(df, moyennes, 24, avec_test=False)
     ancienne = moyennes.loc[["SITE001"]]
     production = registre.ModeleProduction(ModeleConstant(1.0), ancienne, "ancien/1")
     monkeypatch.setattr(
@@ -244,12 +354,14 @@ def test_candidat_et_production_notes_sur_les_memes_sites(monkeypatch):
     )
     evalue = evaluer_sur_l_examen(df, r, 24)
     assert list(evalue.par_site.index) == ["SITE001"]
+    assert evalue.heures_test == 7 * 24
+    assert evalue.sans_reference == 0
 
 
 def test_examen_trop_court_garde_la_production(monkeypatch):
     df = jeu_pret()
     moyennes = moyennes_par_site(df[df["jeu"] == "entrainement"])
-    r = entrainer_horizon(df, moyennes, 24)
+    r = entrainer_horizon(df, moyennes, 24, avec_test=False)
     monkeypatch.setattr(reentrainement, "MIN_HEURES_EXAMEN", 10**6)
     production = registre.ModeleProduction(ModeleConstant(), moyennes, "x/1")
     monkeypatch.setattr(
@@ -257,9 +369,20 @@ def test_examen_trop_court_garde_la_production(monkeypatch):
     )
     # Trop peu d'heures pour comparer à la production : on ne la remplace pas
     assert evaluer_sur_l_examen(df, r, 24).bat_production is False
-    # Sans production, il n'y a rien à garder
+
+
+def test_sans_production_un_examen_trop_court_n_empeche_pas_d_enregistrer(monkeypatch):
+    """Rien à comparer : le premier modèle qui bat la référence est enregistré, même si
+    l'examen est trop court pour être noté."""
+    df = jeu_pret()
+    moyennes = moyennes_par_site(df[df["jeu"] == "entrainement"])
+    r = entrainer_horizon(df, moyennes, 24, avec_test=False)
+    assert r.bat_reference
+    monkeypatch.setattr(reentrainement, "MIN_HEURES_EXAMEN", 10**6)
     monkeypatch.setattr(reentrainement, "charger_production", lambda horizon: None)
-    assert evaluer_sur_l_examen(df, r, 24).bat_production is None
+    evalue = evaluer_sur_l_examen(df, r, 24)
+    assert evalue.bat_production is None
+    assert evalue.remplace_production
 
 
 def test_main_exige_mlflow_et_l_empreinte(monkeypatch, tmp_path):
