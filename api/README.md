@@ -56,7 +56,7 @@ def decider(utilisateur: Annotated[Utilisateur, Depends(GESTIONNAIRE)]):
 
 Le test `test_toutes_les_routes_api_exigent_un_jeton` échoue si une route `/api` est ouverte sans jeton.
 
-**Entreprise de l'utilisateur** : le jeton ne dit pas à quelle entreprise (client) appartient l'utilisateur. L'API la lit dans `app.utilisateur`, grâce au `sub` du jeton. Cette ligne est écrite à la création du compte par l'API (`POST /api/utilisateurs`, SMARTOPS-84), qui rattache le nouveau compte à l'entreprise du gestionnaire qui le crée. L'API n'écrit jamais cette ligne à la connexion : un compte créé hors de l'API (par exemple dans la console Keycloak) reçoit un 403, car son entreprise est inconnue.
+**Entreprise de l'utilisateur** : le jeton ne dit pas à quelle entreprise (client) appartient l'utilisateur. L'API la lit dans `app.utilisateur`, grâce au `sub` du jeton. Cette ligne est écrite par l'API au démarrage pour les comptes de démonstration (`api/seed.py`), et à la main pour un autre compte (voir `infra/runner.md`, « Créer un compte »). La route de création de comptes par les gestionnaires (`POST /api/utilisateurs`, SMARTOPS-84) n'est pas dans le MVP. L'API n'écrit jamais cette ligne à la connexion : un compte créé hors de l'API (par exemple dans la console Keycloak) reçoit un 403, car son entreprise est inconnue.
 
 **Comptes de test** : se créent dans la console Keycloak (`http://localhost/auth/admin`), puis s'enregistrent dans `app.utilisateur` avec le même identifiant. Sans cette ligne, l'API refuse le compte (403). Un compte `*-SITE` doit aussi être rattaché à ses sites (`app.utilisateur_site`), sinon il ne voit aucun site. Marche à suivre : `infra/runner.md`, section « Créer un compte ».
 
@@ -180,10 +180,12 @@ Prévisions horaires d'un site (lues dans `gold.prediction`) pour les heures à 
     "pic_bas_kw": 440.0,
     "pic_haut_kw": 480.0,
     "calculee_le": "2026-10-26T14:05:00Z",
-    "version_modele": "rf-3"
+    "version_modele": "prevision-conso-24h/3"
   }
 ]
 ```
+
+`version_modele` est la version MLflow qui a fait la prévision (`<modèle>/<version>`, voir `model/README.md`).
 
 La fourchette de consommation (`consommation_basse_kwh`, `consommation_haute_kwh`) et celle du pic (`pic_bas_kw`, `pic_haut_kw`) valent `null` si le modèle ne les donne pas. `pic_prevu_kw` aussi : `pic_prevu` est alors faux. Le modèle met `pic_prevu` à vrai quand `pic_prevu_kw` atteint le seuil du site (`app.site.seuil_alerte_pct`), pas un 90 % fixe.
 
