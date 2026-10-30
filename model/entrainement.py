@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.linear_model import Ridge
 from sklearn.pipeline import Pipeline, make_pipeline
 
+from common.logs import configure_logging
 from model.baseline import (
     BASELINES,
     ajouter_baselines,
@@ -41,6 +43,8 @@ from model.features import (
     moyennes_par_site,
     noms_variables,
 )
+
+logger = logging.getLogger(__name__)
 
 # Les deux sortes de modèles comparés
 Modele: TypeAlias = Pipeline | RandomForestRegressor
@@ -73,7 +77,9 @@ def garder_sites_connus(df: pd.DataFrame, moyennes: pd.Series) -> pd.DataFrame:
     le modèle ne peut pas les prévoir, mais ils ne doivent pas bloquer les autres."""
     inconnus = sorted(set(df["id_site"]) - set(moyennes.index))
     if inconnus:
-        print(f"Sites sans heure mesurée dans l'entraînement, écartés : {inconnus}")
+        logger.warning(
+            "sites sans heure mesurée dans l'entraînement, écartés : %s", inconnus
+        )
     return df[df["id_site"].isin(moyennes.index)]
 
 
@@ -175,11 +181,27 @@ class Resultat:
     heures_test: int
     variables_incompletes: int
     sans_reference: int
+    # Réentraînement hebdomadaire (model.reentrainement) : le modèle retenu fait mieux
+    # que la version en production sur l'examen. None quand rien n'est comparé (premier
+    # entraînement, ou aucune version en production).
+    bat_production: bool | None = None
+
+    @property
+    def remplace_production(self) -> bool:
+        """Le modèle est enregistré et prend l'alias production : il bat la référence
+        sur la validation, et la version en production sur l'examen s'il y en a une."""
+        return self.bat_reference and self.bat_production is not False
 
 
-def entrainer_horizon(df: pd.DataFrame, moyennes: pd.Series, horizon: int) -> Resultat:
+def entrainer_horizon(
+    df: pd.DataFrame, moyennes: pd.Series, horizon: int, avec_test: bool = True
+) -> Resultat:
     """Entraîne les deux modèles pour un horizon, choisit le meilleur sur la
-    validation, puis le mesure une seule fois sur le test."""
+    validation, puis le mesure une seule fois sur le test.
+
+    Sans ``avec_test``, le test n'est ni calculé ni noté. Le réentraînement
+    (``model.reentrainement``) mesure le modèle sur son propre examen : ces scores
+    seraient calculés pour rien."""
     df = garder_sites_connus(df, moyennes)
     lignes = preparer(df, moyennes, horizon)
     noms = noms_variables(horizon, moyennes)
@@ -189,6 +211,21 @@ def entrainer_horizon(df: pd.DataFrame, moyennes: pd.Series, horizon: int) -> Re
     validation = comparer(d, [*refs, *modeles])
     # Choix sur la validation seulement, d'après le WAPE (comme le seuil de la 30)
     meilleur = str(validation.loc[list(modeles), "WAPE_%"].idxmin())
+    bat_reference = bool(
+        validation.loc[meilleur, "WAPE_%"] < validation.loc[REFERENCE, "WAPE_%"]
+    )
+    if not avec_test:
+        return Resultat(
+            meilleur=meilleur,
+            validation=validation,
+            test=pd.DataFrame(columns=validation.columns),
+            par_site=pd.DataFrame(),
+            bat_reference=bat_reference,
+            bat_reference_test=False,
+            heures_test=0,
+            variables_incompletes=0,
+            sans_reference=0,
+        )
     retenu = {meilleur: modeles[meilleur]}
     # Prévisions du test calculées une fois, pour les scores globaux et par site
     d = ajouter_previsions(lignes, retenu, noms, moyennes, "test", horizon)
@@ -199,9 +236,7 @@ def entrainer_horizon(df: pd.DataFrame, moyennes: pd.Series, horizon: int) -> Re
         validation=validation,
         test=test,
         par_site=wape_par_site(d, [REFERENCE, meilleur]),
-        bat_reference=bool(
-            validation.loc[meilleur, "WAPE_%"] < validation.loc[REFERENCE, "WAPE_%"]
-        ),
+        bat_reference=bat_reference,
         bat_reference_test=bool(
             test.loc[meilleur, "WAPE_%"] < test.loc[REFERENCE, "WAPE_%"]
         ),
@@ -238,29 +273,102 @@ def lire_empreinte(chemin: Path) -> str | None:
         return None
 
 
-def afficher(horizon: int, r: Resultat) -> None:
-    print(f"===== horizon {horizon} h")
-    print("validation :")
-    print(r.validation.round(2))
-    print(f"modèle retenu : {r.meilleur}")
-    print(
-        f"test : {r.heures_test} heures mesurées, dont "
-        f"{r.variables_incompletes} avec une variable manquante (prévues), "
-        f"{r.sans_reference} sans référence (exclues de la comparaison)"
+def journaliser(horizon: int, r: Resultat) -> None:
+    """Écrit le résultat d'un horizon dans les logs (``common.logs``), visibles dans
+    Grafana. Le résumé est au niveau info, avec les scores en champs JSON. Les tableaux
+    complets sont au niveau debug (``LOG_LEVEL=DEBUG``). Sans score de test (modèle
+    refusé sur la validation au réentraînement), le résumé s'arrête à la validation."""
+    wape_validation = float(r.validation.loc[r.meilleur, "WAPE_%"])
+    champs = {
+        "horizon": horizon,
+        "modele_retenu": r.meilleur,
+        "wape_validation": wape_validation,
+        "wape_validation_reference": float(r.validation.loc[REFERENCE, "WAPE_%"]),
+    }
+    if r.test.empty:
+        logger.info(
+            "horizon %d h : modèle retenu %s, WAPE de %.2f %% sur la validation",
+            horizon,
+            r.meilleur,
+            wape_validation,
+            extra=champs,
+        )
+    else:
+        wape_test = float(r.test.loc[r.meilleur, "WAPE_%"])
+        champs["wape_test"] = wape_test
+        champs["wape_test_reference"] = float(r.test.loc[REFERENCE, "WAPE_%"])
+        if "production" in r.test.index:
+            champs["wape_test_production"] = float(r.test.loc["production", "WAPE_%"])
+        logger.info(
+            "horizon %d h : modèle retenu %s, WAPE de %.2f %% sur la validation "
+            "et de %.2f %% sur le test",
+            horizon,
+            r.meilleur,
+            wape_validation,
+            wape_test,
+            extra=champs,
+        )
+        logger.info(
+            "horizon %d h, test : %d heures mesurées, dont %d avec une variable "
+            "manquante (prévues), %d sans référence (exclues de la comparaison)",
+            horizon,
+            r.heures_test,
+            r.variables_incompletes,
+            r.sans_reference,
+        )
+        logger.debug("horizon %d h, test :\n%s", horizon, r.test.round(2).to_string())
+        logger.debug(
+            "horizon %d h, WAPE %% par site sur le test :\n%s",
+            horizon,
+            r.par_site.round(2).to_string(),
+        )
+    logger.debug(
+        "horizon %d h, validation :\n%s", horizon, r.validation.round(2).to_string()
     )
-    print(r.test.round(2))
-    print("WAPE % par site sur le test :")
-    print(r.par_site.round(2))
     if not r.bat_reference:
-        print(
-            f"ATTENTION : {r.meilleur} ne fait pas mieux que {REFERENCE} sur la "
-            "validation. Ce modèle ne sera pas enregistré."
+        logger.warning(
+            "horizon %d h : %s ne fait pas mieux que %s sur la validation. "
+            "Ce modèle ne sera pas enregistré.",
+            horizon,
+            r.meilleur,
+            REFERENCE,
         )
-    elif not r.bat_reference_test:
-        print(
-            f"ATTENTION : {r.meilleur} bat {REFERENCE} sur la validation mais pas sur "
-            "le test. Il sera enregistré : à vérifier avant de l'utiliser."
+    elif not r.bat_reference_test and not r.test.empty:
+        logger.warning(
+            "horizon %d h : %s bat %s sur la validation mais pas sur le test. "
+            "À vérifier avant de l'utiliser.",
+            horizon,
+            r.meilleur,
+            REFERENCE,
         )
+    if r.bat_production is False:
+        logger.info(
+            "horizon %d h : %s ne fait pas mieux que la version en production sur "
+            "l'examen, la version en production est gardée.",
+            horizon,
+            r.meilleur,
+        )
+
+
+def code_sortie(resultats: list[Resultat]) -> int:
+    """Code de sortie de la commande : 1 si, pour un horizon, le modèle ne fait pas
+    mieux que la référence (règle de SMARTOPS-30), 0 sinon. Quand l'entraînement tourne
+    seul dans Docker, personne ne lit la console : un code non nul fait échouer le job,
+    et l'erreur est visible dans les logs.
+
+    Ne pas faire mieux que la version en production n'est pas une erreur : cette version
+    est simplement gardée."""
+    en_echec = [
+        horizon for horizon, r in zip(HORIZONS, resultats) if not r.bat_reference
+    ]
+    if en_echec:
+        logger.error(
+            "aucun modèle ne fait mieux que la référence %s pour l'horizon %s h",
+            REFERENCE,
+            ", ".join(str(h) for h in en_echec),
+        )
+        return 1
+    return 0
 
 
 def main(argv: list[str] | None = None) -> list[Resultat]:
@@ -291,27 +399,41 @@ def main(argv: list[str] | None = None) -> list[Resultat]:
     for horizon in HORIZONS:
         r = entrainer_horizon(df, moyennes, horizon)
         resultats.append(r)
-        afficher(horizon, r)
+        journaliser(horizon, r)
         if empreinte is None:
             continue
         # Importé ici : sans MLflow, le reste du module n'en a pas besoin
         from model import registre
 
         final = (
-            entrainer_modele_final(df, horizon, r.meilleur) if r.bat_reference else None
+            entrainer_modele_final(df, horizon, r.meilleur)
+            if r.remplace_production
+            else None
         )
         version = registre.enregistrer(
-            r, horizon, REGLAGES[r.meilleur], empreinte, final
+            r,
+            horizon,
+            REGLAGES[r.meilleur],
+            empreinte,
+            final,
+            fin_donnees=df["heure"].max(),
         )
         if version:
-            print(
-                f"enregistré dans MLflow : {registre.nom_modele(horizon)}, "
-                f"version {version} (alias {registre.ALIAS})"
+            logger.info(
+                "enregistré dans MLflow : %s, version %s (alias %s)",
+                registre.nom_modele(horizon),
+                version,
+                registre.ALIAS,
             )
         else:
-            print("run enregistré dans MLflow, sans nouvelle version du modèle")
+            logger.info(
+                "horizon %d h : run enregistré dans MLflow, sans nouvelle version "
+                "du modèle",
+                horizon,
+            )
     return resultats
 
 
 if __name__ == "__main__":
-    main()
+    configure_logging("model")
+    raise SystemExit(code_sortie(main()))

@@ -1,0 +1,8 @@
+# Planning du réentraînement (format cron : minute heure jour mois jour-de-semaine commande)
+# Le script s'exécute depuis /app, l'heure est celle du conteneur (UTC par défaut).
+#
+# Chaque dimanche à 02:30 : réentraînement sur le jeu CSV et les mesures de gold, nouvelle
+# version du modèle en production seulement si elle fait mieux (SMARTOPS-34,
+# model/reentrainement.py). Le code de sortie est non nul si le modèle ne fait pas mieux
+# que la référence : l'erreur est visible dans les logs, comme pour les autres jobs.
+30 2 * * 0 python -m model.reentrainement
