@@ -2,6 +2,14 @@
 # des tabulations : <id de la règle>	<IGNORE|WARN|FAIL>	<nom, libre>
 # Les ids figurent dans le rapport (artefact zap-report). Sans ligne, une règle est en WARN.
 # Chaque IGNORE doit être justifié par un commentaire, comme dans .trivyignore.
+# Les lignes OUTOFSCOPE écartent une règle sur les seules URL du motif (regex) :
+#   <id de la règle>	OUTOFSCOPE	<regex des URL>
+
+# Path Traversal (6), faux positif sur ?id_site= de /api/alertes : ZAP compare la
+# valeur « alertes » (nom du fichier de l'URL, 200 et liste vide) à un nom aléatoire
+# de 38 caractères, refusé en 422 par le motif MOTIF_ID_SITE (20 au plus). id_site
+# n'ouvre aucun fichier : c'est un paramètre lié de la requête SQL.
+6	OUTOFSCOPE	.*/api/alertes\?(.*&)?id_site=.*
 
 # --- FAIL : failles qui ne doivent jamais apparaître. Ces règles ne se déclenchent que
 # dans le scan actif de l'API. Le baseline du front est passif, il ne peut pas les
