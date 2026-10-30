@@ -4,16 +4,27 @@ Plateforme MVP d'optimisation énergétique : collecte des mesures de 7 sites, p
 
 ## Structure
 
-| Dossier   | Contenu                                         |
-|-----------|-------------------------------------------------|
-| `api/`    | API métier (Python, FastAPI)                    |
-| `model/`  | Service de prédiction (FastAPI, scikit-learn, MLflow) |
-| `etl/`    | Chargement et nettoyage des données (pandas)    |
-| `common/` | Code Python partagé (schémas, accès base, config) |
-| `front/`  | Tableau de bord (Vue 3)                         |
-| `db/`     | Scripts SQL d'initialisation                    |
-| `backup/` | Sauvegarde nocturne chiffrée des bases (restic) |
-| `infra/`  | Docker, CI, déploiement, stockage Azure des sauvegardes (`infra/terraform/`) |
+| Dossier   | Contenu | Documentation |
+|-----------|---------|---------------|
+| `api/`    | API métier (Python, FastAPI) : mesures, prévisions, alertes, recommandations, actions du dashboard | [`api/README.md`](api/README.md), Swagger sur `/api/docs` |
+| `model/`  | Modèle de prévision (scikit-learn, MLflow) : jeu d'entraînement, entraînement, prévisions chaque heure, réentraînement chaque semaine. Ce sont des jobs planifiés, pas un service web : les prévisions sont écrites dans `gold.prediction` et servies par l'API | [`model/README.md`](model/README.md) |
+| `etl/`    | Collecte des mesures de l'API Mock et transformation bronze → silver → gold (Python, Pydantic, fonctions SQL) | [`etl/README.md`](etl/README.md) |
+| `common/` | Code Python partagé (configuration, accès base, logs) | |
+| `front/`  | Tableau de bord (Vue 3) | [`front/README.md`](front/README.md) |
+| `db/`     | Scripts SQL : schémas, comptes, fonctions de calcul de gold, tests SQL (`db/tests/`), scripts de démo (`db/demo/`) | section [Base de données](#base-de-données) |
+| `backup/` | Sauvegarde nocturne chiffrée des bases (restic) | section [Sauvegarde](#sauvegarde-restic) |
+| `infra/`  | Traefik, Keycloak, supervision, déploiement sur la VM, stockage Azure des sauvegardes (`infra/terraform/`) | [`infra/runner.md`](infra/runner.md), [`infra/terraform/README.md`](infra/terraform/README.md) |
+| `data/`   | Historique CSV du sujet, versionné par DVC (seul `data/raw.dvc` est dans Git) | [`model/README.md`](model/README.md) |
+| `.github/workflows/` | CI/CD (GitHub Actions) | section [CI](#ci-github-actions) |
+
+## Livrables et documentation
+
+| Livrable | Où le trouver |
+|---|---|
+| Pipelines CI/CD et intégration continue | `.github/workflows/`, sections [Hooks pre-commit](#hooks-pre-commit) et [CI](#ci-github-actions) ci-dessous, déroulé du déploiement dans [`infra/runner.md`](infra/runner.md) |
+| Application déployée | VM de l'école, en dev et en prod : [`infra/runner.md`](infra/runner.md). Stockage des sauvegardes : [`infra/terraform/README.md`](infra/terraform/README.md) |
+| Application d'analyse et interface | ETL : [`etl/README.md`](etl/README.md). API : [`api/README.md`](api/README.md). Dashboard : [`front/README.md`](front/README.md). Indicateurs métier : section [Supervision](#supervision-prometheus-grafana-loki) |
+| Modèle, automatisation et pilotage | [`model/README.md`](model/README.md), section [Démo](#démo--simuler-un-pic-de-consommation) |
 
 ## Lancer le projet
 
@@ -22,8 +33,8 @@ Prérequis : Git, Docker et Docker Compose.
 ```bash
 git clone <url-du-depot>
 cd projet_piscine_G2
-cp .env.example .env      # PowerShell : Copy-Item .env.example .env
-docker compose up --build
+cp env.example .env      # PowerShell : Copy-Item env.example .env
+docker compose -f compose-local.yml up -d --build
 ```
 
 Tout passe par Traefik sur `http://localhost` : le dashboard, l'API (`/api`, Swagger sur `/api/docs`) et Keycloak (`/auth`, console d'administration sur `/auth/admin` avec `KEYCLOAK_ADMIN` / `KEYCLOAK_ADMIN_PASSWORD`). Keycloak est à la même adresse que sur la VM : l'émetteur des jetons (`iss`) est donc le même pour le navigateur et pour l'API.
@@ -108,20 +119,43 @@ docker compose -f compose-local.yml exec -T db psql -v ON_ERROR_STOP=1 -U enervi
 
 Démarrée avec le reste de la stack (`docker compose -f compose-local.yml up -d`), environ 1 Go de mémoire en plus.
 
-Grafana : http://localhost/grafana (compte `admin`, mot de passe `GRAFANA_ADMIN_PASSWORD` du `.env`). Le tableau de bord **EnerVision : socle** montre :
+Grafana : http://localhost/grafana (compte `admin`, mot de passe `GRAFANA_ADMIN_PASSWORD` du `.env`). Deux tableaux de bord sont chargés depuis le dépôt.
+
+| Composant | Rôle | Configuration |
+|---|---|---|
+| Prometheus | collecte les métriques (Traefik, API, PostgreSQL), conservées 15 jours | `infra/monitoring/prometheus/` |
+| postgres-exporter | statistiques de PostgreSQL et totaux du tableau métier, via le compte `monitoring` (rôle `pg_monitor`). Ce compte ne lit aucune mesure : seulement la vue d'agrégats `gold.supervision_metier` | `db/06_roles.sql`, `db/19_supervision_metier.sql`, `infra/monitoring/postgres-exporter/` |
+| Alloy | lit les logs des conteneurs EnerVision et les envoie à Loki | `infra/monitoring/alloy/` |
+| Loki | stocke les logs, conservés 7 jours | `infra/monitoring/loki/` |
+| Grafana | tableaux de bord, chargés depuis le dépôt à chaque démarrage | `infra/monitoring/grafana/` |
+
+### Tableau de bord EnerVision : socle
+
+Il montre :
 
 - les requêtes, erreurs 5xx et temps de réponse de chaque service routé par Traefik ;
 - le détail par route de l'API ;
 - l'état de PostgreSQL (connexion, taille, connexions) ;
 - les logs de tous les conteneurs EnerVision, filtrables par service et par niveau.
 
-| Composant | Rôle | Configuration |
+### Tableau de bord EnerVision : métier
+
+Il suit la collecte, les prévisions et les alertes, sans ouvrir la base. Les valeurs viennent de la vue `gold.supervision_metier` (`db/19_supervision_metier.sql`, testée par `db/tests/test_supervision_metier.sql`), lue par postgres-exporter avec la requête de `infra/monitoring/postgres-exporter/queries.yaml`. Chaque colonne devient une métrique Prometheus `enervision_*`.
+
+| Panneau | Ce qu'il montre | Métrique |
 |---|---|---|
-| Prometheus | collecte les métriques (Traefik, API, PostgreSQL), conservées 15 jours | `infra/monitoring/prometheus/` |
-| postgres-exporter | statistiques de PostgreSQL, via le compte `monitoring` (rôle `pg_monitor`, aucune donnée métier) | `db/06_roles.sql` |
-| Alloy | lit les logs des conteneurs EnerVision et les envoie à Loki | `infra/monitoring/alloy/` |
-| Loki | stocke les logs, conservés 7 jours | `infra/monitoring/loki/` |
-| Grafana | tableaux de bord, chargés depuis le dépôt à chaque démarrage | `infra/monitoring/grafana/` |
+| Mesures collectées | Mesures enregistrées dans bronze depuis 24 h, sites actifs | `enervision_mesures_collectees` |
+| Dernière collecte | Heure du dernier enregistrement dans bronze. Une valeur qui vieillit veut dire que la collecte est arrêtée | `enervision_derniere_collecte_epoch` |
+| Taux d'imputation | Part des minutes imputées sur les heures complètes des dernières 24 h. Orange dès 10 %, rouge dès 30 % | `enervision_taux_imputation_pct` |
+| Puissance du parc | Somme des puissances des sites actifs dont la dernière mesure a moins de 5 minutes | `enervision_puissance_kw` |
+| Prévisions écrites | Lignes de `gold.prediction` | `enervision_previsions_ecrites` |
+| Dernier calcul | Heure de la dernière prévision. Elle doit avancer chaque heure | `enervision_dernier_calcul_epoch` |
+| Écart prévu / réel | 100 × \|prévu − réel\| / réel sur les heures complètes des dernières 24 h. C'est l'erreur du modèle en production (voir [`model/README.md`](model/README.md), « Surveillance en production ») | `enervision_ecart_prevu_reel_pct` |
+| Alertes en cours | Alertes ouvertes des sites actifs | `enervision_alertes_en_cours` |
+
+Aucune règle d'alerte n'est configurée dans Prometheus ni dans Grafana : les tableaux de bord se lisent, ils ne préviennent pas. Les alertes de supervision (collecte arrêtée, disque, sauvegarde, dérive du modèle) sont l'objet de SMARTOPS-82.
+
+### Logs et métriques
 
 - L'API écrit ses logs en JSON avec `common/logs.py`. Chaque service Python doit appeler `configure_logging("nom-du-service")` au démarrage, plutôt que `logging.basicConfig` : sinon ses logs restent en texte et Grafana ne peut pas les filtrer par niveau.
 - L'API expose ses métriques sur `/metrics`, hors de `/api` : Traefik ne les publie pas, seul Prometheus les lit.
@@ -217,10 +251,46 @@ Pour la consulter sur GitHub, ouvrir le workflow `pre-commit` de la PR : le tabl
 
 Une vulnérabilité sans correctif disponible peut être acceptée **temporairement** dans `.trivyignore`, avec une justification et une date d'expiration (`exp:`).
 
+Les images tournent sans root : uid 1000 pour api, etl, model et backup, utilisateur `nginx` (uid 101) pour le front, qui écoute donc sur le port 8080 (règle Trivy DS-0002). Le scan de configuration de `security.yml` ne porte que sur `infra/terraform/` : les Dockerfile ne passent pas par ce scan.
+
+### Déploiement et scan de l'application déployée
+
+Le workflow `deploy.yml` relance les trois contrôles ci-dessus (`pre-commit.yml`, `security.yml`, `images.yml`), puis déploie sur la VM les images testées et publiées sur GHCR. Il se lance sur un push sur `main` (prod) ou à la main (dev, depuis `develop`). Le déroulé complet est dans [`infra/runner.md`](infra/runner.md).
+
+Après un déploiement de dev, le job `zap` scanne l'application qui tourne avec OWASP ZAP (DAST) : scan passif du front, puis scan actif de l'API à partir de son contrat OpenAPI, avec un compte de démonstration en lecture seule. La prod n'est jamais scannée. Les alertes s'affichent dans le résumé du run (`infra/ci/zap_summary.py`). Une faille classée `FAIL` (injection SQL, XSS, traversée de chemin…) fait échouer le job `zap`, jamais le déploiement. Fonctionnement, rapports (artefact `zap-report`) et réglage des règles (`.zap/rules.tsv`) : [`infra/runner.md`](infra/runner.md#scan-zap-dev).
+
+### Workflows lancés à la main
+
+| Workflow | Rôle | Documentation |
+|---|---|---|
+| `deploy.yml` (Deploy) | Déployer `develop` sur dev. `main` est déployé en prod à chaque push | [`infra/runner.md`](infra/runner.md) |
+| `dataset.yml` (Dataset) | Construire le jeu d'entraînement sur la VM, puis entraîner et enregistrer le modèle dans MLflow | [`model/README.md`](model/README.md) |
+| `demo.yml` (Démo) | Simuler un pic de consommation sur dev | section [Démo](#démo--simuler-un-pic-de-consommation) |
+| `azure-storage-check.yml` (Azure storage check) | Vérifier que la VM peut écrire dans le stockage Azure des sauvegardes | [`infra/terraform/README.md`](infra/terraform/README.md) |
+
+Aucun de ces workflows ne se déclenche sur une pull request : ils tournent sur le runner de la VM, et le dépôt est public (voir [`infra/runner.md`](infra/runner.md), « Limite connue »).
+
+## Démo : simuler un pic de consommation
+
+L'API Mock ne produit pas de pic à la demande. Pour montrer la chaîne complète (mesure, alerte, recommandation, prise en compte), les scripts de `db/demo/` font monter les mesures d'un site au-dessus de son seuil. Ils tournent sur dev seulement, avec le workflow **Démo** (Actions → Démo → Run workflow, branche `develop`).
+
+| Action | Script | Effet |
+|---|---|---|
+| `pic` | `db/demo/pic.sql` | Pendant `minutes` minutes (5 à 180), chaque mesure collectée du `site` choisi arrive en bronze à `charge` fois sa capacité (1.15 = 115 %). Un trigger temporaire remplace la consommation au moment où la mesure arrive : la collecte continue normalement |
+| `reset` | `db/demo/reset.sql` | Retire les prises en compte et les décisions des alertes en cours, sans arrêter le pic, pour refaire la démonstration |
+| `fin_pic` | `db/demo/fin_pic.sql` | Arrête le pic et retire le trigger |
+
+L'ETL fait le reste, sans code propre à la démo : silver, gold, l'alerte de dépassement après 3 minutes au-dessus du seuil, puis sa recommandation. L'alerte apparaît 4 à 5 minutes après le lancement et se ferme 3 minutes après la fin du pic. Lancer `pic` 5 minutes avant de montrer le dashboard.
+
 ## Règles de contribution
 
-- `main` et `develop` sont protégées : aucun commit direct (bloqué par pre-commit).
-- Une branche par ticket Jira : `feature/EV-12-description-courte`.
-- Les messages de commit citent la clé Jira : `EV-12: ajoute l'import CSV`.
-- Chaque pull request demande **2 relectures** avant le merge.
-- Aucun secret dans le dépôt : utiliser `.env` (ignoré par Git).
+Le travail est suivi dans Jira (projet `SMARTOPS`). Un ticket est terminé quand il respecte la [Definition of Done](https://enervisionproject.atlassian.net/wiki/spaces/ENERVISION/pages/1998851).
+
+- `main` et `develop` sont protégées. Aucun commit direct : le hook `no-commit-to-branch` le bloque.
+- Une branche par ticket, créée depuis `develop` à jour. Son nom est celui que propose Jira : `EADL_2025_RENNES_G2/<numéro>-<titre-du-ticket>`, par exemple `EADL_2025_RENNES_G2/38-endpoints-mesures-et-consommation`.
+- Chaque message de commit commence par la clé du ticket : `SMARTOPS-38: contrôle la période de consommation`.
+- Une pull request par ticket, vers `develop`. Elle est fusionnée quand elle est relue et approuvée par **1 personne** et que la CI passe.
+- La documentation change dans la même pull request que le code : README du service, Swagger, et page Confluence si besoin.
+- Un script de `db/` doit pouvoir être rejoué (voir [Base de données](#base-de-données)).
+- `main` reçoit `develop` par une pull request, ce qui déploie la prod.
+- Aucun secret dans le dépôt : utiliser `.env` (ignoré par Git) en local, et les secrets GitHub pour la VM.
