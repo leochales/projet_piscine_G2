@@ -37,6 +37,11 @@ COPY common/ ./common/
 RUN if [ -f etl/requirements.txt ]; then pip install --no-cache-dir -r etl/requirements.txt; fi \
     && pip uninstall -y pip
 
+# Utilisateur sans privilèges (uid 1000, comme l'image backup) : le code reste à root,
+# en lecture seule pour l'ETL
+RUN useradd --uid 1000 --user-group --create-home --shell /usr/sbin/nologin app
+USER 1000:1000
+
 # Planning : etl/crontab (modifiable sans toucher à ce Dockerfile)
 # ETL_ENABLED=false : le conteneur reste démarré mais n'exécute aucun job
 # -passthrough-logs : les lignes JSON des jobs (common/logs.py) sortent telles

@@ -229,6 +229,15 @@ jobs:
           fi
           docker compose -f compose-prod.yml exec -T db bash /docker-entrypoint-initdb.d/tools/migrate.sh
 
+      # Les images du modèle tournent sous l'uid 1000 : les volumes créés avant, par root,
+      # lui sont rendus. Sans effet sur un volume qui lui appartient déjà.
+      - name: Rendre les volumes du modèle à l'uid 1000
+        run: |
+          docker compose -f compose-prod.yml run --rm --no-deps --user 0 --entrypoint chown \
+            prevision -R 1000:1000 /cache
+          docker compose -f compose-prod.yml run --rm --no-deps --user 0 --entrypoint chown \
+            dataset -R 1000:1000 /data/processed
+
       - name: Déployer
         run: docker compose -f compose-prod.yml up -d --no-build --pull never --remove-orphans
 

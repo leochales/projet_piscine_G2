@@ -14,6 +14,11 @@ COPY common/ ./common/
 RUN if [ -f api/requirements.txt ]; then pip install --no-cache-dir -r api/requirements.txt; fi \
     && pip uninstall -y pip
 
+# Utilisateur sans privilèges (uid 1000, comme l'image backup) : le code reste à root,
+# en lecture seule pour l'API
+RUN useradd --uid 1000 --user-group --create-home --shell /usr/sbin/nologin app
+USER 1000:1000
+
 EXPOSE 8000
 
 # Lance l'API si api/main.py existe, sinon le conteneur attend (projet pas encore initialisé)
