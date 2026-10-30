@@ -7,6 +7,10 @@ version du modèle ``prevision-conso-24h`` ou ``prevision-conso-168h``, avec les
 moyennes par site, et cette version reçoit l'alias ``production``. Sinon, le run reste
 pour la trace, sans nouvelle version.
 
+Au réentraînement hebdomadaire (SMARTOPS-34, ``model.reentrainement``), l'alias ne
+bouge que si la nouvelle version fait aussi mieux que celle qui est en production
+(``Resultat.remplace_production``).
+
 La génération des prévisions (SMARTOPS-33) charge la version ``production`` avec
 ``charger``.
 """
@@ -65,11 +69,18 @@ def metriques(tableau: pd.DataFrame, jeu: str) -> dict[str, float]:
 def description(resultat: Resultat) -> str:
     """Explique d'où viennent les scores du run, et quel modèle est enregistré : les
     deux ne sont pas entraînés sur les mêmes données."""
-    texte = (
-        f"Scores : {resultat.meilleur} entraîné sur le jeu d'entraînement, choisi sur "
-        "la validation et mesuré une seule fois sur le test. "
-    )
-    if resultat.bat_reference:
+    if resultat.test.empty:
+        # Réentraînement : modèle refusé sur la validation, jamais noté sur l'examen
+        texte = (
+            f"Scores : {resultat.meilleur} entraîné sur le jeu d'entraînement et "
+            "choisi sur la validation, sans score de test. "
+        )
+    else:
+        texte = (
+            f"Scores : {resultat.meilleur} entraîné sur le jeu d'entraînement, choisi "
+            "sur la validation et mesuré une seule fois sur le test. "
+        )
+    if resultat.remplace_production:
         texte += (
             "Modèle enregistré : le même, réentraîné sur toutes les données "
             "(entraînement, validation et test)."
@@ -77,6 +88,11 @@ def description(resultat: Resultat) -> str:
         if not resultat.bat_reference_test:
             texte += " ATTENTION : il ne bat pas la référence sur le test."
         return texte
+    if resultat.bat_reference:
+        return texte + (
+            "Aucun modèle enregistré : il ne fait pas mieux que la version en "
+            "production sur l'examen."
+        )
     return texte + (
         "Aucun modèle enregistré : il ne bat pas la référence sur la validation."
     )
@@ -88,10 +104,12 @@ def enregistrer(
     reglages: dict[str, Any],
     empreinte: str,
     final: tuple[Any, pd.Series] | None,
+    fin_donnees: pd.Timestamp | None = None,
 ) -> str | None:
     """Crée le run MLflow d'un horizon. Si le modèle bat la référence sur la
-    validation, enregistre le modèle final (réentraîné sur toutes les données) et ses
-    moyennes par site, et place l'alias ``production`` sur la nouvelle version.
+    validation (et la version en production sur l'examen, quand il y en a une),
+    enregistre le modèle final (réentraîné sur toutes les données) et ses moyennes
+    par site, et place l'alias ``production`` sur la nouvelle version.
     Renvoie le numéro de cette version, ou None si aucune version n'est créée."""
     mlflow.set_experiment(EXPERIENCE)
     with mlflow.start_run(run_name=f"prevision-{horizon}h"):
@@ -100,6 +118,13 @@ def enregistrer(
                 "horizon": horizon,
                 "modele": resultat.meilleur,
                 "empreinte_jeu": empreinte,
+                # Dernière heure des données du modèle : le réentraînement ne note la
+                # version en production que sur des heures qu'elle n'a pas vues
+                **(
+                    {}
+                    if fin_donnees is None
+                    else {"fin_donnees": fin_donnees.isoformat()}
+                ),
                 **{f"reglage_{cle}": valeur for cle, valeur in reglages.items()},
             }
         )
@@ -109,9 +134,16 @@ def enregistrer(
         )
         mlflow.set_tag("bat_reference", str(resultat.bat_reference).lower())
         mlflow.set_tag("bat_reference_test", str(resultat.bat_reference_test).lower())
+        # « sans_production » : aucune version à comparer (premier entraînement)
+        mlflow.set_tag(
+            "bat_production",
+            "sans_production"
+            if resultat.bat_production is None
+            else str(resultat.bat_production).lower(),
+        )
         # Description du run, affichée par l'interface de MLflow
         mlflow.set_tag("mlflow.note.content", description(resultat))
-        if not resultat.bat_reference or final is None:
+        if not resultat.remplace_production or final is None:
             return None
         modele, moyennes = final
         mlflow.log_dict({site: float(m) for site, m in moyennes.items()}, MOYENNES)
@@ -146,6 +178,9 @@ class ModeleProduction:
     # Nom et numéro de la version, par exemple « prevision-conso-24h/3 » : écrit dans
     # gold.prediction (version_modele) pour savoir quelle version a prévu chaque heure
     version: str
+    # Run MLflow de cette version : il garde la fin de ses données d'entraînement
+    # (``fin_des_donnees``). Vide pour une version fabriquée à la main, dans les tests.
+    run_id: str = ""
 
 
 def charger(horizon: int, cache: Path | None = None) -> ModeleProduction:
@@ -168,8 +203,23 @@ def charger(horizon: int, cache: Path | None = None) -> ModeleProduction:
         # Après le chargement : la version utilisée ne risque plus rien
         nettoyer(dossier)
     return ModeleProduction(
-        modele, pd.Series(moyennes, dtype=float), f"{nom}/{version.version}"
+        modele,
+        pd.Series(moyennes, dtype=float),
+        f"{nom}/{version.version}",
+        version.run_id,
     )
+
+
+def fin_des_donnees(run_id: str) -> pd.Timestamp:
+    """Dernière heure des données qui ont servi à entraîner la version d'un run
+    (paramètre ``fin_donnees``). Pour une version enregistrée avant ce paramètre, la date
+    du run : ses données ne peuvent pas être plus récentes. Le réentraînement n'évalue
+    une version en production que sur des heures après cette date, qu'elle n'a jamais vues."""
+    run = MlflowClient().get_run(run_id)
+    fin = run.data.params.get("fin_donnees")
+    if fin:
+        return pd.Timestamp(fin)
+    return pd.Timestamp(run.info.start_time, unit="ms", tz="UTC")
 
 
 def telecharger(nom: str, version: ModelVersion, cache: Path) -> Path:

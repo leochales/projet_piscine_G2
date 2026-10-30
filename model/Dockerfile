@@ -1,6 +1,7 @@
 # Modèle de prévision : jeu d'entraînement (python -m model.dataset), entraînement
-# (python -m model.entrainement), et prévisions horaires (service prevision : cron
-# supercronic, model/crontab). Contexte de build = racine du dépôt, pour embarquer
+# (python -m model.entrainement), prévisions horaires (service prevision : cron
+# supercronic, model/crontab) et réentraînement hebdomadaire (service reentrainement,
+# model/crontab-reentrainement). Contexte de build = racine du dépôt, pour embarquer
 # common/ (code partagé)
 
 # --- supercronic : début du bloc commun aux Dockerfiles qui lancent un cron (etl, backup, model) ---
@@ -39,6 +40,6 @@ COPY common/ ./common/
 RUN pip install --no-cache-dir -r model/requirements.txt \
     && pip uninstall -y pip
 
-# Par défaut : le jeu d'entraînement (service dataset). Les services entrainement et
-# prevision donnent leur propre commande dans compose
+# Par défaut : le jeu d'entraînement (service dataset). Les services entrainement,
+# prevision et reentrainement donnent leur propre commande dans compose
 CMD ["python", "-m", "model.dataset"]

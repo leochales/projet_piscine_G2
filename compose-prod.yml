@@ -303,6 +303,36 @@ services:
       - postgres_network
       - mlflow_network
 
+  # Réentraînement chaque semaine (SMARTOPS-34, model/crontab-reentrainement) : jeu du
+  # volume dataset_data plus mesures de gold. La nouvelle version prend l'alias production
+  # seulement si elle fait mieux que la référence et que la version en production.
+  # Tant que le workflow Dataset n'a pas construit le jeu, le job s'arrête en erreur.
+  reentrainement:
+    image: ${IMAGE_REPO:?IMAGE_REPO manquant}/enervision-model:${IMAGE_TAG:?IMAGE_TAG manquant}
+    build:
+      context: .
+      dockerfile: model/Dockerfile
+    restart: unless-stopped
+    command: ["supercronic", "-passthrough-logs", "model/crontab-reentrainement"]
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000/mlflow
+      DATASET_OUTPUT_DIR: /data/processed
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: model
+      POSTGRES_PASSWORD: ${MODEL_DB_PASSWORD}
+    volumes:
+      - dataset_data:/data/processed:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    networks:
+      - postgres_network
+      - mlflow_network
+
   front:
     image: ${IMAGE_REPO:?IMAGE_REPO manquant}/enervision-front:${IMAGE_TAG:?IMAGE_TAG manquant}
     build:
