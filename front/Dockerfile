@@ -18,6 +18,12 @@ FROM nginx:1.30-alpine
 ARG MAJ_SECURITE
 # hadolint ignore=DL3017
 RUN echo "Correctifs Alpine : ${MAJ_SECURITE:-sans identifiant}" && apk upgrade --no-cache
+# nginx sans root (utilisateur nginx de l'image) : PID dans /tmp, cache à lui, et port
+# 8080 (un port sous 1024 demanderait des droits root sur certains hôtes)
+RUN sed -i -e '/^user /d' -e 's#^pid .*#pid /tmp/nginx.pid;#' /etc/nginx/nginx.conf \
+    && chown -R nginx:nginx /var/cache/nginx
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
-EXPOSE 80
+# 101 : uid et gid de l'utilisateur nginx de l'image
+USER 101:101
+EXPOSE 8080

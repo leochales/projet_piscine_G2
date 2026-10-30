@@ -40,6 +40,15 @@ COPY common/ ./common/
 RUN pip install --no-cache-dir -r model/requirements.txt \
     && pip uninstall -y pip
 
+# Utilisateur sans privilèges (uid 1000, comme l'image backup). Les points de montage
+# des volumes (jeu d'entraînement, cache des modèles) lui appartiennent : un volume
+# neuf reprend ces droits. Les volumes créés avant par root sont rendus à l'uid 1000
+# par deploy.yml.
+RUN useradd --uid 1000 --user-group --create-home --shell /usr/sbin/nologin app \
+    && mkdir -p /data/processed /cache \
+    && chown 1000:1000 /data/processed /cache
+USER 1000:1000
+
 # Par défaut : le jeu d'entraînement (service dataset). Les services entrainement,
 # prevision et reentrainement donnent leur propre commande dans compose
 CMD ["python", "-m", "model.dataset"]

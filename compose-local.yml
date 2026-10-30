@@ -362,7 +362,7 @@ services:
       - traefik.http.routers.front.rule=PathPrefix(`/`)
       - traefik.http.routers.front.entrypoints=web
       - traefik.http.routers.front.middlewares=security-headers@file,front-csp@file
-      - traefik.http.services.front.loadbalancer.server.port=80
+      - traefik.http.services.front.loadbalancer.server.port=8080
     depends_on:
       - api
     networks:

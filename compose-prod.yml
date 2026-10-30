@@ -345,7 +345,7 @@ services:
       - traefik.http.routers.enervision-${DEPLOY_ENV}-front.rule=Host(`${PUBLIC_HOST:?PUBLIC_HOST manquant}`) && PathPrefix(`/`)
       - traefik.http.routers.enervision-${DEPLOY_ENV}-front.entrypoints=https-${DEPLOY_ENV}
       - traefik.http.routers.enervision-${DEPLOY_ENV}-front.middlewares=security-headers@file,front-csp@file
-      - traefik.http.services.enervision-${DEPLOY_ENV}-front.loadbalancer.server.port=80
+      - traefik.http.services.enervision-${DEPLOY_ENV}-front.loadbalancer.server.port=8080
     depends_on:
       - api
     networks:
