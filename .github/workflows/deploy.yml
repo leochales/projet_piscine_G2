@@ -229,6 +229,15 @@ jobs:
           fi
           docker compose -f compose-prod.yml exec -T db bash /docker-entrypoint-initdb.d/tools/migrate.sh
 
+      # Les images du modèle tournent sous l'uid 1000 : les volumes créés avant, par root,
+      # lui sont rendus. Sans effet sur un volume qui lui appartient déjà.
+      - name: Rendre les volumes du modèle à l'uid 1000
+        run: |
+          docker compose -f compose-prod.yml run --rm --no-deps --user 0 --entrypoint chown \
+            prevision -R 1000:1000 /cache
+          docker compose -f compose-prod.yml run --rm --no-deps --user 0 --entrypoint chown \
+            dataset -R 1000:1000 /data/processed
+
       - name: Déployer
         run: docker compose -f compose-prod.yml up -d --no-build --pull never --remove-orphans
 
@@ -378,7 +387,8 @@ jobs:
     needs: deploy
     if: github.ref == 'refs/heads/develop'
     runs-on: [self-hosted, linux]
-    timeout-minutes: 40
+    # Les étapes de scan ont leur propre délai (10 et 35 min), plus court que celui du job
+    timeout-minutes: 50
     permissions:
       contents: read
     env:
@@ -401,15 +411,22 @@ jobs:
       # host-gateway : le nom public pointe vers la VM elle-même, comme le --resolve des
       # vérifications de santé (règle Host de Traefik).
       # -I : les alertes WARN n'échouent pas le job, seules les règles FAIL de .zap/rules.tsv.
+      # Le front se connecte à Keycloak dès le chargement (onLoad: 'login-required') : sans
+      # compte, le scan ne voit que index.html et la page de connexion. Un spider Ajax n'y
+      # changerait rien, et le front connecté est hors périmètre (SMARTOPS-111).
+      # tee garde le journal de ZAP pour le résumé, pipefail garde le code de sortie de ZAP.
+      # Délai par étape : si un scan dépasse, le résumé et l'artefact sortent quand même.
       - name: Scanner le front (baseline)
+        timeout-minutes: 10
         run: |
+          set -o pipefail
           docker run --rm \
             --add-host "${PUBLIC_HOST}:host-gateway" \
             -v "$ZAP_DIR:/zap/wrk:rw" \
             "$ZAP_IMAGE" \
             zap-baseline.py -t "https://${PUBLIC_HOST}:8443" \
               -c rules.tsv -I -m 5 \
-              -r baseline.html -J baseline.json
+              -r baseline.html -J baseline.json | tee "$ZAP_DIR/baseline.log"
 
       # Jeton demandé par le client enervision-zap (étape Keycloak du job deploy). Mot de
       # passe et secret passent par l'entrée standard de curl, jamais par ses arguments (ps).
@@ -417,6 +434,8 @@ jobs:
       # Indépendant du baseline : lancé même si celui-ci a échoué
       - name: Scanner l'API (authentifié)
         if: ${{ !cancelled() }}
+        # Jeton, import du contrat, scan actif de 20 min au plus, puis fin du scan passif
+        timeout-minutes: 35
         env:
           ZAP_CLIENT_SECRET: ${{ secrets.DEV_ZAP_CLIENT_SECRET }}
           SEED_PASSWORD: ${{ secrets.DEV_SEED_PASSWORD }}
@@ -441,9 +460,19 @@ jobs:
           }
           jeton=$(printf '%s' "$reponse" | python3 -c 'import json, sys; print(json.load(sys.stdin)["access_token"])')
           echo "::add-mask::$jeton"
+          # L'API doit accepter le jeton, sinon le scan ne verrait que des 401 et le job
+          # resterait vert. Le jeton passe par l'entrée standard de curl, jamais par ses arguments.
+          code=$(printf 'Authorization: Bearer %s\n' "$jeton" | curl -sk -o /dev/null \
+                 -w '%{http_code}' --resolve "${PUBLIC_HOST}:8443:127.0.0.1" -H @- \
+                 "https://${PUBLIC_HOST}:8443/api/moi") || code=000
+          if [ "$code" != 200 ]; then
+            echo "::error::L'API refuse le jeton du scan (GET /api/moi : $code au lieu de 200). Compte consult.client@demo.test absent de l'API, ou audience enervision-api manquante au client enervision-zap ?"
+            exit 1
+          fi
           export ZAP_AUTH_HEADER_VALUE="Bearer $jeton"
           export ZAP_AUTH_HEADER_SITE="$PUBLIC_HOST"
           # Scan actif borné à 20 min : le jeton expire au bout de 30
+          set -o pipefail
           docker run --rm \
             --add-host "${PUBLIC_HOST}:host-gateway" \
             -e ZAP_AUTH_HEADER_VALUE -e ZAP_AUTH_HEADER_SITE \
@@ -452,8 +481,15 @@ jobs:
             zap-api-scan.py -t "https://${PUBLIC_HOST}:8443/api/openapi.json" -f openapi \
               -c rules.tsv -I \
               -z "-config scanner.maxScanDurationInMins=20" \
-              -r api.html -J api.json
+              -r api.html -J api.json | tee "$ZAP_DIR/api.log"
 
+      # Résumé des alertes dans la page du job, avec l'action de .zap/rules.tsv pour chacune
+      - name: Résumer les résultats ZAP
+        if: always()
+        run: python3 infra/ci/zap_summary.py "${ZAP_DIR:-$RUNNER_TEMP/zap}" .zap/rules.tsv >> "$GITHUB_STEP_SUMMARY"
+
+      # Les journaux de ZAP (*.log) ne sont pas publiés : le dépôt est public et le masquage
+      # de GitHub ne s'applique qu'aux logs du job, pas aux fichiers de l'artefact.
       - name: Publier les rapports ZAP
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -462,7 +498,7 @@ jobs:
           path: |
             ${{ runner.temp }}/zap/*.html
             ${{ runner.temp }}/zap/*.json
-          if-no-files-found: ignore
+          if-no-files-found: warn
 
   # GHCR est gratuit « pour l'instant » : on ne garde que les 20 dernières versions de
   # chaque image. Les versions sont communes à dev et prod : la purge ne tourne donc

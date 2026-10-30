@@ -88,15 +88,16 @@ Utiliser des mots de passe différents entre dev et prod. Les mots de passe des 
 4. **Vérifier les secrets** : toutes les variables et tous les secrets obligatoires, avant de toucher à la VM. Le job liste ceux qui manquent et s'arrête.
 5. **Récupérer les images** : `docker compose pull` des images du commit (connexion à GHCR avec le `GITHUB_TOKEN` du job, retirée juste après). La VM ne reconstruit rien : elle démarre exactement les images testées et scannées.
 6. **Migrer la base** : démarrage de Postgres, attente qu'il réponde (120 s au plus, sinon le déploiement s'arrête avec les logs de `db`), puis `db/tools/migrate.sh`, qui rejoue tous les scripts de `db/` sur la base existante : nouvelles tables, comptes, droits et mots de passe. Les scripts doivent pouvoir être rejoués sans effet (voir la section **Base de données** du README). Si un script échoue, les nouveaux conteneurs ne sont pas démarrés : l'ancienne version continue de tourner, sur une base **partiellement migrée** (les scripts précédents restent appliqués, chaque script annulant seulement ses propres changements). Le risque est faible tant que les scripts ne font qu'ajouter (tables, colonnes, droits) : l'ancienne version les ignore. Corriger le script et redéployer : la migration reprend depuis le début.
-7. **Déployer** : `up -d --no-build --remove-orphans`. Prometheus, Grafana, Loki, Alloy et postgres-exporter démarrent avec la stack. Leurs images (Docker Hub) sont téléchargées juste avant.
+7. **Déployer** : d'abord, les volumes du modèle (`modele_cache` et `dataset_data`) sont rendus à l'uid 1000, l'utilisateur des images du modèle, car ceux créés avant les images sans root appartiennent à root. Sans effet sur un volume qui lui appartient déjà. Puis `up -d --no-build --remove-orphans`. Prometheus, Grafana, Loki, Alloy et postgres-exporter démarrent avec la stack. Leurs images (Docker Hub) sont téléchargées juste avant.
 8. **Santé** : `https://<VM_IP>:<port>/api/health` pendant 60 s, envoyé à 127.0.0.1 par `curl --resolve` (les routes Traefik n'acceptent que `PUBLIC_HOST` : `https://localhost` reçoit un 404 sur la VM). En cas d'échec, le job affiche l'état des conteneurs et les logs de l'API. Le même contrôle interroge ensuite `/grafana/api/health` : s'il échoue, un avertissement est écrit et le déploiement continue.
 9. **Nettoyage** : images orphelines et anciennes versions de nos images qu'aucun conteneur n'utilise. Sur GHCR, seules les 20 dernières versions de chaque image sont conservées (job `purge`, lancé après le déploiement : il ne le retarde pas). Les versions étant communes à dev et prod, la purge ne tourne qu'aux déploiements de **prod** : un déploiement de dev ne peut pas supprimer la version qui tourne en prod.
+10. **Scan ZAP** (dev seulement, job `zap`) : OWASP ZAP scanne le front et l'API de l'environnement dev qui vient d'être déployé, sans retarder le déploiement. La prod n'est jamais scannée. Voir [Scan ZAP (dev)](#scan-zap-dev).
 
 Un seul déploiement à la fois par environnement. Pour **revenir en arrière** : rouvrir le run **Deploy** d'un commit précédent et relancer **uniquement le job Deploy** (icône ↻ du job). Les images de ce commit sont reprises sur GHCR telles quelles. Relancer tout le run reconstruirait les images. Au-delà des 20 dernières versions, faire un `git revert` sur la branche et redéployer.
 
 **Avertissement du navigateur** : le certificat est auto-signé. Pour le supprimer, importer `/home/github-runner/traefik-certs/cert.pem` comme autorité racine de confiance sur le poste (à refaire après chaque régénération).
 
-**Grafana** : `https://<VM_IP>:8443/grafana` en dev, `https://<VM_IP>/grafana` en prod. Compte `admin`, mot de passe `<ENV>_GRAFANA_ADMIN_PASSWORD`. Les tableaux de bord viennent du dépôt (`infra/monitoring/grafana/dashboards/`) et se rechargent au démarrage du conteneur. Aucun port de supervision n'est publié : l'accès passe par Traefik.
+**Grafana** : `https://<VM_IP>:8443/grafana` en dev, `https://<VM_IP>/grafana` en prod. Compte `admin`, mot de passe `<ENV>_GRAFANA_ADMIN_PASSWORD`. Les tableaux de bord viennent du dépôt (`infra/monitoring/grafana/dashboards/`) et se rechargent au démarrage du conteneur : **EnerVision : socle** (Traefik, API, PostgreSQL, logs) et **EnerVision : métier** (collecte, prévisions, écart prévu / réel, alertes), décrits dans la section « Supervision » du README. Aucun port de supervision n'est publié : l'accès passe par Traefik.
 
 ---
 
@@ -134,7 +135,7 @@ Pour une nouvelle version : modifier `data/raw/`, `dvc add data/raw`, commiter `
 
 **Sur la VM**, DVC n'est pas installé : `infra/dataset/pull.py` (bibliothèque standard de `python3`) lit le stockage directement sur le disque, dans le format de DVC. Chaque déploiement lance `pull.py --check`, qui vérifie sans rien copier que le stockage a la version de `data/raw.dvc` ; si elle manque, le déploiement continue avec un avertissement. Le workflow **Dataset** lance `pull.py`, qui copie cette version dans `data/raw` en vérifiant l'empreinte MD5 de chaque fichier, puis la monte en lecture seule dans le conteneur du jeu.
 
-**Construire le jeu** : Actions → **Dataset** → Run workflow, sur `develop` (dev) ou `main` (prod). Le workflow lance l'image `enervision-model` de la version déployée (même commit que l'API en service), avec le code et `data/raw.dvc` de ce commit. Le déploiement télécharge cette image et crée le conteneur du job sans le démarrer, pour que le nettoyage des images la garde : lancer d'abord **Deploy** si l'environnement n'est pas déployé. Le jeu et son rapport sont enregistrés dans le MLflow de l'environnement (expérience `jeu-entrainement`) et gardés dans le volume `dataset_data`. Le workflow entraîne ensuite le modèle sur ce jeu (service `entrainement`) et l'enregistre dans le même MLflow (expérience `prevision-consommation`, modèles `prevision-conso-24h` et `prevision-conso-168h`, alias `production`), voir `model/README.md`. Le service `prevision`, démarré avec la stack, utilise ces versions `production` pour écrire chaque heure les prévisions dans `gold.prediction` : tant qu'aucun modèle n'est enregistré, il n'écrit rien (avertissement dans ses logs).
+**Construire le jeu** : Actions → **Dataset** → Run workflow, sur `develop` (dev) ou `main` (prod). Le workflow lance l'image `enervision-model` de la version déployée (même commit que l'API en service), avec le code et `data/raw.dvc` de ce commit. Le déploiement télécharge cette image et crée le conteneur du job sans le démarrer, pour que le nettoyage des images la garde : lancer d'abord **Deploy** si l'environnement n'est pas déployé. Le jeu et son rapport sont enregistrés dans le MLflow de l'environnement (expérience `jeu-entrainement`) et gardés dans le volume `dataset_data`. Le workflow entraîne ensuite le modèle sur ce jeu (service `entrainement`) et l'enregistre dans le même MLflow (expérience `prevision-consommation`, modèles `prevision-conso-24h` et `prevision-conso-168h`, alias `production`), voir `model/README.md`. Le service `prevision`, démarré avec la stack, utilise ces versions `production` pour écrire chaque heure les prévisions dans `gold.prediction` : tant qu'aucun modèle n'est enregistré, il n'écrit rien (avertissement dans ses logs). Le service `reentrainement`, aussi démarré avec la stack, réentraîne le modèle chaque dimanche sur ce jeu et les mesures de gold, et ne déplace l'alias `production` que si la nouvelle version fait mieux que celle en place (voir `model/README.md`).
 
 **MLflow** tourne dans chaque environnement sur un réseau interne, sans route Traefik : son interface n'a pas d'authentification. Pour la consulter, ouvrir un tunnel SSH vers le conteneur :
 
@@ -143,6 +144,26 @@ ssh -L 5000:<ip-du-conteneur-mlflow>:5000 <admin>@<VM_IP>
 ```
 
 L'IP du conteneur s'obtient sur la VM avec `docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' enervision-prod-mlflow-1`, puis l'interface est sur http://localhost:5000/mlflow.
+
+---
+
+## Scan ZAP (dev)
+
+Après chaque déploiement de `develop`, le job `zap` scanne l'environnement dev avec OWASP ZAP (SMARTOPS-111 et SMARTOPS-112). Le déploiement ne l'attend pas : un échec du scan ne l'annule pas.
+
+* Baseline du front : analyse passive des en-têtes, des cookies et des fuites d'informations. Le front se connecte à Keycloak dès le chargement (`login-required`) : sans compte, le scan ne voit que `index.html` et la page de connexion. Le front connecté n'est pas scanné.
+* Scan actif de l'API : il lit `/api/openapi.json` et envoie le jeton du compte `consult.client@demo.test`. Ce compte est en lecture seule, donc les écritures du scan reçoivent des 403.
+* Avant le scan de l'API, le job appelle `/api/moi` avec le jeton. S'il ne reçoit pas un 200, il s'arrête avec un message d'erreur.
+
+Les résultats se lisent dans le résumé de l'exécution (onglet Summary). Chaque alerte y porte l'action de `.zap/rules.tsv`, et les alertes déjà ignorées sont en bas du tableau. Le rapport complet (HTML et JSON) est dans l'artefact `zap-report`. Les journaux de ZAP n'y sont pas, car l'artefact n'est pas masqué et le dépôt est public.
+
+Chaque alerte se règle dans `.zap/rules.tsv`, avec l'id de la règle donné par le résumé :
+
+| Action | Effet |
+|---|---|
+| `IGNORE` | L'alerte est écartée. Un commentaire doit justifier pourquoi. |
+| `WARN` | L'alerte est signalée, le job reste vert. C'est la valeur par défaut. |
+| `FAIL` | Le job `zap` échoue. Réservé aux failles qui ne doivent jamais apparaître. Ces règles ne concernent que le scan actif de l'API. |
 
 ---
 
@@ -159,6 +180,8 @@ Commandes à lancer depuis un compte administrateur, dans `/home/github-runner/a
 | Logs de la sauvegarde     | `docker compose -p enervision-<env> logs backup` |
 | Sauvegarder tout de suite | `docker compose -p enervision-<env> exec backup /app/backup.sh` |
 | Lister les sauvegardes    | `docker compose -p enervision-<env> exec backup restic snapshots` |
+| Simuler un pic (démo, dev seulement) | Actions → **Démo** → Run workflow (voir la section « Démo » du README) |
+| Lancer une prévision tout de suite | `docker compose -p enervision-<env> exec prevision python -m model.prevision` |
 
 Le runner **se met à jour tout seul**. Pour le réenregistrer (runner supprimé côté GitHub, changement de nom) : `./svc.sh stop`, `./svc.sh uninstall`, `./config.sh remove --token <TOKEN>`, puis reprendre l'étape 2 de l'installation. Après un redémarrage de la VM, le service et les conteneurs repartent seuls.
 
@@ -195,7 +218,7 @@ kcadm update clients/<id> -r enervision -s 'redirectUris=["https://<VM_IP>/*"]'
 
 ### Créer un compte (premier administrateur, comptes de test)
 
-Les comptes se créent dans Keycloak. En temps normal, ce sont les gestionnaires qui les créent depuis le dashboard (`POST /api/utilisateurs`, SMARTOPS-84). À la main, on passe par l'administration de Keycloak : la console (`http://localhost/auth/admin` en local, `https://<VM_IP>[:8443]/auth/admin` sur la VM) ou `kcadm.sh`.
+Les comptes se créent dans Keycloak. La création par les gestionnaires depuis le dashboard (SMARTOPS-84 et 86) n'est pas dans le MVP : en dehors des comptes de démonstration, on passe par l'administration de Keycloak, la console (`http://localhost/auth/admin` en local, `https://<VM_IP>[:8443]/auth/admin` sur la VM) ou `kcadm.sh`.
 
 **Comptes de démonstration** : un compte par rôle (liste dans le README, section « Comptes de démonstration »), créés par l'API à chaque démarrage (`api/seed.py`), en dev comme en prod, avec le mot de passe du secret `<ENV>_SEED_PASSWORD`. En prod, `admin@enervision.test`, qui voit tous les clients, n'est pas créé. Sans ce secret, l'API n'en crée pas. Un compte déjà enregistré n'est jamais modifié. Résultat dans les logs de l'API : `docker compose -p enervision-<env> logs api | grep -i seed`.
 

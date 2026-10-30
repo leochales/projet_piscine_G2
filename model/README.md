@@ -1,5 +1,115 @@
 # Modèle de prévision
 
+Le modèle prévoit la consommation horaire de chaque site, à 24 heures et à 7 jours, avec une fourchette et le pic de chaque heure. Les prévisions alimentent la page d'un site dans le dashboard et l'alerte « pic de consommation prévu ».
+
+## Vue d'ensemble
+
+```
+CSV historique (DVC) ─► jeu d'entraînement ─► entraînement ─► MLflow (versions, alias production)
+                                                                         │
+gold.consommation_horaire (ETL) ──────────────────────► prévision chaque heure (hh:05)
+          │                                                              │
+          └──► réentraînement chaque dimanche ─► nouvelle version        ▼
+               (alias déplacé seulement si meilleure)          gold.prediction, gold.alerte
+                                                                         │
+                                                                         ▼
+                                                  API : GET /api/sites/{id}/predictions ─► dashboard
+```
+
+| Étape | Commande | Quand | Section |
+|---|---|---|---|
+| Construire le jeu d'entraînement | `python -m model.dataset` | À la main, ou workflow **Dataset** sur la VM | [Jeu d'entraînement](#jeu-dentraînement-smartops-93) |
+| Mesurer la prévision de référence | `python -m model.baseline` | À la main | [Prévision de référence](#prévision-de-référence-smartops-30) |
+| Entraîner, comparer, enregistrer dans MLflow | `python -m model.entrainement` | À la main, ou workflow **Dataset** juste après le jeu | [Entraînement](#entraînement-smartops-31), [MLflow](#enregistrement-dans-mlflow-smartops-32) |
+| Écrire les prévisions et l'alerte de pic prévu | `python -m model.prevision` | Chaque heure à hh:05 (service `prevision`) | [Prévisions horaires](#prévisions-horaires-smartops-33) |
+| Réentraîner avec les mesures récentes | `python -m model.reentrainement` | Chaque dimanche à 02:30 (service `reentrainement`) | [Réentraînement](#réentraînement-hebdomadaire-smartops-34) |
+
+## API prédictive
+
+Les prévisions sont servies par l'API métier :
+
+```
+GET /api/sites/{id_site}/predictions?horizon=24h|7j
+Authorization: Bearer <jeton Keycloak>
+```
+
+- **Accès** : un rôle métier (`CONSULT-SITE`, `CONSULT-CLIENT`, `GESTION-SITE` ou `GESTION-CLIENT`). Un site hors du périmètre de l'utilisateur répond comme un site inconnu : liste vide.
+- **Réponse** : une ligne par heure à venir, de l'heure pleine suivante jusqu'à 24 ou 168 heures. Pour chaque heure, seule la prévision la plus récente est renvoyée.
+
+```json
+[
+  {
+    "heure": "2026-10-26T15:00:00Z",
+    "consommation_kwh": 1790.0,
+    "consommation_basse_kwh": 1700.0,
+    "consommation_haute_kwh": 1870.0,
+    "pic_prevu": true,
+    "pic_prevu_kw": 460.0,
+    "pic_bas_kw": 440.0,
+    "pic_haut_kw": 480.0,
+    "calculee_le": "2026-10-26T14:05:00Z",
+    "version_modele": "prevision-conso-24h/3"
+  }
+]
+```
+
+| Champ | Sens |
+|---|---|
+| `consommation_kwh` | Consommation prévue de l'heure |
+| `consommation_basse_kwh`, `consommation_haute_kwh` | Fourchette : centiles 10 et 90 des arbres du random forest. `null` sans fourchette |
+| `pic_prevu_kw`, `pic_bas_kw`, `pic_haut_kw` | Pic prévu de l'heure et sa fourchette |
+| `pic_prevu` | Vrai si le pic prévu atteint le seuil d'alerte du site |
+| `calculee_le` | Heure du calcul |
+| `version_modele` | Version MLflow qui a fait la prévision (`<modèle>/<version>`) : on sait toujours quel modèle a prévu quelle heure |
+
+Pour l'essayer : Swagger sur `/api/docs`, bouton **Authorize**, avec le jeton d'un compte de démonstration. La documentation complète de l'API est dans [`api/README.md`](../api/README.md).
+
+### Pourquoi un job planifié plutôt qu'un endpoint du modèle
+
+Le modèle n'a pas de service web à lui. Le service `prevision` calcule chaque heure les prévisions de tous les sites, les écrit dans `gold.prediction`, et l'API les lit.
+
+- **Le besoin est horaire.** Les mesures arrivent chaque minute, mais le modèle prévoit des heures. Recalculer à chaque requête redonnerait le même résultat pendant une heure.
+- **Le dashboard ne dépend pas du modèle.** Si MLflow ou le modèle tombent, l'API sert encore les dernières prévisions écrites. Avec un endpoint du modèle, la page d'un site serait en erreur.
+- **La sécurité reste à un seul endroit.** L'API vérifie déjà le jeton, les rôles et les sites de l'utilisateur. Un deuxième service exposé demanderait les mêmes contrôles.
+- **L'historique est gardé.** Chaque calcul ajoute ses lignes : on peut comparer après coup ce qui était prévu à ce qui a été mesuré, ce qu'un endpoint à la demande ne garde pas.
+- **L'alerte de pic prévu a besoin d'un calcul régulier.** Elle doit s'ouvrir même si personne n'ouvre le dashboard.
+
+Le prix de ce choix : une prévision a au plus une heure de retard sur les dernières mesures. C'est le pas de temps du modèle.
+
+## Indicateurs suivis et ajustements
+
+| Indicateur | Où le lire | Valeur actuelle |
+|---|---|---|
+| WAPE de validation (choix du modèle) | MLflow, expérience `prevision-consommation` | Random forest : 15,2 % à 24 h, 15,7 % à 7 jours (Ridge : 19,5 % et 20,1 %) |
+| WAPE de test, contre la référence « semaine précédente » | MLflow, tag `bat_reference` | 16,18 % contre 23,40 % à 24 h, 16,50 % contre 23,35 % à 7 jours |
+| MAE et RMSE | MLflow | Voir [Résultats](#résultats) |
+| Comparaison avec la version en production, à chaque réentraînement | MLflow, tag `bat_production`, métrique `test_production_WAPE` | Calculée chaque dimanche |
+| Écart prévu / réel en production | Grafana, tableau **EnerVision : métier** | Sur les heures complètes des dernières 24 h |
+
+Les ajustements faits en cours de projet, et leur raison, sont écrits dans les sections concernées :
+
+| Ajustement | Raison | Section |
+|---|---|---|
+| Random forest retenu plutôt que Ridge | WAPE de validation plus bas aux deux horizons | [Résultats](#résultats) |
+| 50 lignes par feuille au lieu de 5 | WAPE égal ou meilleur, modèle de 12 Mo au lieu de 124 | [Entraînement, Règles](#règles-2) |
+| Pic de l'heure calculé avec le pic soutenu sur 3 minutes, pas le pic d'une minute | Le pic d'une minute dépassait le seuil 8 à 19 heures par jour, contre 0,1 à 0,7 alerte réelle | [Prévisions horaires, Règles](#règles-3) |
+| Alerte de pic prévu évaluée sur 24 heures seulement | Au-delà, une prévision qui frôle le seuil ouvrirait et fermerait l'alerte sans cesse | [Prévisions horaires, Règles](#règles-3) |
+| Réentraînement sur le CSV et les mesures de gold, pas sur le CSV seul | Le CSV seul redonnerait le même modèle | [Réentraînement](#réentraînement-hebdomadaire-smartops-34) |
+
+## Surveillance en production
+
+| Ce qui est surveillé | Comment | Où |
+|---|---|---|
+| Le modèle tourne | Heure de la dernière prévision, nombre de prévisions écrites | Grafana, tableau métier (« Dernier calcul », « Prévisions écrites ») |
+| Erreur réelle du modèle | Écart prévu / réel : 100 × \|prévu − réel\| / réel sur les heures complètes des dernières 24 h (`gold.supervision_metier`) | Grafana, tableau métier (« Écart prévu / réel ») |
+| Sites non prévus | Avertissement pour un site sans mesure dans l'heure, inconnu du modèle, ou avec moins de 24 heures mesurées | Logs du service `prevision` dans Grafana (Loki) |
+| Version utilisée | `version_modele` sur chaque prévision, alias `production` dans MLflow | `gold.prediction`, MLflow |
+| Qualité dans le temps | Chaque réentraînement note le nouveau modèle et la version en production sur les 7 derniers jours, et ne remplace la version que si le nouveau fait mieux | MLflow, expérience `prevision-consommation` |
+
+L'écart prévu / réel porte sur 24 heures seulement, pour qu'une dérive récente reste visible. Il n'est pas comparable tel quel au WAPE d'entraînement : il porte sur des heures récentes, mesurées par l'ETL, et non sur le jeu de test.
+
+Ce qui manque encore : aucune règle d'alerte ne prévient quand l'écart dépasse un seuil, et la dérive des données d'entrée (distribution des consommations) n'est pas mesurée. C'est l'objet de SMARTOPS-82. En attendant, le réentraînement du dimanche joue le rôle de garde-fou : une version moins bonne que celle en place n'est jamais mise en production.
+
 ## Jeu d'entraînement (SMARTOPS-93)
 
 Le modèle s'entraîne sur l'historique CSV fourni avec le sujet, mis au format de `gold.consommation_horaire` : c'est la table que le modèle lit en production, une ligne par site et par heure.
@@ -156,7 +266,7 @@ Règles :
 - Lags (24 h, 7, 14 et 28 jours) et moyennes glissantes (24 h, 7 jours) : seulement ceux qui sont connus au moment de prévoir, donc pris au moins `horizon` heures avant. À 7 jours, pas de lag de 24 h. Une moyenne glissante demande au moins 80 % d'heures connues, sinon elle reste vide.
 - Calendrier et site : heure du jour, jour de la semaine et site en colonnes 0/1, toujours les mêmes colonnes, même si une valeur est absente des données.
 - Heure du jour et jour de la semaine lus sur `heure` sans conversion en heure de Paris. Les horodatages du CSV et de l'API Mock sont l'heure du simulateur, sans changement d'heure, enregistrée comme de l'UTC (voir les règles du jeu d'entraînement). Le CSV n'a ni heure manquante en mars ni heure en double en octobre, et les bureaux y commencent à 8 h été comme hiver. Convertir en heure de Paris décalerait ce profil d'une heure l'été. Avec de vraies données en UTC, il faudra convertir en heure locale du site.
-- Décalages dans le temps : les heures absentes de gold sont ajoutées vides avant de décaler, puis retirées. Un lag de 24 h prend donc toujours l'heure d'il y a 24 h, ou reste vide. La prévision de référence utilise le même calcul (`valeurs_passees`).
+- Décalages dans le temps : les heures absentes de gold sont ajoutées vides avant de décaler, puis retirées. Un lag de 24 h prend donc toujours l'heure d'il y a 24 h, ou reste vide. La prévision de référence utilise le même calcul (`valeurs_passees`). Un trou de plus de 28 jours (`HISTORIQUE_UTILE`) entre deux heures d'un site n'est pas rempli : aucune variable ne remonte aussi loin. Le site est calculé en plusieurs morceaux, comme le jeu du réentraînement (CSV, puis mesures récentes), qui n'a ainsi pas à traîner des milliers d'heures vides.
 - Entrée refusée avec un message clair : colonne manquante, aucune ligne, même heure en double pour un site, site sans moyenne d'entraînement.
 
 ## Entraînement (SMARTOPS-31)
@@ -175,7 +285,7 @@ Pour chaque horizon (24 h et 7 jours), le script :
 4. les compare sur la `validation`, avec les prévisions de référence, et retient celui qui a le plus petit WAPE ;
 5. mesure le modèle retenu une seule fois sur le `test`, au total et site par site.
 
-Il affiche les scores, le modèle retenu et le nombre d'heures concernées. Si le modèle retenu ne fait pas mieux que la référence sur la validation, il le signale et ne l'enregistre pas (voir « Enregistrement dans MLflow »).
+Il écrit dans les logs (`common.logs`, JSON comme `model.dataset`, visibles dans Grafana) un résumé par horizon : le modèle retenu, ses WAPE de validation et de test, le nombre d'heures concernées. Avec `LOG_LEVEL=DEBUG`, les tableaux complets sont aussi écrits. Si le modèle retenu ne fait pas mieux que la référence sur la validation, il le signale, ne l'enregistre pas (voir « Enregistrement dans MLflow ») et la commande se termine en erreur (code de sortie 1), pour que le job échoue quand il tourne seul dans Docker.
 
 ### Règles
 
@@ -271,3 +381,43 @@ docker compose -f compose-local.yml exec prevision python -m model.prevision
 - Sans aucune version `production` (avant le premier entraînement), le job écrit un avertissement et ne prévoit rien : il termine seulement les alertes de pic prévu dont l'heure est passée. Si MLflow ou la base ne répondent pas, il s'arrête en erreur, visible dans les logs.
 - Chaque exécution ajoute ses lignes (`calculee_le`) : l'historique des prévisions est gardé pour comparer prévu et réel.
 - Cache des modèles (`MODELE_CACHE_DIR`, volume `modele_cache` du service) : une version est téléchargée une seule fois, à sa première utilisation. Ensuite, chaque heure, MLflow ne sert qu'à lire le numéro de la version `production` (deux petites requêtes) et le modèle est lu sur le disque. Les anciennes versions et les téléchargements abandonnés sont supprimés une fois inutilisés depuis une heure (`DELAI_NETTOYAGE`), après le chargement : deux lancements qui se chevauchent (à la main pendant le cron, alias déplacé entre les deux) n'effacent jamais les fichiers l'un de l'autre. Le nom d'une version contient son run, pour qu'un modèle supprimé puis réenregistré (qui repart à la version 1) ne resserve pas l'ancien fichier. Sans `MODELE_CACHE_DIR`, le modèle est lu dans MLflow à chaque lancement.
+
+
+## Réentraînement hebdomadaire (SMARTOPS-34)
+
+Le service `reentrainement` lance `python -m model.reentrainement` chaque dimanche à 02:30 (`model/crontab-reentrainement`, supercronic, comme `prevision`). Il existe dans `compose-local.yml` et `compose-prod.yml`.
+
+Relancer l'entraînement sur le seul jeu CSV redonnerait le même modèle. Ce sont les mesures de `gold.consommation_horaire`, que l'ETL écrit chaque minute, qui apportent du neuf. Le réentraînement les ajoute au jeu CSV.
+
+À la main, avec la stack locale démarrée (jeu construit dans `data/processed`) :
+
+```bash
+docker compose -f compose-local.yml exec reentrainement python -m model.reentrainement
+```
+
+### Étapes
+
+Pour chaque horizon (24 h et 7 jours) :
+
+1. Le jeu réunit le CSV et les heures de gold plus récentes que sa dernière heure, mesurées sur au moins 80 % de leurs minutes (`COUVERTURE_MIN_HEURE`). Une heure terminée n'est pas forcément mesurée : `heure_complete` est vrai même pour une heure où un capteur était en panne, ou avec une seule minute mesurée. Ces heures sont écartées, comme des heures absentes de gold. Les 7 derniers jours sont l'examen (le jeu `test` de `model.entrainement`). Ce qui précède est coupé dans le temps entre entraînement et validation, dans la même proportion que le jeu CSV.
+2. La méthode (Ridge ou random forest) est choisie sur la validation, comme à l'entraînement.
+3. Un candidat est entraîné avec cette méthode sur tout ce qui précède l'examen.
+4. Le candidat, la version `production` et la prévision de référence sont notés sur les mêmes heures de l'examen. Chacun prévoit avec ses propres moyennes par site, et seuls comptent les sites que le candidat et la production connaissent tous les deux. Les heures que la production a déjà vues à son entraînement ne sont pas notées (voir « Règles »).
+5. La nouvelle version est enregistrée, et l'alias `production` bouge, seulement si le candidat bat la référence sur la validation (règle de SMARTOPS-30) et a un WAPE plus bas que la version en production sur l'examen. Elle est alors réentraînée sur toutes les données, examen compris, comme à l'entraînement.
+6. Sinon, le run MLflow est gardé pour la trace, sans nouvelle version. Il porte le tag `bat_production` (`true`, `false` ou `sans_production`) et les scores de la production (`test_production_WAPE`).
+
+### Règles
+
+- Code de sortie 1 si, pour un horizon, le modèle ne fait pas mieux que la référence. Rester moins bon que la version en production n'est pas une erreur : elle est gardée.
+- Sans version en production, il n'y a rien à comparer : le modèle qui bat la référence est enregistré.
+- Gold doit couvrir au moins 14 jours d'heures mesurées (`GOLD_MIN`) : les 7 jours de l'examen, plus les 7 jours d'avant. La référence d'une heure est la même heure la semaine précédente. Avec moins de 14 jours, la semaine précédente de l'examen tomberait dans le trou entre la fin du CSV et gold, et l'examen ne porterait en pratique que sur quelques jours. Sinon, le job prévient dans les logs et ne réentraîne rien. De même, la comparaison avec la production demande au moins 100 heures notées sur l'examen (`MIN_HEURES_EXAMEN`) : en dessous, la production est gardée. Sans version en production, il n'y a rien à comparer : un examen trop court n'empêche pas d'enregistrer le modèle qui bat la référence.
+- Le run de chaque version enregistre la dernière heure de ses données (paramètre `fin_donnees`). Le réentraînement ne note la version en production que sur les heures de l'examen après cette date, qu'elle n'a jamais vues. Un réentraînement relancé dans la semaine ne la favorise donc pas. Pour une version enregistrée avant ce paramètre, la date de son run sert de limite. S'il reste moins de `MIN_HEURES_EXAMEN` heures à noter (par exemple une relance le jour même), la production est gardée.
+- Les scores du test (`test_*` dans MLflow) sont ceux de l'examen, pas ceux du jeu CSV. Un modèle refusé sur la validation n'est pas noté sur l'examen : il n'a pas de score de test.
+- Les heures « sans référence » du log ne comptent que les sites notés.
+- Les messages passent par les logs (`common.logs`), jamais par la console.
+- L'empreinte du run (`empreinte_jeu`) est celle du jeu CSV, suivie de la dernière heure de gold utilisée (par exemple `f2ee5c19efdb+gold:2026-11-01T23`).
+
+### Limites
+
+- Gold ne contient que les mesures collectées depuis le démarrage de l'ETL, et il y a un trou entre la fin du CSV (fin 2024) et ces mesures. Les premières semaines d'examen sont donc presque entièrement dans gold, et les variables de 14 et 28 jours manquent encore. Le réentraînement ne prendra tout son sens qu'avec le temps.
+- Le jeu CSV vient de `data/processed` (volume `dataset_data` sur la VM). Sans lui, le job s'arrête en erreur : lancer d'abord le workflow Dataset.

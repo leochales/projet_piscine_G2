@@ -115,17 +115,28 @@ def completer_heures(df: pd.DataFrame) -> pd.DataFrame:
     triée par site puis par heure.
 
     Les heures absentes sont ajoutées, avec des valeurs vides : sur cette grille, un
-    décalage de 24 lignes fait toujours 24 heures."""
+    décalage de 24 lignes fait toujours 24 heures.
+
+    Un trou de plus de ``HISTORIQUE_UTILE`` entre deux heures d'un site n'est pas rempli :
+    aucune variable ne remonte aussi loin, les heures d'avant et d'après ne se voient
+    jamais (l'historique CSV, puis des mesures récentes, par exemple). Le site est alors
+    en plusieurs morceaux, numérotés dans la colonne ``morceau`` : un décalage ne doit
+    jamais passer d'un morceau à l'autre."""
     if df.empty:
-        return df.copy()
+        return df.assign(morceau=0)
     morceaux = []
     for site, groupe in df.groupby("id_site", sort=False):
-        heures = pd.date_range(
-            groupe["heure"].min(), groupe["heure"].max(), freq="h", name="heure"
-        )
-        complet = groupe.drop(columns="id_site").set_index("heure").reindex(heures)
-        complet.insert(0, "id_site", site)
-        morceaux.append(complet.reset_index())
+        groupe = groupe.sort_values("heure")
+        # Un nouveau morceau commence après chaque trou de plus de HISTORIQUE_UTILE
+        numero = (groupe["heure"].diff() > HISTORIQUE_UTILE).cumsum()
+        for n, partie in groupe.groupby(numero, sort=False):
+            heures = pd.date_range(
+                partie["heure"].min(), partie["heure"].max(), freq="h", name="heure"
+            )
+            complet = partie.drop(columns="id_site").set_index("heure").reindex(heures)
+            complet.insert(0, "id_site", site)
+            complet.insert(1, "morceau", n)
+            morceaux.append(complet.reset_index())
     return pd.concat(morceaux, ignore_index=True)
 
 
@@ -144,7 +155,8 @@ def calculer_sur_grille(
     """Applique chaque calcul à la série horaire complète de chaque site et renvoie
     les résultats sur les lignes de ``df`` (même index), une colonne par calcul."""
     grille = completer_heures(df[["id_site", "heure", colonne]])
-    par_site = grille.groupby("id_site")[colonne]
+    # Par morceau : un décalage ne traverse pas un trou de plus de HISTORIQUE_UTILE
+    par_site = grille.groupby(["id_site", "morceau"])[colonne]
     for nom, calcul in calculs.items():
         grille[nom] = par_site.transform(calcul)
     resultat = df[["id_site", "heure"]].merge(
