@@ -378,7 +378,8 @@ jobs:
     needs: deploy
     if: github.ref == 'refs/heads/develop'
     runs-on: [self-hosted, linux]
-    timeout-minutes: 40
+    # Les étapes de scan ont leur propre délai (10 et 35 min), plus court que celui du job
+    timeout-minutes: 50
     permissions:
       contents: read
     env:
@@ -401,10 +402,13 @@ jobs:
       # host-gateway : le nom public pointe vers la VM elle-même, comme le --resolve des
       # vérifications de santé (règle Host de Traefik).
       # -I : les alertes WARN n'échouent pas le job, seules les règles FAIL de .zap/rules.tsv.
-      # -j : le front est une SPA, le spider classique ne verrait que index.html. Le spider
-      # Ajax explore aussi les pages construites par le JavaScript.
+      # Le front se connecte à Keycloak dès le chargement (onLoad: 'login-required') : sans
+      # compte, le scan ne voit que index.html et la page de connexion. Un spider Ajax n'y
+      # changerait rien, et le front connecté est hors périmètre (SMARTOPS-111).
       # tee garde le journal de ZAP pour le résumé, pipefail garde le code de sortie de ZAP.
+      # Délai par étape : si un scan dépasse, le résumé et l'artefact sortent quand même.
       - name: Scanner le front (baseline)
+        timeout-minutes: 10
         run: |
           set -o pipefail
           docker run --rm \
@@ -412,7 +416,7 @@ jobs:
             -v "$ZAP_DIR:/zap/wrk:rw" \
             "$ZAP_IMAGE" \
             zap-baseline.py -t "https://${PUBLIC_HOST}:8443" \
-              -c rules.tsv -I -j -m 5 \
+              -c rules.tsv -I -m 5 \
               -r baseline.html -J baseline.json | tee "$ZAP_DIR/baseline.log"
 
       # Jeton demandé par le client enervision-zap (étape Keycloak du job deploy). Mot de
@@ -421,6 +425,8 @@ jobs:
       # Indépendant du baseline : lancé même si celui-ci a échoué
       - name: Scanner l'API (authentifié)
         if: ${{ !cancelled() }}
+        # Jeton, import du contrat, scan actif de 20 min au plus, puis fin du scan passif
+        timeout-minutes: 35
         env:
           ZAP_CLIENT_SECRET: ${{ secrets.DEV_ZAP_CLIENT_SECRET }}
           SEED_PASSWORD: ${{ secrets.DEV_SEED_PASSWORD }}
@@ -468,59 +474,13 @@ jobs:
               -z "-config scanner.maxScanDurationInMins=20" \
               -r api.html -J api.json | tee "$ZAP_DIR/api.log"
 
-      # Résumé des alertes dans la page du job, sans ouvrir l'artefact. Les ids sont ceux à
-      # écrire dans .zap/rules.tsv. Un rapport absent veut dire que ZAP n'a rien écrit.
+      # Résumé des alertes dans la page du job, avec l'action de .zap/rules.tsv pour chacune
       - name: Résumer les résultats ZAP
         if: always()
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
+        run: python3 infra/ci/zap_summary.py "${ZAP_DIR:-$RUNNER_TEMP/zap}" .zap/rules.tsv >> "$GITHUB_STEP_SUMMARY"
 
-          dossier = os.environ.get("ZAP_DIR") or os.path.join(os.environ["RUNNER_TEMP"], "zap")
-          risques = {"3": "High", "2": "Medium", "1": "Low", "0": "Info"}
-          resume = open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8")
-
-
-          def ecrire(texte=""):
-              print(texte, file=resume)
-
-
-          ecrire("## Résultats ZAP (dev)")
-          for nom, titre in (("baseline", "Front (baseline)"), ("api", "API (authentifiée)")):
-              ecrire()
-              ecrire(f"### {titre}")
-              rapport = os.path.join(dossier, nom + ".json")
-              if not os.path.exists(rapport):
-                  print(f"::warning::{nom}.json absent : ZAP n'a écrit aucun rapport")
-                  ecrire("Aucun rapport : ZAP n'a rien écrit, voir les logs du job.")
-                  continue
-              journal = os.path.join(dossier, nom + ".log")
-              if os.path.exists(journal):
-                  with open(journal, encoding="utf-8", errors="replace") as f:
-                      lignes = [ligne.strip() for ligne in f]
-                  for debut in ("Total of", "FAIL-NEW"):
-                      trouvees = [ligne for ligne in lignes if ligne.startswith(debut)]
-                      if trouvees:
-                          ecrire(f"`{trouvees[-1]}`")
-              with open(rapport, encoding="utf-8") as f:
-                  sites = json.load(f).get("site", [])
-              alertes = sorted(
-                  (a for site in sites for a in site.get("alerts", [])),
-                  key=lambda a: -int(a.get("riskcode", 0)),
-              )
-              if not alertes:
-                  ecrire("Aucune alerte.")
-                  continue
-              ecrire()
-              ecrire("| Id | Alerte | Risque | Instances |")
-              ecrire("|---|---|---|---|")
-              for a in alertes:
-                  nom_alerte = (a.get("name") or a.get("alert", "")).replace("|", "/")
-                  risque = risques.get(str(a.get("riskcode")), "?")
-                  ecrire(f"| {a.get('pluginid')} | {nom_alerte} | {risque} | {a.get('count', '')} |")
-          PY
-
+      # Les journaux de ZAP (*.log) ne sont pas publiés : le dépôt est public et le masquage
+      # de GitHub ne s'applique qu'aux logs du job, pas aux fichiers de l'artefact.
       - name: Publier les rapports ZAP
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -529,7 +489,6 @@ jobs:
           path: |
             ${{ runner.temp }}/zap/*.html
             ${{ runner.temp }}/zap/*.json
-            ${{ runner.temp }}/zap/*.log
           if-no-files-found: warn
 
   # GHCR est gratuit « pour l'instant » : on ne garde que les 20 dernières versions de

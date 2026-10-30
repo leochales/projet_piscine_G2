@@ -3,7 +3,9 @@
 # Les ids figurent dans le rapport (artefact zap-report). Sans ligne, une règle est en WARN.
 # Chaque IGNORE doit être justifié par un commentaire, comme dans .trivyignore.
 
-# --- FAIL : failles qui ne doivent jamais apparaître (scan actif de l'API).
+# --- FAIL : failles qui ne doivent jamais apparaître. Ces règles ne se déclenchent que
+# dans le scan actif de l'API. Le baseline du front est passif, il ne peut pas les
+# produire : ses alertes restent en WARN ou IGNORE.
 # Un FAIL fait échouer le job zap, jamais le déploiement.
 40018	FAIL	SQL Injection
 90018	FAIL	SQL Injection - Advanced

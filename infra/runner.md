@@ -151,11 +151,11 @@ L'IP du conteneur s'obtient sur la VM avec `docker inspect -f '{{range .NetworkS
 
 Après chaque déploiement de `develop`, le job `zap` scanne l'environnement dev avec OWASP ZAP (SMARTOPS-111 et SMARTOPS-112). Le déploiement ne l'attend pas : un échec du scan ne l'annule pas.
 
-* Baseline du front : analyse passive, avec le spider classique et le spider Ajax (le front est une SPA).
+* Baseline du front : analyse passive des en-têtes, des cookies et des fuites d'informations. Le front se connecte à Keycloak dès le chargement (`login-required`) : sans compte, le scan ne voit que `index.html` et la page de connexion. Le front connecté n'est pas scanné.
 * Scan actif de l'API : il lit `/api/openapi.json` et envoie le jeton du compte `consult.client@demo.test`. Ce compte est en lecture seule, donc les écritures du scan reçoivent des 403.
 * Avant le scan de l'API, le job appelle `/api/moi` avec le jeton. S'il ne reçoit pas un 200, il s'arrête avec un message d'erreur.
 
-Les résultats se lisent dans le résumé de l'exécution (onglet Summary). Le rapport complet (HTML, JSON et logs) est dans l'artefact `zap-report`.
+Les résultats se lisent dans le résumé de l'exécution (onglet Summary). Chaque alerte y porte l'action de `.zap/rules.tsv`, et les alertes déjà ignorées sont en bas du tableau. Le rapport complet (HTML et JSON) est dans l'artefact `zap-report`. Les journaux de ZAP n'y sont pas, car l'artefact n'est pas masqué et le dépôt est public.
 
 Chaque alerte se règle dans `.zap/rules.tsv`, avec l'id de la règle donné par le résumé :
 
@@ -163,7 +163,7 @@ Chaque alerte se règle dans `.zap/rules.tsv`, avec l'id de la règle donné par
 |---|---|
 | `IGNORE` | L'alerte est écartée. Un commentaire doit justifier pourquoi. |
 | `WARN` | L'alerte est signalée, le job reste vert. C'est la valeur par défaut. |
-| `FAIL` | Le job `zap` échoue. Réservé aux failles qui ne doivent jamais apparaître. |
+| `FAIL` | Le job `zap` échoue. Réservé aux failles qui ne doivent jamais apparaître. Ces règles ne concernent que le scan actif de l'API. |
 
 ---
 
